@@ -393,7 +393,8 @@ public static class WorkPromptBuilder
         }
 
         // A task with a human gate asks for a plain opening paragraph in the summary, which the briefing
-        // prints. The attended build composes no summary of its own in this prompt, so it is left out there.
+        // prints. The attended build composes no summary in this prompt (its task drive anchor does, and
+        // carries the same ask), so it is left out here.
         if (task.HumanGate && !isInteractive)
         {
             AppendHumanGateSummaryAsk(prompt);
@@ -597,13 +598,21 @@ public static class WorkPromptBuilder
     /// </summary>
     public static void AppendAdoptedContextRule(StringBuilder prompt, TaskDetails task)
     {
-        if (task.ExternalReference.IsBlank()
-            || !WorkItemContext.CarriesQuotedDescription(task.AgentContext))
+        if (!WorkItemContext.CarriesQuotedDescription(task.AgentContext))
         {
             return;
         }
 
         const string file = $"{TemplateDirectory}/adopted-context-rule.md";
+        if (task.ExternalReference.IsBlank())
+        {
+            // An evolved draft (h9k task add --evolved-from) copies its source's context, quote and all, but
+            // is not linked to the item. The quote is what makes the rule necessary, so it does not wait on a
+            // reference there is nothing to name.
+            AppendFragment(prompt, file, "rule-without-reference");
+            return;
+        }
+
         AppendFragment(prompt, file, "rule", ("ExternalReference", task.ExternalReference));
     }
 

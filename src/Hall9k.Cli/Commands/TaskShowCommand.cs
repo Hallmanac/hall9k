@@ -152,15 +152,28 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Human gate", "[dim]off (h9k task revise --human-gate stops the run once before its pull request opens)[/]");
         }
 
-        if (details.CurrentRunId is { } gatedRunId
-            && await session.LoadAsync<RunDetails>(gatedRunId, cancellationToken) is { HumanGateAnsweredAt: { } answeredAt } gatedRun)
+        // The newest answer across every run of the task, not only the current run's: a follow-up that closeout
+        // claims after the pull request opens becomes the current run and has answered nothing itself, but the
+        // task still went through a person first. A run that is parked at the gate right now has withdrawn its
+        // answer, and an older run's answer is not shown over that. A skip to the pull request records no answer
+        // on the run (it has its own review-skip row), so it prints no row here.
+        RunDetails? currentGatedRun = details.CurrentRunId is { } currentRunId
+            ? await session.LoadAsync<RunDetails>(currentRunId, cancellationToken)
+            : null;
+        if (currentGatedRun is not { ParkedIsHumanGate: true })
         {
-            // Who answered the gate, and when, so a task that went on to open its pull request still says
-            // a person looked at it first. A skip to the pull request carries no person, and says so.
-            string who = gatedRun.HumanGateAnsweredByOwnerId is { } answeredBy
-                ? (await KnowledgeRecordRendering.OwnerLabelAsync(session, answeredBy, cancellationToken)).EscapeMarkup()
-                : "the owner";
-            header.AddRow("Gate approved", $"by {who} at {answeredAt.ToLocalTime():g}");
+            RunDetails? answeredRun = (await session.Query<RunDetails>()
+                .Where(r => r.TaskId == details.Id && r.HumanGateAnsweredAt != null)
+                .OrderByDescending(r => r.HumanGateAnsweredAt)
+                .Take(1)
+                .ToListAsync(cancellationToken)).FirstOrDefault();
+            if (answeredRun is { HumanGateAnsweredAt: { } answeredAt })
+            {
+                string who = answeredRun.HumanGateAnsweredByOwnerId is { } answeredBy
+                    ? (await KnowledgeRecordRendering.OwnerLabelAsync(session, answeredBy, cancellationToken)).EscapeMarkup()
+                    : "the owner";
+                header.AddRow("Gate approved", $"by {who} at {answeredAt.ToLocalTime():g}");
+            }
         }
 
         if (details.EvolvedFromTaskId is { } evolvedFromId)

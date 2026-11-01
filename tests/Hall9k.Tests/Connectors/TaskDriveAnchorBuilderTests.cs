@@ -198,6 +198,22 @@ public sealed class TaskDriveAnchorBuilderTests
         anchor.Should().NotContain("\r").And.NotContain("{{");
     }
 
+    [Fact]
+    public void A_gated_tasks_build_anchor_asks_for_the_plain_opening_paragraph_and_an_ungated_one_does_not()
+    {
+        string gated = TaskDriveAnchorBuilder.Build(
+            TaskId, "/wt/task", "task/abc12345-thing", DraftFile, WritingConventions.Default, recipeFile: null,
+            humanGate: true);
+        string ungated = Build();
+
+        gated.Should().Contain("at most 120 words").And.Contain("behaviour");
+        gated.IndexOf("at most 120 words", StringComparison.Ordinal)
+            .Should().BeGreaterThan(gated.IndexOf("The pull request summary", StringComparison.Ordinal))
+            .And.BeLessThan(gated.IndexOf("Skipping straight to the pull request", StringComparison.Ordinal));
+        ungated.Should().NotContain("at most 120 words");
+        gated.Should().NotContain("{{");
+    }
+
     private static string Build(WritingConventions? conventions = null, string? recipeFile = null) =>
         TaskDriveAnchorBuilder.Build(
             TaskId, "/wt/task", "task/abc12345-thing", DraftFile, conventions ?? WritingConventions.Default, recipeFile);

@@ -1032,6 +1032,11 @@ has settled and before its GitHub pull request opens. The owner reads a short br
 branch, and then approves, changes, or discards the work from inside hall9k, before anything exists on GitHub
 for a teammate to see.
 
+`h9k task revise --clear-human-gate` takes the gate off again. When it is cleared while the run is still in
+review, the run opens its pull request without stopping. When it is cleared while the run is already parked at
+the gate, the park stays: only an answer (`h9k review proceed`, `h9k review resolve --merge-ready`, or `h9k task
+skip-to-pr`) releases a parked run, so the owner still has to say which way the work goes.
+
 The gate is a property of one task and never a project or node default, because a stop on every task makes
 the owner the bottleneck. It is deliberately not interactive mode. That flag parks at all four phase
 boundaries and changes prompts and closeout, while the gate wants exactly one stop, so the gate has its own

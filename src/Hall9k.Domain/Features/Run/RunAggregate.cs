@@ -957,8 +957,25 @@ public sealed class RunAggregate
     /// <summary>When the human gate was answered, and by whom (task show names who approved and when).</summary>
     public DateTimeOffset? HumanGateAnsweredAt { get; private set; }
 
-    /// <summary>See <see cref="HumanGateAnsweredAt"/>; null for a skip, which is not a person at the gate.</summary>
+    /// <summary>See <see cref="HumanGateAnsweredAt"/>.</summary>
     public Guid? HumanGateAnsweredByOwnerId { get; private set; }
+
+    /// <summary>
+    /// Spends an approval the owner gave at the human gate when a session is about to write commits after
+    /// it: a rebase-recovery session resolving a conflict, or a Settling-gate repair session mending a
+    /// gate the rebase broke. The owner vouched for the branch as it stood, not for what an agent then
+    /// wrote, so the run stops at the gate again over the new tip. Like a fix session, and unlike a skip
+    /// to the pull request, which is the owner's recorded decision to open the branch as it comes out and
+    /// is kept.
+    /// </summary>
+    private void WithdrawHumanGateApprovalBeforeSessionCommits()
+    {
+        if (HumanGateAnswer is HumanGateAnswer.Proceeded or HumanGateAnswer.ResolvedMergeReady)
+        {
+            HumanGateTipSha = null;
+            ClearHumanGateAnswer();
+        }
+    }
 
     /// <summary>
     /// Withdraws the gate's answer and who gave it: a fix, a redirect, or a fresh gate park means the stop
@@ -2437,6 +2454,7 @@ public sealed class RunAggregate
         ActiveRebaseRecoveryFromCommit = @event.RebasedFromCommit;
         RebaseRecoveryPrecedesFirstReviewCycle = @event.PrecedesFirstReviewCycle;
         RebaseRecoveryBaseCommit = @event.BaseCommit;
+        WithdrawHumanGateApprovalBeforeSessionCommits();
         ReviewPhase = ReviewPhase.AwaitingRebaseRecovery;
         State = RunState.UnderReview;
         RebaseRecoveryRounds++;
@@ -2467,6 +2485,7 @@ public sealed class RunAggregate
         ActiveSettlingGateRepairProcessStartedAt = @event.ProcessStartedAt;
         ActiveSettlingGateRepairModel = @event.Model ?? AgentModel.Unknown;
         LastSettlingGateRepairOutput = @event.GateOutput;
+        WithdrawHumanGateApprovalBeforeSessionCommits();
         ReviewPhase = ReviewPhase.AwaitingSettlingGateRepair;
         State = RunState.UnderReview;
         SettlingGateRepairRounds++;

@@ -89,19 +89,34 @@ public sealed record HumanGateFinding(HumanGateFindingKind Kind, string Detail)
 
     /// <summary>
     /// The park reason for a gate that found something and so did not open the pull request. Names what
-    /// was found and the two levers that answer it: <c>h9k review fixed</c> to have the commits read, and
-    /// <c>h9k review resolve --merge-ready</c> to open the pull request over them without another pass.
+    /// was found and the levers that answer that finding, which differ by kind because the same lever does
+    /// not fit them all: <c>h9k review fixed</c> needs commits to hand back and refuses an unmoved tip,
+    /// <c>h9k review proceed</c> approves a tip that is where the park left it, and
+    /// <c>h9k review resolve --merge-ready</c> opens the pull request over whatever the tip is after the gates.
     /// </summary>
     public string ReparkReason(Guid taskId)
     {
         string id = taskId.ToString("D", CultureInfo.InvariantCulture);
-        string levers = Kind == HumanGateFindingKind.UncommittedWork || Kind == HumanGateFindingKind.StatusUnobservable
-            ? $"Commit or discard it, then answer again: h9k review fixed {id} hands the commits to the gates and a "
-                + $"review pass, or h9k review resolve {id} --merge-ready --reason \"<why>\" opens the pull request "
-                + "over them without another pass (the gates still run on the tip)."
-            : $"Hand them to review with h9k review fixed {id}, which runs the gates and a review pass over them, or "
-                + $"open the pull request over them without another pass with h9k review resolve {id} --merge-ready "
-                + "--reason \"<why>\" (the gates still run on the tip and the settlement is recorded as Settled).";
+        string fixedLever = $"h9k review fixed {id} runs the gates and a review pass over the commits";
+        string resolveLever = $"h9k review resolve {id} --merge-ready --reason \"<why>\" opens the pull request over "
+            + "the tip as it stands without another pass (the gates still run on it and the settlement is recorded "
+            + "as Settled)";
+        string levers = Kind switch
+        {
+            HumanGateFindingKind.UncommittedWork =>
+                "Commit the work or discard it, then answer again. If you committed it, "
+                + $"{fixedLever}, or {resolveLever}. If you discarded it and the branch is where review left it, "
+                + $"h9k review proceed {id} approves it.",
+            HumanGateFindingKind.StatusUnobservable =>
+                "Check the worktree yourself (git status in it), then answer again. If it is clean and the branch is "
+                + $"where review left it, h9k review proceed {id} approves it; if you committed work, {fixedLever}, "
+                + $"or {resolveLever}.",
+            HumanGateFindingKind.TipUnobservable =>
+                "Check the branch yourself (git log in the worktree), then answer again. If you committed work, "
+                + $"{fixedLever}; otherwise {resolveLever}.",
+            _ =>
+                $"Hand the commits to review: {fixedLever}. Or {resolveLever}.",
+        };
         return $"The pull request was not opened: {Detail}. {levers}";
     }
 

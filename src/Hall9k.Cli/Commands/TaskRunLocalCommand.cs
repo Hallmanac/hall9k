@@ -181,11 +181,23 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
     /// </summary>
     private static void RefuseWhileGatedRunIsWorking(TaskDetails task, RunDetails run)
     {
-        if (task.HumanGate && run.State.IsLive)
+        if (GatedRunIsWorking(task.HumanGate, task.IsInteractiveClaim, run.State))
         {
             throw new DomainConflictException(LocalLaunchRefusal.GatedRunIsWorking(task.Id));
         }
     }
+
+    /// <summary>
+    /// Whether a gated task's run is working in the worktree on the platform's behalf. The owner's own
+    /// build (<c>h9k task drive</c>, a Dispatched or Running run on an interactive claim) is the one live run
+    /// that is not: no platform session is in the worktree, and trying the product mid-build is the
+    /// owner's call, exactly as it is on a task without the gate. Once the build is delivered the run
+    /// is Verifying or UnderReview, and the gates and review sessions own the worktree again.
+    /// </summary>
+    internal static bool GatedRunIsWorking(bool humanGate, bool interactiveClaim, RunState state) =>
+        humanGate
+        && state.IsLive
+        && !(interactiveClaim && (state == RunState.Dispatched || state == RunState.Running));
 
     /// <summary>
     /// Refuses outright, before a single step runs, whenever any step's own command carries a

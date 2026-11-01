@@ -789,7 +789,8 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// <summary>
     /// When the human gate was last answered on this run and by whom
     /// (<see cref="RunAggregate.HumanGateAnsweredAt"/>), for <c>h9k task show</c> to name. Null when it
-    /// was never answered; a skip to the pull request leaves the owner null.
+    /// was never answered, and also after a skip to the pull request, which is recorded on
+    /// <see cref="ReviewSkip"/> instead and never sets this.
     /// </summary>
     public DateTimeOffset? HumanGateAnsweredAt { get; set; }
 
@@ -2154,6 +2155,9 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
 
     public void Apply(IEvent<PreFinalPassRebaseRecoveryDispatched> @event, RunDetails view)
     {
+        // The branch is about to gain an agent's commits, so an approval given at the gate is spent (mirrors RunAggregate).
+        view.HumanGateAnsweredAt = null;
+        view.HumanGateAnsweredByOwnerId = null;
         StartSession(
             view, AgentRole.Fix, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
             name: @event.Data.SessionName);
@@ -2176,6 +2180,9 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     /// </summary>
     public void Apply(IEvent<SettlingGateRepairDispatched> @event, RunDetails view)
     {
+        // Spent for the same reason as a rebase-recovery session's (mirrors RunAggregate).
+        view.HumanGateAnsweredAt = null;
+        view.HumanGateAnsweredByOwnerId = null;
         StartSession(
             view, AgentRole.Fix, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
             name: @event.Data.SessionName);

@@ -544,7 +544,7 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
             anchorFile,
             TaskDriveAnchorBuilder.Build(
                 task.Id, worktreePath, branch, RunPaths.PrSummaryDraftFile(runDirectory), project.WritingConventions, recipeFile,
-                pullRequestStage, taskNotes),
+                pullRequestStage, taskNotes, task.HumanGate),
             cancellationToken);
 
         // The pair a headless build of this task would get on this node, named on the line rather than

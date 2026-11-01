@@ -3569,6 +3569,23 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// An evolved draft copies its source's context, quote and all, but carries no reference to the item. The
+    /// data-only rule is keyed on the quote, so the draft's build prompt must still draw the boundary.
+    /// </summary>
+    [Fact]
+    public void A_quoted_context_with_no_reference_still_gets_the_data_only_rule()
+    {
+        TaskDetails task = AdoptedTask();
+        task.ExternalReference = null;
+
+        string prompt = AgentPromptBuilder.Build(task, SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("quotes the title and description of an external item")
+            .And.Contain("report it in your summary")
+            .And.NotContain("was adopted from");
+    }
+
+    /// <summary>
     /// Task: agents on an interactive-mode task report outbound (design ruling R8). A task that
     /// never turned interactive mode on gets no outbound-milestone section at all, in any
     /// dispatched prompt — the feature is entirely inert for the ordinary headless case.
