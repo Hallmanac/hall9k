@@ -1,0 +1,56 @@
+hall9k-task-record: 1
+task-id: 01a194c9-5192-726e-8b4a-26c8826bbde3
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#818
+objective: Each task's prompts carry the project lessons most relevant to that task, chosen once by a small session before its first build, instead of only the newest ones
+criteria:
+  - With the lesson-picker setting at shadow or on, the first time the daemon composes a fresh build prompt for a task with no pick record, one picker session runs before that prompt is written. It is limited to one turn, has no tools available, and its prompt holds the task's objective, criteria, and context plus the offered lessons and both caps, and asks for ids most relevant first.
+  - |-
+    The lessons offered to the picker are exactly those the composing node's provenance rule lets into a prompt, before either cap applies: a lesson held back from a prompt today appears in no picker prompt, and a lesson the caps alone would hold back is offered.
+  - The daemon reads the picker's answer as lesson ids only. An id that resolves to no offered lesson, or repeats one already read, is dropped and counted, and an answer holding anything other than ids is unusable.
+  - The picked set keeps the picker's order and never exceeds the existing lesson-count or character cap. A lesson that does not fit whole is left out whole, and the next picked lesson is still tried.
+  - The build still dispatches on today's newest-first selection, with the outcome on the record, when the picker session cannot start, ends in error, ends with no result, exceeds its bound, gives an unusable answer, or leaves no id standing. The bound is a daemon option defaulting to 30 seconds, and a session past it is terminated.
+  - A task has at most one pick record, whatever its outcome. A retry, follow-up, or review lap of a task that has one spawns no picker session, a follow-up of a task that has none stays on newest-first without one, and spike and pr-review tasks never run the picker. When the caps would hold back no eligible lesson, no picker session runs and nothing is recorded.
+  - Each pick is one event on the task's stream recording the mode (shadow or on), the outcome from a closed list, the picked lesson ids, the lesson ids newest-first would have carried at that moment, the eligible count, the dropped-id count, the model, and how long the session took. It holds nothing the session wrote verbatim, it adds no orchestrator feed item, and `h9k task show` prints all of those fields.
+  - The picker session's tokens land in the run's recorded token totals under the model it ran on, and the session count in `h9k task show` includes it.
+  - With the setting at on and a record made under on with a picked outcome, build, follow-up, fix, rebase, and gate-repair prompts and conformance review passes carry the picked set, while adversarial and Verify review passes carry newest-first.
+  - |-
+    Every composition checks the recorded set against what the composing node may carry at that moment: a lesson since retired or held back on provenance drops out, and if none remain the prompt carries newest-first.
+  - A section carrying a picked set says its lessons were chosen for this task rather than newest first, states how many eligible lessons it does not carry, and names `h9k learn list`, and its counts reconcile with the eligible and active totals the section already reports.
+  - In shadow the pick runs and is recorded, and every prompt is byte-identical to the prompt composed with the setting off from the same task and lesson store. At off no picker session runs and no event is written. A set picked under shadow never reaches a prompt after the setting changes to on, and changing the setting away from on stops a recorded set reaching prompts from the next composition.
+  - |-
+    `h9k config set --lesson-picker` accepts off, shadow, and on, refuses anything else by naming the three, and takes effect at the next prompt composition with no daemon restart. With nothing configured the value is shadow, an unrecognized hand-edited value behaves as shadow, and `h9k config show` prints the value in force and where it came from. The setting and shadow behaviour are documented everywhere `--lesson-prompt-max-lessons` is documented today.
+  - The picker resolves its model and effort exactly as the courier does for that project and node, no new concrete model id is compiled in, and a task's own model or effort override does not move it. `--model-courier` and `--effort-courier` say in their help and documentation that they also move the picker.
+  - |-
+    `h9k task start`, `h9k task delegate`, and `h9k task drive` spawn no picker session, and compose with a recorded pick under the same rules the daemon follows, or newest-first when there is none.
+  - The no-tools argument is the last one on the picker's command line, and a test on both CI legs spawns through the real process manager with a stand-in for the claude binary and observes that argument arriving with its empty value.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/826bbde3-each-task-s-prompts-carry-the
+published: 2026-11-01 02:06:19Z
+context: |-
+  Shape: one task, one pull request, no stacking, no dependencies, no epic. A setting carries the work from shadow to live, so no second task is needed, and no piece of it is useful alone.
+
+  Read the brief first: /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/13403621-named-agent-files-claude-code-s-claude-agents-as-a-bridge-be/workspace/lesson-picker-brief.md. It holds the problem, the measurements, the six behaviours, and the scenario. Its Going live section is not this task's work: this task ships the default at shadow and changes no node's setting. The brief's Out of scope list binds.
+
+  Seams, checked against main at ef0ee52f9. Each choice below was settled at refinement, with its reason.
+
+  Where the pick lands. `RunLauncher.LaunchAsync` is awaited inside the dispatch loop (`DispatchLoop.cs:179`), so the picker's wait holds every other claim on the node; that is why the bound is 30 seconds and not synthesis's five minutes. Lessons load at `RunLauncher.cs:376`, before the run directory and run stream exist. The pick goes after the run stream's first save, in the same position `blockerContext.AssembleAsync` documents, and the lesson load moves below it so every prompt branch still reads once. Shadow takes the same wait, so its record shows the timing live will have.
+
+  The session. `BlockerContextAssembler` is the nearest shape, closer than `FeedbackEvaluators`: a synchronous wait, a re-read of the stream on expiry (`TryReadAlreadyPresentResultAsync`), and `ToTokensRecorded` on the run stream. The picker writes no file; its answer is `AgentResult.Summary`. `AgentSpawnRequest` cannot express "no tools" today, so add that and have `ClaudeExecutor.Arguments` emit `--tools ""`, which `claude --help` documents as disabling all tools. Pass `SkipPermissions: false`; the session has nothing to permit. Emit `--tools ""` last in `ClaudeExecutor.Arguments`, after `--setting-sources user`: `--tools` is variadic, so its position decides what a lost value does. Pass `UntrustedWorkingDirectory: true` and `MaxTurns: 1`, and use the run directory as the working directory. Add a `SessionRoleName` for it. Compose the prompt the way `FeedbackEvaluatorPromptBuilder` does: a template under `.claude/templates/agent-prompt-builder/`, with task text and lesson text going through `RelayedText`.
+
+  The answer. Tokens split on whitespace or commas, each an eight-character short id as `InjectedLesson.ShortId` prints it. Strict on purpose: a chatty answer reads as unusable, and shadow will show whether that is rare. The template states both caps and asks for ids most relevant first.
+
+  One read. `LessonPromptFeed` stays the only entry point. The picked path skips a lesson that does not fit; the existing stop at `InjectedLessons.cs:170` stays for newest-first. Correct the doc comment at `ReviewEngine.cs:8469`: a picked set does not gain a lesson recorded during the run, and adversarial still does. Split `LessonInjection.Compose` so the eligible list and the capped selection share one predicate; a second copy of it is the drift the feed exists to prevent. The feed needs a way to return the uncapped eligible list and a way to take a recorded pick. Its callers are `RunLauncher.cs:1795`, `ReviewEngine.cs:8482` (reached from lines 2179, 2264, 2537, 2547, 4982, and 5541), `TaskStartCommand.cs:183`, `TaskDelegateCommand.cs:525`, and `TaskDriveCommand.cs:339`. All three CLI sites already hold `taskDetails`, so reading a recorded pick there is one argument; the CLI cannot spawn, since the picker belongs to the daemon. The lens rule sits at the ReviewEngine call sites: 2179 picks by its `lens`, 2264 is the Verify pass, which stands in for the adversarial track, so it stays newest-first.
+
+  The record. The event goes on the task stream, appended in its own session, and reaches composers through a new `TaskDetails` field (inline projection). The task stream rather than the run stream, because the set must follow the task across runs and nodes. Classify it in `EventScopeRegistry`, and as Conditional in `TaskActClassificationRegistry`, like `CloseoutTriageRecorded`. Count it in `TaskPassageQuery.IsSessionDispatch` when a session spawned; the passage already reads the task stream. The closed outcome list is picked, start-failed, session-error, no-result, timed-out, unusable-answer, and empty-pick; leave it out of `OrchestratorFeedInterest`, which is silent by default. An older peer skips an event type it does not know (`EventReplicationInbox`), so a mixed-version fleet is safe.
+
+  The section. `recorded-lessons.md` says "newest first" in `lead` and "the newest that fit" in `truncation`, and both would be false for a picked set, so a picked set needs its own wording. The newest-first path stays byte-identical, which is what keeps the golden fixtures untouched.
+
+  The role. There is no new role. Resolve the model with `ResolveCourierModel(project.Model)` and the effort with `ResolveEffort(AgentRole.Courier, null, project.Effort)`, so the cheap-tier choice stays in one place. `SessionRoleName` still gains an entry, since a session name is not a role. There is no tier type in the code; the courier role is the policy's cheap tier.
+
+  The setting. It follows `LessonPromptMaxLessons`: an `OperatingSettings` field read fresh at composition, because the CLI cannot reach `DaemonOptions`, added to `onlyImmediateEffectSettingsChanged` in `ConfigSetCommand`, with a closed-vocabulary value object per TASK-MODEL.md section 8.
