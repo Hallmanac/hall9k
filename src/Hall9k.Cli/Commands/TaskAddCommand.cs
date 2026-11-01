@@ -339,7 +339,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "provenance, and human gate, and adds the source's abandon reason to the context when it "
             + "has one. h9k task show on the new draft names the task it evolved from. The source is "
             + "left as it is (abandon it separately with h9k task abandon). Explicit --objective, "
-            + "--criteria, --context, --type, --epic, and --project override the copy. Cannot be "
+            + "--criteria, --type, --epic, and --project override the copy, while an explicit --context is "
+            + "added after the copied context and the abandon reason rather than replacing them (to start "
+            + "over, revise the draft's context afterwards). Cannot be "
             + "combined with another seed (--file, --from-idea, --from-issue, --from-jira, --from-linear, "
             + "--from-pr), and a pr-review task cannot be evolved because it is bound to one pull request")]
         public string? EvolvedFrom { get; init; }
@@ -385,17 +387,17 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         List<string> parts = [];
         if (source.AgentContext.IsNotBlank())
         {
-            parts.Add(source.AgentContext!.Trim());
+            parts.Add(source.AgentContext.Trim());
         }
 
         if (source.AbandonedReason.IsNotBlank())
         {
-            parts.Add($"This task evolved from task {id}, which was abandoned with this reason: {source.AbandonedReason!.Trim()}");
+            parts.Add($"This task evolved from task {id}, which was abandoned with this reason: {source.AbandonedReason.Trim()}");
         }
 
         if (explicitContext.IsNotBlank())
         {
-            parts.Add(explicitContext!.Trim());
+            parts.Add(explicitContext.Trim());
         }
 
         return string.Join("\n\n", parts);

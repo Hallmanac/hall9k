@@ -165,7 +165,7 @@ public sealed class ReviewBriefCommand : Hall9kAsyncCommand<ReviewBriefCommand.S
                 git, details.WorktreePath, ["merge-base", reference, $"refs/heads/{details.Branch}"], cancellationToken);
             if (mergeBase.IsNotBlank())
             {
-                return mergeBase!.Trim();
+                return mergeBase.Trim();
             }
         }
 
@@ -184,7 +184,7 @@ public sealed class ReviewBriefCommand : Hall9kAsyncCommand<ReviewBriefCommand.S
 
         return
         [
-            .. log!.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .. log.Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Select(line => line.TrimEnd('\r').Split('\u001f', 2))
                 .Where(parts => parts.Length == 2)
                 .Select(parts => new BriefingCommit(parts[0], parts[1])),

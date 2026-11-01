@@ -964,6 +964,20 @@ public static class WorkPromptBuilder
     }
 
     /// <summary>
+    /// The one extra ask a task with a human gate adds to the summary it already composes: the body opens
+    /// with a plain, behaviour-first paragraph of at most 120 words, which <c>h9k review brief</c> prints at
+    /// the gate. No session of its own writes it, and a task without the gate is never given this ask.
+    /// Shared by the build and fix prompts so the two cannot ask for different things.
+    /// </summary>
+    public static void AppendHumanGateSummaryAsk(StringBuilder prompt)
+    {
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, $"{TemplateDirectory}/pull-request-summary-step.md", "gate-opening-paragraph",
+            ("Indent", string.Empty), ("PrSummaryMarker", PrSummaryParser.Marker));
+    }
+
+    /// <summary>
     /// The step that makes the pull request the session's own work rather than the daemon's
     /// (Decisions Log #163). It runs last, after the tree-identity check, because
     /// it composes from the commits the recompose just made: a summary written before that step
@@ -1017,20 +1031,6 @@ public static class WorkPromptBuilder
     /// 2026-09-19 ruling is about and an owner who wrote a <c>my-voice</c> skill without ever
     /// running <c>h9k owner set --voice-skill</c> still wants it used here.
     /// </param>
-    /// <summary>
-    /// The one extra ask a task with a human gate adds to the summary it already composes: the body opens
-    /// with a plain, behaviour-first paragraph of at most 120 words, which <c>h9k review brief</c> prints at
-    /// the gate. No session of its own writes it, and a task without the gate is never given this ask.
-    /// Shared by the build and fix prompts so the two cannot ask for different things.
-    /// </summary>
-    public static void AppendHumanGateSummaryAsk(StringBuilder prompt)
-    {
-        prompt.AppendLine();
-        AppendFragment(
-            prompt, $"{TemplateDirectory}/pull-request-summary-step.md", "gate-opening-paragraph",
-            ("Indent", string.Empty), ("PrSummaryMarker", PrSummaryParser.Marker));
-    }
-
     private static void AppendPullRequestSummaryStep(
         StringBuilder prompt, ProjectDetails project, bool asNumberedStep, VoiceSkillName? voiceSkill = null)
     {

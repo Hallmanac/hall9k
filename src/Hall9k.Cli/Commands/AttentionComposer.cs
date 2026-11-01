@@ -1205,8 +1205,8 @@ internal static class AttentionComposer
             : run.ParkedIsInteractiveGate
             // h9k review fixed is named without claiming this particular park is the one it
             // applies to (task: a human at the wheel takes the fix role herself): only the
-            // review-verdict-to-fix boundary takes it, and which of the four boundaries this park
-            // is is not a fact this projection carries — the park reason printed directly above
+            // review-verdict-to-fix boundary and the one before the pull request opens take it, and
+            // which of the four boundaries this park is is not a fact this projection carries — the park reason printed directly above
             // this lever is, and it names exactly the choices that apply. Naming the verb here
             // anyway is what makes it discoverable at all from the attention pane; asserting it
             // applies would be the guess.
