@@ -82,6 +82,71 @@ public sealed class TaskNotesCommandTests
         output.Should().Contain("No notes recorded").And.Contain("h9k task note");
     }
 
+    [Fact]
+    public void Each_note_shows_what_the_promotion_step_made_of_it()
+    {
+        Guid lesson = DomainId.New();
+        TaskNoteEntry kept = Entry("kept note", Now.AddMinutes(-1));
+        TaskNoteEntry dropped = Entry("dropped note", Now.AddMinutes(-2));
+        TaskNoteEntry held = Entry("held note", Now.AddMinutes(-3), receivedFrom: Teammate);
+        TaskNoteEntry undecided = Entry("late note", Now);
+        NotePromotionRecorded record = new(
+            TheTask, DomainId.New(), NotePromotionOutcome.Kept,
+            [NotePromotionDecision.Kept(kept.Note.NoteId, lesson), NotePromotionDecision.Drop(dropped.Note.NoteId, NoteDropReason.OverCeiling)],
+            HeldCount: 1, IgnoredLineCount: 0, AgentModel.Sonnet, TimeSpan.FromSeconds(3), Now);
+        IReadOnlyList<TaskNoteView> views =
+        [
+            .. TaskNoteInjection.Classify(TheTask, [kept, dropped, held, undecided], [], ThisNode, null)
+                .Select(view => view.DecidedBy(record)),
+        ];
+
+        string output = string.Join('\n', TaskNotesCommand.Lines(TheTask, views, localFleet: null));
+
+        output.Should().Contain($"outcome: kept as lesson {DomainId.Short(lesson)}");
+        output.Should().Contain("outcome: dropped (over-ceiling)");
+        output.Should().Contain("outcome: held");
+        output.Should().Contain("outcome: undecided");
+        output.Should().Contain("dropped note", "a dropped note's own text stays readable");
+    }
+
+    [Fact]
+    public void The_projected_notes_file_carries_each_notes_outcome()
+    {
+        Guid lesson = DomainId.New();
+        TaskNoteEntry kept = Entry("kept note", Now);
+        TaskNoteEntry undecided = Entry("undecided note", Now.AddMinutes(-1));
+        NotePromotionRecorded record = new(
+            TheTask, DomainId.New(), NotePromotionOutcome.Kept, [NotePromotionDecision.Kept(kept.Note.NoteId, lesson)],
+            0, 0, AgentModel.Sonnet, TimeSpan.FromSeconds(3), Now);
+        IReadOnlyList<TaskNoteView> views =
+        [
+            .. TaskNoteInjection.Classify(TheTask, [kept, undecided], [], ThisNode, null).Select(view => view.DecidedBy(record)),
+        ];
+
+        string document = Hall9k.Daemon.ProjectHomes.TaskNotesDocument.Render(TheTask, views, _ => "owner x");
+
+        document.Should().Contain($"- outcome: kept as lesson {DomainId.Short(lesson)}");
+        document.Should().Contain("- outcome: undecided");
+    }
+
+    [Fact]
+    public void Task_show_prints_the_outcome_and_the_counts_and_no_note_text()
+    {
+        Guid noteId = DomainId.New();
+        Guid lesson = DomainId.New();
+        NotePromotionRecorded record = new(
+            TheTask, DomainId.New(), NotePromotionOutcome.Kept,
+            [NotePromotionDecision.Kept(noteId, lesson), NotePromotionDecision.Drop(DomainId.New(), NoteDropReason.ClaimTooLong)],
+            HeldCount: 3, IgnoredLineCount: 2, AgentModel.Sonnet, TimeSpan.FromSeconds(3.4), Now);
+
+        string text = string.Join('\n', TaskShowCommand.NotePromotionLines(record));
+
+        text.Should().Contain("Outcome kept");
+        text.Should().Contain("kept 1, dropped 1").And.Contain("held out by the trust rule 3").And.Contain("answer lines ignored 2");
+        text.Should().Contain($"note {DomainId.Short(noteId)} became lesson {DomainId.Short(lesson)}");
+        text.Should().Contain("took 3.4s");
+    }
+
     private static TaskNoteEntry Entry(
         string text, DateTimeOffset at, string? sessionName = null, Guid? receivedFrom = null) =>
         new(

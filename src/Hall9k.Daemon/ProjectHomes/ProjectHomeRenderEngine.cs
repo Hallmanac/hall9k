@@ -612,8 +612,11 @@ public sealed class ProjectHomeRenderEngine(
             }
 
             // An unreadable fleet is null, which holds every replicated note: the fail-closed reading.
-            IReadOnlyList<TaskNoteView> views = TaskNoteInjection.Classify(
-                task.Id, task.Notes, [], context.NodeId, context.Fleet?.NodeIds);
+            IReadOnlyList<TaskNoteView> views =
+            [
+                .. TaskNoteInjection.Classify(task.Id, task.Notes, [], context.NodeId, context.Fleet?.NodeIds)
+                    .Select(view => view.DecidedBy(task.NotePromotion)),
+            ];
             return new NoteRendering(views, context.Fleet);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)

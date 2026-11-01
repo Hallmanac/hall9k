@@ -17,7 +17,8 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// Prints a task's notes for a person: its own newest first, then those of the other tasks in its
-/// epic in this project. Held notes (the trust rule keeps them out of every prompt) are shown here,
+/// epic in this project, each with what the closeout promotion step made of it (kept as a lesson,
+/// dropped with its reason, held, or undecided because no step decided it). Held notes (the trust rule keeps them out of every prompt) are shown here,
 /// marked as held, because a note held back from a prompt is still the record and a person is the one
 /// who can judge it.
 /// <para>
@@ -127,7 +128,8 @@ public sealed class TaskNotesCommand : Hall9kAsyncCommand<TaskNotesCommand.Setti
             : note.SessionId.IsNotBlank() ? ExternalText.OneLineMarkup(note.SessionId) : "no session";
         yield return $"[dim]{task}[[{note.NoteId}]] {note.RecordedAt.ToLocalTime():yyyy-MM-dd HH:mm} · "
             + $"{Author(view.Entry, localFleet).EscapeMarkup()} · session: {session} · "
-            + $"source: {note.Source.Label.EscapeMarkup()} · {view.Mark.Label.EscapeMarkup()}[/]{held}";
+            + $"source: {note.Source.Label.EscapeMarkup()} · {view.Mark.Label.EscapeMarkup()} · "
+            + $"outcome: {view.OutcomeLabel.EscapeMarkup()}[/]{held}";
         yield return "  " + ExternalText.ForTerminalMarkup(note.Text).ReplaceLineEndings("\n  ");
     }
 
