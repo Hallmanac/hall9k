@@ -1,0 +1,27 @@
+hall9k-task-record: 1
+task-id: 01a198c0-414c-7708-b9fe-6132c03fd4bf
+project: hall9k
+type: bugfix
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#836
+objective: A pr-review checkout is a standalone clone, so a review session can search and read any revision of any file with read-only git
+criteria:
+  - A pr-review checkout, whether cut by the daemon or by h9k pr review, is a standalone repository with a real .git directory, borrowing objects from the project's repository whether that repository is bare or an ordinary clone, with no remote and no hooks
+  - The checkout holds the pull request's head, every remote-tracking ref the project's repository holds, and its tags
+  - gh pr view, gh pr diff, gh pr checks, and gh issue view run by number in the checkout against the project's repository, in pr-review sessions and in the human review lap, and a test pins the setting that makes this work
+  - Removing a pr-review checkout, of the new shape or a linked worktree cut before this change, removes it and leaves the project's repository and its other worktrees untouched
+  - A directory delete happens only for a standalone checkout directly beside the project's repository, and a test shows that any other path, the repository itself included, is refused
+  - A checkout whose creation fails partway leaves no directory behind
+  - The shell-limits template names git show, git grep, git blame, and git ls-files as available to a pull-request review
+  - Prompts, CLI messages, and doc comments describe this checkout as a standalone clone rather than a worktree of the project's clone
+  - The git rules in PrReviewAllowedTools are unchanged, so sessions running in linked worktrees keep git diff and git log
+  - A unit test pins the generated git command sequence, and no new test creates a branch or touches GitHub
+  - Build and fix worktrees keep today's layout
+dependencies: [01a198c0-3ece-73eb-b644-eb4868359f61]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/c03fd4bf-a-pr-review-checkout-is-a-stan
+published: 2026-11-01 20:26:18Z
+context: |-
+  From issue 788. The two git allow rules stay, and a pull request diff file is not part of this task. Order: after the prompt-wording task 68359f61, not stacked; this task lifts that task's test forbidding the statement from naming git show, git grep, git blame, and git ls-files. h9k pr review shares CreatePrReviewCheckoutAsync and takes the same shape. Resolve the object directory the way ResolveLockDirectoryAsync does rather than assuming a bare clone. Fetch tags as well as remote-tracking refs. Set GH_REPO for the sessions so gh reads work with no remote. A project using Git LFS has no remote to download from in this checkout, so skip smudging on the checkout step. Note to the orchestrator: after merge, confirm on the next real review that its stream files show git show and git grep running, and that a gh read works in the human lap.
