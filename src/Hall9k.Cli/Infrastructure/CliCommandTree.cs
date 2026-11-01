@@ -735,7 +735,11 @@ public static class CliCommandTree
                     + "of the task): a boundary with no dispute needs only this — no verdict, no reason, just "
                     + "your recorded go to continue exactly where the park interrupted the loop. Refused on a "
                     + "run parked for a genuine dispute or a cap/budget reason, which still take only "
-                    + "h9k review resolve.")
+                    + "h9k review resolve. At the boundary before the pull request opens (a task's human gate, "
+                    + "or interactive mode's gates-to-pull-request park) it approves the branch tip the park "
+                    + "recorded: the daemon re-checks that the branch has not moved and the worktree holds "
+                    + "nothing uncommitted, and parks there again instead of opening the pull request when "
+                    + "either changed.")
                 .WithExample("review", "proceed", "28b19893");
             review.AddCommand<ReviewBriefCommand>("brief")
                 .WithDescription(
@@ -756,17 +760,22 @@ public static class CliCommandTree
             review.AddCommand<ReviewFixedCommand>("fixed")
                 .WithDescription(
                     "You fixed the findings yourself (task: a human at the wheel takes the fix role herself): "
-                    + "at interactive mode's review-verdict-to-fix park, records that your fix is committed on "
+                    + "at interactive mode's review-verdict-to-fix park, or at the boundary before the pull "
+                    + "request opens (a task's human gate, or interactive mode's gates-to-pull-request park), "
+                    + "records that your fix is committed on "
                     + "the branch, pushes it when the pull request is already open, and re-enters the loop at "
                     + "the fix-to-re-review boundary — so the gates run over your commits and a fresh review "
                     + "pass reads them as this cycle's fix, scoped exactly as a fix session's would be. No fix "
                     + "session is dispatched. The fourth choice at that park, alongside review proceed (send "
                     + "the agent), review resolve --needs-fixes (send it with a redirect) and review resolve "
                     + "--merge-ready (overrule the finding), none of whose meanings this changes. Refused over "
-                    + "an uncommitted worktree, naming the files, and refused when the branch tip has not "
-                    + "moved since the park unless --no-change \"<why>\" says why — and refused the other way "
-                    + "too, when --no-change is passed over a tip that DID move: your commits are that cycle's "
-                    + "answer, and it cannot also be a deliberate no-change dismissal. Works the same at a "
+                    + "an uncommitted worktree, naming the files, and, at the review-verdict-to-fix park, "
+                    + "refused when the branch tip has not moved since the park unless --no-change \"<why>\" "
+                    + "says why — and refused the other way too, when --no-change is passed over a tip that "
+                    + "DID move: your commits are that cycle's answer, and it cannot also be a deliberate "
+                    + "no-change dismissal. At the boundary before the pull request opens no finding is "
+                    + "waiting, so --no-change is always refused there and an unmoved tip is refused too "
+                    + "(approve it with h9k review proceed instead). Works the same at a "
                     + "closeout-side fix park on a follow-up reopened by a changes-requested review or by "
                     + "failing checks.")
                 .WithExample("review", "fixed", "28b19893")
