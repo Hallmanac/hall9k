@@ -102,6 +102,53 @@ public sealed class DispatchedSessionInterceptorTests
     }
 
     /// <summary>
+    /// <c>task notes</c> and <c>logs</c> are refused in every dispatched session, and the refusal says
+    /// a session receives notes through its prompt rather than claiming the verb drives a lifecycle,
+    /// which would be false of a read.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(TaskNotesCommand.Settings), "task notes")]
+    [InlineData(typeof(LogsCommand.Settings), "logs")]
+    public void A_person_only_read_is_refused_with_its_own_reason(Type settingsType, string verb)
+    {
+        string runId = DomainId.New().ToString();
+        DispatchedSessionInterceptor interceptor = new(name => name == DispatchedRunEnvironment.RunIdVariable ? runId : null);
+        CommandSettings settings = (CommandSettings)Activator.CreateInstance(settingsType)!;
+
+        Action act = () => interceptor.Intercept(Context, settings);
+
+        string message = act.Should().Throw<DomainBusinessRuleException>().Which.Message;
+        message.Should().Contain(verb).And.Contain(runId);
+        message.Should().Contain("through its prompt");
+        message.Should().NotContain("lifecycle", "this refusal is about who reads the output, not about driving a task");
+        message.Should().NotContain("13f11af2");
+    }
+
+    [Theory]
+    [InlineData(typeof(TaskNotesCommand.Settings))]
+    [InlineData(typeof(LogsCommand.Settings))]
+    public void A_person_only_read_is_untouched_at_a_plain_terminal_or_in_an_attended_session(Type settingsType)
+    {
+        DispatchedSessionInterceptor interceptor = new(_ => null);
+        CommandSettings settings = (CommandSettings)Activator.CreateInstance(settingsType)!;
+
+        Action act = () => interceptor.Intercept(Context, settings);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Writing_a_note_is_untouched_even_with_the_variable_set()
+    {
+        string runId = DomainId.New().ToString();
+        DispatchedSessionInterceptor interceptor = new(name => name == DispatchedRunEnvironment.RunIdVariable ? runId : null);
+
+        Action act = () => interceptor.Intercept(Context, new TaskNoteCommand.Settings());
+
+        act.Should().NotThrow("the verb itself refuses any task but the session's own");
+    }
+
+    /// <summary>
     /// <c>task run-local</c> moved from allowed to refused (security review idea 6be68ee2,
     /// process-injection finding 3): no dispatched session's own prompt ever calls it — the two
     /// skills that do (walk-pr-review-findings, orchestrator-recipe-generator) both run in the

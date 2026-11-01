@@ -57,14 +57,15 @@ internal static class RecordingProvenanceReader
     /// ambient.
     /// </summary>
     public static async Task<ObservedRecordingContext> ObserveAsync(
-        IQuerySession session, string? taskReference, Guid ownerId, CancellationToken cancellationToken)
+        IQuerySession session, string? taskReference, Guid ownerId, CancellationToken cancellationToken,
+        Func<string, string?>? environment = null)
     {
+        Func<string, string?> readEnvironment = environment ?? Environment.GetEnvironmentVariable;
         (TaskDetails Task, RunDetails Run)? observed = taskReference.IsNotBlank()
             ? await FromNamedTaskAsync(session, taskReference, cancellationToken)
-            : await FromEnvironmentAsync(session, cancellationToken);
+            : await FromEnvironmentAsync(session, readEnvironment, cancellationToken);
 
-        string? detachedSessionName = Environment.GetEnvironmentVariable(
-            HeadlessLaunch.DetachedSessionEnvironmentVariable);
+        string? detachedSessionName = readEnvironment(HeadlessLaunch.DetachedSessionEnvironmentVariable);
 
         return observed is not { } pair
             ? new ObservedRecordingContext(RecordedProvenance.FromShell(ownerId), ProjectId: null)
@@ -184,10 +185,9 @@ internal static class RecordingProvenanceReader
     /// be cheap to reach for.
     /// </summary>
     private static async Task<(TaskDetails, RunDetails)?> FromEnvironmentAsync(
-        IQuerySession session, CancellationToken cancellationToken)
+        IQuerySession session, Func<string, string?> environment, CancellationToken cancellationToken)
     {
-        string? value = Environment.GetEnvironmentVariable(
-            InteractiveSessionLiveness.InteractiveRunEnvironmentVariable);
+        string? value = environment(InteractiveSessionLiveness.InteractiveRunEnvironmentVariable);
         if (!Guid.TryParse(value, out Guid runId))
         {
             return null;
