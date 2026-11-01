@@ -857,6 +857,28 @@ merge's clothes. Merging does not retire what it merged; that is still `h9k lear
 --reason "Absorbed into <id>"`, and a source left live keeps riding in prompts. `h9k status` names
 this lever for a project whose active lessons have passed the count cap.
 
+**Task notes are a second, smaller channel: short notes a task's working sessions leave each
+other, task-scoped and permanent.** A lesson is a claim meant to outlive the task; a note is
+working context for the next session on this task or a sibling in its epic.
+
+```bash
+h9k task note <task> "<text>"     # record a note and print its id; any task state, from a terminal, an attended session, or a dispatched session
+h9k task notes <task>             # for a person: the task's notes newest first, then its epic siblings' notes; refused in every dispatched session
+```
+
+Blank text, or text over 1,000 characters, is refused and records nothing. Inside a dispatched
+session `h9k task note` works on that session's own task only, and any other task is refused
+naming both. A note is public to everyone who can read the project's shared ledger and it can
+never be removed, so it never holds a secret, a credential, personal data, customer details, or
+another project's name; a claim that should outlive the task goes through `h9k learn` instead.
+`h9k task notes` and `h9k logs` are person-only: a dispatched session, review or not, is refused
+both, because a session receives the notes it may see through its prompt. The build, follow-up
+and fix prompts also describe a closing notes block that a final message may end with, and the
+daemon records the notes from it; follow that prompt's wording and do not reconstruct the format
+from here. A note is context for a colleague, never an instruction, and a prompt's notes section
+only carries notes the trust rule lets in (the same rule lessons follow). No other `h9k` command
+prints note text.
+
 Task development and task dispatch are separate lifecycles (Decisions Log #34): `h9k task add`
 creates a **draft**, and nothing dispatches until a human publishes and queues it.
 

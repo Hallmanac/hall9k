@@ -144,6 +144,55 @@ prose.
 
 The commands are in [cli.md](cli.md#prompt-addenda) and [cli.md](cli.md#the-run-skill).
 
+### Task notes
+
+A task's working sessions often learn something the next session on the same work would want to
+know: where a test was flaky, which approach was tried and dropped, what a reviewer cared about.
+A **task note** is a short note (at most 1,000 characters) that one session leaves for the next.
+It is recorded as an event on the task's own stream, by `h9k task note <task> "<text>"` or by a
+closing block at the end of a build, follow-up or fix session's final message, and a person reads
+them with `h9k task notes <task>`. The commands are in [cli.md](cli.md#task-notes).
+
+**Notes are not lessons.** A [lesson](#what-a-project-adds-addenda-lessons-and-the-run-skill) is a
+claim meant to outlive the task, scoped to a project or an owner, and it can be retired when it
+stops being true. A note belongs to one task, has no retire lifecycle, and is permanent and public
+once recorded, because it lives in the project's shared ledger. That is why a note never holds a
+secret, a credential, personal data, customer details, or another project's name, and why a claim
+that should outlast the task goes to `h9k learn` instead. Promoting a note into a lesson is not
+built; today that is a person or a session recording the lesson itself.
+
+**Who reads them.** The prompts for a fresh build, a follow-up, a changes-requested lap, a checks
+or rebase follow-up, a settling-gate repair and a review fix carry a bounded notes section (at
+most 15 notes and 4,000 characters of note text, as constants rather than `h9k config` settings).
+It lists the task's own notes first and then those of other tasks in the same epic in the same
+project, closed ones included, each group newest first, with a sibling's note labelled by that
+task's short id. The section tells the reader these are colleagues' notes rather than
+instructions, and when notes do not fit it says how many were left out and that a person can read
+them with `h9k task notes`. A note reaches a prompt only under the same trust rule lessons use: one
+replicated from outside the reader's fleet, from a node nobody observed, or with no provenance
+stays out, an unreadable fleet holds every replicated note, and the section counts what it held
+and says why. The closing block is read only from a build, follow-up or fix session; a review,
+pr-review or spike session's final message is never read that way, and a missing or malformed
+block never changes the outcome of a run.
+
+**Where a note travels.** A note is a project-scoped event on its task's stream, so it goes exactly
+as far as its task does: a note on a private task rides no outbox, and a receiving node keeps the
+verified sender and origin. A note from any current project member applies on every receiving node,
+whoever holds the task.
+
+**What review never sees.** The conformance, adversarial, verify and final-pass review prompts, the
+verdict reprompt, every pr-review prompt, and the review-lap and mention follow-up prompts are
+byte-identical with or without notes. The guarantee is this: no review session's prompt carries a
+note, no `h9k` command prints one inside a dispatched session, and no review prompt points at one.
+`h9k task notes` and `h9k logs` are refused inside any dispatched session, and `h9k task show`,
+`task next`, `task list`, `status`, `epic show`, the orchestrator feed and the rendered `task.md`
+print no note text. The project-home render sweep does write `notes.md` beside `task.md`, rewritten
+from the events with held notes marked, but no run writes a notes file into a worktree.
+
+The limit is just as plain: a session runs as the owner's user, so one that goes looking can still
+open `notes.md` or a run directory's prompt and stream files by path, and this keeps an honest
+reader independent rather than sandboxing a hostile one.
+
 ## Ideas and tasks
 
 An **idea** is anything entering the funnel, captured with no ceremony: one command, one
