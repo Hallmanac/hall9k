@@ -49,7 +49,7 @@ public sealed class InstalledCliTaskCommandsTests : IDisposable
         }
 
         InstallStandIn(
-            "echo \"args: $@\"\necho \"conn: $HALL9K_CONNECTION_STRING\"\necho \"dispatched: ${HALL9K_DISPATCHED_RUN_ID:-unset}/${HALL9K_DISPATCHED_TASK_ID:-unset}\"\n"
+            "echo \"args: $@\"\necho \"conn: $HALL9K_CONNECTION_STRING\"\necho \"session: ${HALL9K_PLAN_REFINEMENT_SESSION:-unset}\"\necho \"dispatched: ${HALL9K_DISPATCHED_RUN_ID:-unset}/${HALL9K_DISPATCHED_TASK_ID:-unset}\"\n"
             + "if read line; then echo \"stdin: open\"; else echo \"stdin: closed\"; fi\necho oops 1>&2\nexit 0\n");
         Guid plan = Guid.NewGuid();
         Guid session = Guid.NewGuid();
@@ -64,6 +64,7 @@ public sealed class InstalledCliTaskCommandsTests : IDisposable
         string output = await File.ReadAllTextAsync(result.OutputFile);
         output.Should().Contain($"args: task revise {task} --file /runs/s/refinement-revision.md")
             .And.Contain("conn: Host=plan-test;Database=x")
+            .And.Contain($"session: {session}")
             .And.Contain("dispatched: unset/unset")
             .And.Contain("stdin: closed")
             .And.Contain("oops");
@@ -80,7 +81,7 @@ public sealed class InstalledCliTaskCommandsTests : IDisposable
             return;
         }
 
-        InstallStandIn("echo \"args: $@\"\nexit 3\n");
+        InstallStandIn("echo \"args: $@\"\necho \"session: ${HALL9K_PLAN_REFINEMENT_SESSION:-unset}\"\necho \"plan-publish: ${HALL9K_PLAN_PUBLISH:-unset}\"\nexit 3\n");
         Guid plan = Guid.NewGuid();
         Guid task = Guid.NewGuid();
 
@@ -88,7 +89,8 @@ public sealed class InstalledCliTaskCommandsTests : IDisposable
 
         result.ExitCode.Should().Be(3);
         result.Succeeded.Should().BeFalse("a non-zero exit is a refusal until the task itself says otherwise");
-        (await File.ReadAllTextAsync(RunPaths.PlanPublishOutputFile(plan, task))).Should().Contain("args: " + string.Format(expected, task));
+        (await File.ReadAllTextAsync(RunPaths.PlanPublishOutputFile(plan, task))).Should().Contain("args: " + string.Format(expected, task)).And.Contain("session: unset")
+            .And.Contain("plan-publish: 1", "the child is told it publishes for a plan, so it refuses a draft changed since a session read it");
     }
 
     [Fact]

@@ -4824,29 +4824,37 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "purpose-heading"));
         prompt.AppendLine();
+        // Where a question goes: the draft's journal when there is a directory to write one in, else the report. A project
+        // registered without a home has no task directory, so no journal path is given and none is promised.
+        string questionPlace = facts.JournalToWrite is null
+            ? "in your report"
+            : "in the journal";
         prompt.AppendLine(facts.Purpose.Value switch
         {
-            "ApplyVerdict" => Fragment(file, "purpose-apply"),
-            "AnswerVerdict" => Fragment(file, "purpose-answer"),
+            "ApplyVerdict" => Fragment(file, "purpose-apply", ("QuestionPlace", questionPlace)),
+            "AnswerVerdict" => Fragment(file, facts.JournalToWrite is null ? "purpose-answer-no-journal" : "purpose-answer"),
             _ when facts.PriorVerdict is not null => Fragment(file, "purpose-refine-again"),
             _ => Fragment(file, "purpose-refine"),
         });
         if (facts.PriorVerdict is { } verdict)
         {
             prompt.AppendLine();
-            prompt.AppendLine(Fragment(
-                file, "verdict-line",
+            (string, string)[] verdictValues =
+            [
                 ("Verdict", verdict.Verdict.Phrase),
                 ("Must", verdict.MustCount.ToString(CultureInfo.InvariantCulture)),
                 ("Should", verdict.ShouldCount.ToString(CultureInfo.InvariantCulture)),
                 ("Park", verdict.ParkCount.ToString(CultureInfo.InvariantCulture)),
-                ("VerdictReport", OneLine(verdict.ReportPath))));
+            ];
+            prompt.AppendLine(verdict.ReportPath is { } reportPath
+                ? Fragment(file, "verdict-line", [.. verdictValues, ("VerdictReport", OneLine(reportPath))])
+                : Fragment(file, "verdict-line-elsewhere", verdictValues));
         }
 
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "job-heading"));
         prompt.AppendLine();
-        AppendFragment(prompt, file, "job");
+        AppendFragment(prompt, file, "job", ("QuestionPlace", questionPlace));
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "rules-heading"));
         prompt.AppendLine();
@@ -4873,7 +4881,8 @@ public static class AgentPromptBuilder
             prompt, file, "report",
             ("ReportPath", OneLine(facts.ReportPath)),
             ("RevisionPath", OneLine(facts.RevisionPath)),
-            ("OutcomeMarker", Plan.RefinementReport.OutcomeMarker));
+            ("OutcomeMarker", Plan.RefinementReport.OutcomeMarker),
+            ("QuestionPlace", questionPlace));
         prompt.AppendLine();
         AppendFragment(prompt, file, "closing");
         return PromptLineEndings.Finish(prompt);

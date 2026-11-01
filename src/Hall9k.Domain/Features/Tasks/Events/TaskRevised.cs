@@ -105,8 +105,22 @@ public sealed record TaskRevised(
     /// contract, so <see cref="Handlers.TaskDecider.Revise"/> carves it out of Draft-only the way it
     /// does <see cref="QueuePriority"/>: settable on any live task whose pull request has not opened.
     /// </summary>
-    Optional<bool> HumanGate = default)
+    Optional<bool> HumanGate = default,
+    /// <summary>
+    /// The plan's refinement session this revision is the result of, set only by the revise the daemon runs for a session
+    /// that has ended (<see cref="RefinementSessionEnvironmentVariable"/>). It is how the draft's record tells a session's
+    /// own revision from a person's made while the session ran: the first leaves the "revised while it ran" facts alone,
+    /// the second sets them. Null for every revision a person makes.
+    /// </summary>
+    Guid? RefinementSessionId = null)
 {
+    /// <summary>
+    /// Read by <c>h9k task revise</c>: the id of the refinement session whose revision it is applying. When set, the revise
+    /// is applied only to the draft that session read (nobody revised it since the session was dispatched) and is recorded
+    /// under a version fence, so the check and the append cannot be separated by a person's own revise.
+    /// </summary>
+    public const string RefinementSessionEnvironmentVariable = "HALL9K_PLAN_REFINEMENT_SESSION";
+
     /// <summary>
     /// Whether this revision touched something a draft challenge reads and judges: the objective, the acceptance
     /// criteria, the agent context, or one of the recorded facts the prompt lists beside them (type, dependencies,

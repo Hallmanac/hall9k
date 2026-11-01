@@ -32,6 +32,9 @@ public sealed record ChallengeFailureReason
     public static readonly ChallengeFailureReason NoLongerDraft = new(
         "NoLongerDraft", "the task was no longer a draft when the daemon came to dispatch it, so no session ran");
 
+    public static readonly ChallengeFailureReason PlanEnded = new(
+        "PlanEnded", "the plan that requested it ended before the daemon came to dispatch it, so no session ran");
+
     public static readonly ChallengeFailureReason DaemonRestarted = new(
         "DaemonRestarted", "the daemon stopped or restarted while the session ran");
 
@@ -64,6 +67,7 @@ public sealed record ChallengeFailureReason
         "NoReport" => NoReport,
         "UnreadableReport" => UnreadableReport,
         "NoLongerDraft" => NoLongerDraft,
+        "PlanEnded" => PlanEnded,
         "DaemonRestarted" => DaemonRestarted,
         "DispatchExpired" => DispatchExpired,
         _ => Unknown,

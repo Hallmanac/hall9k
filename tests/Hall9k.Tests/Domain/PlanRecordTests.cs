@@ -18,6 +18,7 @@ using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx.Events;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -299,9 +300,93 @@ public sealed class PlanRecordTests
         view.RunningRefinementSessionId.Should().BeNull();
         view.LatestRefinementOutcome.Should().Be(recorded);
         view.RevisedWhileRefinementRan.Should().BeFalse();
-        view.RevisedSinceLastDraftSession.Should().BeFalse("the session's own revision is applied before its outcome is recorded");
-        aggregate.RevisedSinceLastDraftSession.Should().BeFalse();
+        view.RevisedSinceLastDraftSession.Should().BeTrue("a person's revision made while the session ran is text no session has read");
+        aggregate.RevisedSinceLastDraftSession.Should().BeTrue();
         aggregate.LatestRefinementOutcome.Should().Be(recorded);
         aggregate.RunningRefinementSessionId.Should().BeNull();
+    }
+
+    [Fact]
+    public void A_revision_made_on_the_running_sessions_behalf_is_its_own_and_leaves_no_trace_but_a_person_revising_after_it_is_still_noticed()
+    {
+        Guid taskId = DomainId.New();
+        Guid node = DomainId.New();
+        Guid session = DomainId.New();
+        TaskDetailsProjection projection = new();
+        TaskAdded added = new(taskId, DomainId.New(), "Ship it", ["it ships"], TaskType.Feature, null, null, null, Now, Guid.NewGuid());
+        TaskDetails view = projection.Create(new FakeEvent<TaskAdded>(added));
+        TaskAggregate aggregate = new();
+        aggregate.Apply(added);
+        DraftRefinementDispatched dispatched = new(
+            taskId, session, node, Now, AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High, RefinementPurpose.Refine);
+        projection.Apply(new FakeEvent<DraftRefinementDispatched>(dispatched), view);
+        aggregate.Apply(dispatched);
+
+        TaskRevised own = new(
+            taskId, Optional<string>.Of("Ship it, as the session wrote it"), default, default, default, default, default, Now,
+            Guid.NewGuid(), RefinementSessionId: session);
+        projection.Apply(new FakeEvent<TaskRevised>(own), view);
+        aggregate.Apply(own);
+        view.RevisedWhileRefinementRan.Should().BeFalse("the session's own revision is not a change it never read");
+        aggregate.RevisedWhileRefinementRan.Should().BeFalse();
+        view.RevisedSinceLastDraftSession.Should().BeFalse();
+        aggregate.RevisedSinceLastDraftSession.Should().BeFalse();
+
+        // The window between the session's revision and its outcome being recorded: a person's revise cannot be told
+        // apart from the session's by the flag alone, which is why the session's is stamped.
+        TaskRevised person = own with { Objective = Optional<string>.Of("Ship it, as a person wrote it"), RefinementSessionId = null };
+        projection.Apply(new FakeEvent<TaskRevised>(person), view);
+        aggregate.Apply(person);
+        view.RevisedWhileRefinementRan.Should().BeTrue();
+        aggregate.RevisedWhileRefinementRan.Should().BeTrue();
+
+        DraftRefinementRecorded recorded = new(
+            taskId, session, node, RefinementOutcome.Revised, RefinementFailureReason.Unknown, RefinementPurpose.Refine,
+            AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High, Now);
+        projection.Apply(new FakeEvent<DraftRefinementRecorded>(recorded), view);
+        aggregate.Apply(recorded);
+        view.RevisedSinceLastDraftSession.Should().BeTrue("the person's revision after the session's own is still standing, unread");
+        aggregate.RevisedSinceLastDraftSession.Should().BeTrue();
+        view.RevisedWhileRefinementRan.Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_verdict_leaves_a_revision_made_while_its_challenge_ran_unread_but_clears_one_made_before_it()
+    {
+        Guid taskId = DomainId.New();
+        TaskDetailsProjection projection = new();
+        TaskAdded added = new(taskId, DomainId.New(), "Ship it", ["it ships"], TaskType.Feature, null, null, null, Now, Guid.NewGuid());
+        TaskDetails view = projection.Create(new FakeEvent<TaskAdded>(added));
+        TaskAggregate aggregate = new();
+        aggregate.Apply(added);
+        AgentModel model = AgentModel.FromInput(AgentModel.ChallengeDefault);
+        TaskRevised revise = new(
+            taskId, Optional<string>.Of("Ship it, revised"), default, default, default, default, default, Now, Guid.NewGuid());
+
+        // Revised before the challenge was dispatched: the challenge reads it, so its verdict clears the flag.
+        projection.Apply(new FakeEvent<TaskRevised>(revise), view);
+        aggregate.Apply(revise);
+        DraftChallengeDispatched dispatched = new(taskId, DomainId.New(), DomainId.New(), Now, model, AgentEffort.High);
+        projection.Apply(new FakeEvent<DraftChallengeDispatched>(dispatched), view);
+        aggregate.Apply(dispatched);
+        DraftChallengeRecorded verdict = new(
+            taskId, dispatched.SessionId, dispatched.NodeId, ChallengeVerdict.PublishAsRevised, ChallengeFailureReason.Unknown, 0, 0, 0,
+            model, AgentEffort.High, Now);
+        projection.Apply(new FakeEvent<DraftChallengeRecorded>(verdict), view);
+        aggregate.Apply(verdict);
+        view.RevisedSinceLastDraftSession.Should().BeFalse();
+        aggregate.RevisedSinceLastDraftSession.Should().BeFalse();
+
+        // Revised while the next challenge ran: its verdict never read that text, so the flag stands.
+        projection.Apply(new FakeEvent<DraftChallengeDispatched>(dispatched), view);
+        aggregate.Apply(dispatched);
+        projection.Apply(new FakeEvent<TaskRevised>(revise), view);
+        aggregate.Apply(revise);
+        projection.Apply(new FakeEvent<DraftChallengeRecorded>(verdict), view);
+        aggregate.Apply(verdict);
+        view.RevisedSinceLastDraftSession.Should().BeTrue();
+        aggregate.RevisedSinceLastDraftSession.Should().BeTrue();
+        view.LatestChallengeVerdictJudgedOlderDraft.Should().BeTrue();
+        aggregate.LatestChallengeVerdictJudgedOlderDraft.Should().BeTrue();
     }
 }

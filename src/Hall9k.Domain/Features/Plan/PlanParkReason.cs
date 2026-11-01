@@ -37,8 +37,8 @@ public sealed record PlanParkReason
 
     public static readonly PlanParkReason SessionFailed = new(
         "SessionFailed",
-        "the refinement session failed",
-        "h9k plan resume runs it again");
+        "the refinement session failed, or was refused before it ran (the daemon log says why)",
+        "h9k plan resume runs it again; if the daemon log names a refusal (an archived project, a missing checkout), settle that first");
 
     public static readonly PlanParkReason ChallengeFailed = new(
         "ChallengeFailed",

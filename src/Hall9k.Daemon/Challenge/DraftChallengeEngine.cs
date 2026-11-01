@@ -5,6 +5,7 @@ using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Idea.Rendering;
+using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -51,7 +52,15 @@ public sealed record DraftChallengeSweepResult(int Dispatched, int Verdicts, int
 /// Challenges run one at a time on a node, on purpose: each holds a skip-permissions session over the same reading
 /// checkout, and a serial sweep also keeps one dispatch's checkout refresh from moving the tree under another's
 /// session. A challenge holds no run slot (<see cref="DaemonOptions.ChallengeTimeout"/> bounds it instead), so a node
-/// carries one such session above its run ceiling, as <c>h9k task start</c> does.
+/// carries one such session above its run ceiling, as <c>h9k task start</c> does. The serial sweep does not reach a plan's
+/// refinement session, which reads the same checkout on a loop of its own, so a session joins
+/// <see cref="ReadingCheckoutLeases"/> before it refreshes and holds the lease until it ends: a checkout someone else is
+/// reading is left where it stands, and the prompt says so.
+/// </para>
+/// <para>
+/// A request a plan made is the plan's to hold: while the plan is parked it waits, and when the plan has ended it is
+/// withdrawn, because a parked plan starts no new session for any of its drafts and a cancelled one starts none at all.
+/// A request a person made on a draft the plan holds is not the plan's and is answered as usual.
 /// </para>
 /// </summary>
 public sealed class DraftChallengeEngine(
@@ -61,6 +70,7 @@ public sealed class DraftChallengeEngine(
     IProcessManager processManager,
     IWorktreeManager worktrees,
     ProcessRunner processRunner,
+    ReadingCheckoutLeases checkoutLeases,
     IOptions<DaemonOptions> options,
     ILogger<DraftChallengeEngine> logger)
 {
@@ -111,7 +121,7 @@ public sealed class DraftChallengeEngine(
             {
                 try
                 {
-                    switch (await DispatchAsync(task.Id, cancellationToken))
+                    switch (await DispatchAsync(task.Id, task.ChallengeRequestedAt, cancellationToken))
                     {
                         case Attempt.Verdict:
                             dispatched++;
@@ -209,7 +219,7 @@ public sealed class DraftChallengeEngine(
         return (recovered, expired);
     }
 
-    private async Task<Attempt> DispatchAsync(Guid taskId, CancellationToken cancellationToken)
+    private async Task<Attempt> DispatchAsync(Guid taskId, DateTimeOffset? requestedAt, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
 
@@ -228,6 +238,7 @@ public sealed class DraftChallengeEngine(
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(aggregate.ProjectId, cancellationToken);
         AgentModel model = _options.ResolveChallengeModel(project?.Model);
+
         AgentEffort effort = _options.ResolveChallengeEffort(project?.Effort);
 
         // The rules the verb enforced, enforced again where the session would start: the request outlives the
@@ -260,11 +271,38 @@ public sealed class DraftChallengeEngine(
         // Only the home's own dev/ is moved, the publication engine's rule: a project registered before homes
         // reads from somebody's ordinary clone, and that one is theirs to move. The outcome is carried into the
         // prompt, because a session testing a stale tree must be told so, and a refresh that failed is otherwise
-        // only a log line.
-        CheckoutRefresh? refresh = null;
-        if (ProjectCheckout.IsHomeDevWorktree(project, checkout))
+        // only a log line. The lease is held to the end of this dispatch, session included, so that no other
+        // session (a plan's refinement, say) moves the tree while this one tests against its commit.
+        ReadingCheckoutJoin join = await checkoutLeases.JoinAsync(
+            checkout,
+            ProjectCheckout.IsHomeDevWorktree(project, checkout)
+                ? () => worktrees.RefreshReadingCheckoutAsync(checkout, project.BaseBranch, cancellationToken)
+                : null,
+            cancellationToken);
+        using IDisposable lease = join.Lease;
+
+        // Read after the join, which can wait on another session's refresh: a plan that parked or was cancelled in the
+        // meantime must not get a session it was promised it would not.
+        PlanDetails? requestingPlan = requestedAt is { } asked
+            ? (await session.Query<PlanDetails>().ToListAsync(cancellationToken))
+                .FirstOrDefault(plan => plan.Draft(taskId)?.ChallengeRequestedAt == asked)
+            : null;
+        if (requestingPlan is { IsLive: true, IsParked: true })
         {
-            refresh = await worktrees.RefreshReadingCheckoutAsync(checkout, project.BaseBranch, cancellationToken);
+            logger.LogDebug("Task {TaskId}: its plan {PlanId} is parked, so the challenge it requested waits", taskId, requestingPlan.Id);
+            return Attempt.NotThisSweeps;
+        }
+
+        if (requestingPlan is { IsLive: false })
+        {
+            return await RefuseAsync(
+                session, fence, taskId, ChallengeFailureReason.PlanEnded, model, effort, $"plan {requestingPlan.Id} has ended",
+                cancellationToken);
+        }
+
+        CheckoutRefresh? refresh = join.Refresh;
+        if (refresh is not null)
+        {
             logger.Log(
                 refresh.UpToDate
                     ? LogLevel.Information

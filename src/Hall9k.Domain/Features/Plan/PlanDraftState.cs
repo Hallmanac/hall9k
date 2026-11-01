@@ -98,15 +98,15 @@ public sealed class PlanDraftState
         RunningSessionId = null;
         ChallengeRequestedAt = null;
 
-        // A challenge that was refused before it ran has no session, so nothing it wrote is anywhere to be read: the
-        // earlier refinement session's report is not this park's report, and is not offered as if it were.
+        // A challenge or a refinement dispatch that was refused before any session ran has no session, so nothing it wrote
+        // is anywhere to be read: the earlier session's report is not this park's report, and is not offered as if it were.
         bool challengePark = @event.Reason == PlanParkReason.ChallengeFailed || @event.Reason == PlanParkReason.RoundsExhausted;
         if (@event.SessionId is { } parkedBy)
         {
             LatestSessionId = parkedBy;
             LatestReportIsChallenge = challengePark;
         }
-        else if (@event.Reason == PlanParkReason.ChallengeFailed)
+        else if (@event.Reason == PlanParkReason.ChallengeFailed || @event.Reason == PlanParkReason.SessionFailed)
         {
             LatestSessionId = null;
             LatestReportIsChallenge = false;

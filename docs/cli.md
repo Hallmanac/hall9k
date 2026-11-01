@@ -452,7 +452,10 @@ publish passes on) or every draft is already linked.
 A plan parks for a person for one reason from a closed list, and says which draft: `rounds exhausted`, `question` (the
 session ended with a question only a person can settle, written in the draft's `journal.md`), `verdict not applied`,
 `draft changed`, `revision refused`, `session failed`, `challenge failed`, or `publish refused`. While a plan is parked
-no new session starts for any of its drafts, and a session already running finishes. `h9k plan show <plan>` prints the
+no new session starts for any of its drafts, and a session already running finishes. That includes a challenge the plan
+requested that has not started yet: it waits until the plan resumes, and a plan asks for one challenge at a time, so a
+challenge that ends with no verdict parks the plan before a sibling's is asked for. A challenge still queued when the plan is
+cancelled is withdrawn. `h9k plan show <plan>` prints the
 plan's state and, for each draft, its phase (refinement, challenge, or published), its round, its latest outcome, and where
 its latest report is, and for a park the reason, the way forward, and where to read the rest, because the record holds
 nothing a session wrote. `h9k plan resume <plan>` re-runs the step that parked, and after `rounds exhausted` grants one more

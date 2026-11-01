@@ -15,7 +15,9 @@ using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -368,8 +370,26 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         await using IDocumentSession session = store.LightweightSession();
 
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
-        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
+
+        // Set only by the daemon's own revise for a plan's refinement session: the revision is applied to the draft that
+        // session read or not at all, and the check below and the append at the end are one fenced step.
+        Guid? refinementSession = Guid.TryParse(
+            Environment.GetEnvironmentVariable(TaskRevised.RefinementSessionEnvironmentVariable), out Guid parsedSession)
+            ? parsedSession
+            : null;
+        StreamState? fence = refinementSession is null
+            ? null
+            : await session.Events.FetchStreamStateAsync(taskId, cancellationToken);
+        TaskAggregate task = (fence is null
+                ? await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
+                : await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, version: fence.Version, token: cancellationToken))
             ?? throw new DomainNotFoundException($"No task {taskId}.");
+        if (refinementSession is { } sessionId && (task.RunningRefinementSessionId != sessionId || task.RevisedWhileRefinementRan))
+        {
+            throw new DomainConflictException(
+                $"Draft {taskId} was changed after refinement session {sessionId} was dispatched (or that session is no longer "
+                + "the one running), so its revision is not applied: a revision from a session applies only to the draft it read.");
+        }
 
         Optional<IReadOnlyList<Guid>> dependencies = settings.ClearDependencies
             ? Optional<IReadOnlyList<Guid>>.Of([])
@@ -501,8 +521,27 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 : Optional<AgentEffort>.None,
             humanGate: humanGate);
 
-        session.Events.Append(taskId, revised);
-        await session.SaveChangesAsync(cancellationToken);
+        if (refinementSession is not null && fence is not null)
+        {
+            revised = revised with { RefinementSessionId = refinementSession };
+            session.Events.Append(taskId, expectedVersion: fence.Version + 1, revised);
+        }
+        else
+        {
+            session.Events.Append(taskId, revised);
+        }
+
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Draft {taskId} changed while the revision was being applied, so nothing was applied. "
+                + "h9k task show says what it is now.");
+        }
+
         task.Apply(revised);
 
         string shortId = TaskListCommand.ShortId(taskId);

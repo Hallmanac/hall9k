@@ -869,8 +869,12 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         {
             view.RevisedSinceChallengeVerdict |= view.LatestChallengeVerdict is not null;
             view.RevisedWhileChallengeRan |= view.RunningChallengeSessionId is not null;
-            view.RevisedWhileRefinementRan |= view.RunningRefinementSessionId is not null;
-            view.RevisedSinceLastDraftSession = true;
+
+            if (@event.Data.RefinementSessionId is null || @event.Data.RefinementSessionId != view.RunningRefinementSessionId)
+            {
+                view.RevisedWhileRefinementRan |= view.RunningRefinementSessionId is not null;
+                view.RevisedSinceLastDraftSession = true;
+            }
         }
 
         if (@event.Data.Objective.HasValue)
@@ -1946,7 +1950,9 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
             view.LatestChallengeVerdict = @event.Data;
             view.RevisedSinceChallengeVerdict = false;
             view.LatestChallengeVerdictJudgedOlderDraft = view.RevisedWhileChallengeRan;
-            view.RevisedSinceLastDraftSession = false;
+
+            // A revision made while this challenge ran is text the verdict never read, so it is still unread.
+            view.RevisedSinceLastDraftSession &= view.RevisedWhileChallengeRan;
         }
 
         view.RevisedWhileChallengeRan = false;
@@ -1972,8 +1978,8 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.RunningRefinementModel = null;
         view.RunningRefinementEffort = null;
         view.LatestRefinementOutcome = @event.Data;
+        view.RevisedSinceLastDraftSession = view.RevisedWhileRefinementRan;
         view.RevisedWhileRefinementRan = false;
-        view.RevisedSinceLastDraftSession = false;
     }
 
     public void Apply(IEvent<WorkItemPublicationSessionStarted> @event, TaskDetails view)

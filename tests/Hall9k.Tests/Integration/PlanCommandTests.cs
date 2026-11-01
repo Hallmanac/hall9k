@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Plan.Handlers;
 using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -13,6 +14,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
 using Marten;
@@ -294,6 +296,71 @@ public sealed class PlanCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         revised.AgentContext.Should().Contain("Pointers are relative to the project home.");
         revised.Model?.Value.Should().BeNullOrEmpty("a refinement sets no model");
         revised.RevisedWhileRefinementRan.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_revise_run_for_a_refinement_session_applies_only_to_the_draft_that_session_read_and_is_recorded_as_its_own()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid draft = await SeedDraftAsync(cts.Token);
+        Guid session = DomainId.New();
+        await using (IDocumentSession dispatch = _postgres.Store.LightweightSession())
+        {
+            dispatch.Events.Append(draft, new DraftRefinementDispatched(
+                draft, session, _me.NodeId, Now, AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High, RefinementPurpose.Refine));
+            await dispatch.SaveChangesAsync(cts.Token);
+        }
+
+        string file = Path.Combine(_checkout, "refinement-revision.md");
+        await File.WriteAllTextAsync(file, "---\nobjective: As the session wrote it\n---\nContext.\n", cts.Token);
+        using (EnvironmentVariableScope.Set((TaskRevised.RefinementSessionEnvironmentVariable, session.ToString())))
+        {
+            (await RunCliAsync(cts.Token, "task", "revise", draft.ToString(), "--file", file)).Should().BeNull();
+        }
+
+        await using (IQuerySession query = _postgres.Store.QuerySession())
+        {
+            TaskDetails revised = (await query.LoadAsync<TaskDetails>(draft, cts.Token))!;
+            revised.Objective.Should().Be("As the session wrote it");
+            revised.RevisedWhileRefinementRan.Should().BeFalse("it is the session's own revision");
+            revised.RevisedSinceLastDraftSession.Should().BeFalse();
+        }
+
+        // A person revises after the session's own revision landed; a second apply for the same session is refused.
+        (await RunCliAsync(cts.Token, "task", "revise", draft.ToString(), "--objective", "A person's wording"))
+            .Should().BeNull();
+        await File.WriteAllTextAsync(file, "---\nobjective: A second time\n---\nContext.\n", cts.Token);
+
+        Exception? refused;
+        using (EnvironmentVariableScope.Set((TaskRevised.RefinementSessionEnvironmentVariable, session.ToString())))
+        {
+            refused = await RunCliAsync(cts.Token, "task", "revise", draft.ToString(), "--file", file);
+        }
+
+        refused.Should().BeOfType<DomainConflictException>().Which.Message.Should().Contain("was changed after refinement session");
+        await using IQuerySession after = _postgres.Store.QuerySession();
+        TaskDetails final = (await after.LoadAsync<TaskDetails>(draft, cts.Token))!;
+        final.Objective.Should().Be("A person's wording", "nothing from the refused apply landed");
+        final.RevisedWhileRefinementRan.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task A_publish_run_for_a_plan_refuses_a_draft_a_person_revised_since_a_session_last_read_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid draft = await SeedDraftAsync(cts.Token);
+        (await RunCliAsync(cts.Token, "task", "revise", draft.ToString(), "--objective", "A person's wording")).Should().BeNull();
+
+        Exception? refused;
+        using (EnvironmentVariableScope.Set((TaskPublished.PlanPublishEnvironmentVariable, "1")))
+        {
+            refused = await RunCliAsync(cts.Token, "task", "publish", draft.ToString(), "--no-queue");
+        }
+
+        refused.Should().BeOfType<DomainConflictException>().Which.Message.Should().Contain("its text has not been judged");
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        TaskDetails after = (await query.LoadAsync<TaskDetails>(draft, cts.Token))!;
+        after.State.Should().Be(TaskState.Draft, "the refused publish recorded nothing");
     }
 
     private static async Task<string> CaptureAsync(Func<Task<Exception?>> run)

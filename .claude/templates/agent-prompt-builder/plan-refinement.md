@@ -73,17 +73,21 @@ The draft is going to its first challenge after you. Refine it so that the chall
 ===purpose-refine-again===
 An independent challenge has already judged this draft, and it is going to a challenge again after you, so what you change is what the next one judges. Refine it so that challenge has the least to find, starting from what the last one found.
 ===purpose-apply===
-An independent challenge has judged the draft and its verdict is publish as revised. Apply the verdict's must and should changes to the draft, and nothing beyond them. A park change in the report is real but drives nothing, so leave it alone. The draft is then ready to publish with no further challenge, so what you write is what ships. If a must can only be settled by a person, end with the question outcome and put the question in the journal.
+An independent challenge has judged the draft and its verdict is publish as revised. Apply the verdict's must and should changes to the draft, and nothing beyond them. A park change in the report is real but drives nothing, so leave it alone. The draft is then ready to publish with no further challenge, so what you write is what ships. If a must can only be settled by a person, end with the question outcome and put the question {{QuestionPlace}}.
 ===purpose-answer===
 An independent challenge has judged the draft and its verdict is do not publish. Answer it: revise the draft so that each must is settled, so that a new challenge can judge your answer. If you believe a must is wrong, say so in the journal with your evidence and still address what you can; a new challenge reads the journal. If a must can only be settled by a person, end with the question outcome and put the question in the journal.
+===purpose-answer-no-journal===
+An independent challenge has judged the draft and its verdict is do not publish. Answer it: revise the draft so that each must is settled, so that a new challenge can judge your answer. If you believe a must is wrong, say so in your report with your evidence and still address what you can. If a must can only be settled by a person, end with the question outcome and put the question in your report.
 ===verdict-line===
 The latest challenge verdict is {{Verdict}} ({{Must}} must, {{Should}} should, {{Park}} park). Read its report in full before you change anything: {{VerdictReport}}
+===verdict-line-elsewhere===
+The latest challenge verdict is {{Verdict}} ({{Must}} must, {{Should}} should, {{Park}} park). Another node ran that challenge, so its report is not readable here: work from the counts and from the draft itself, and say in your report where a must or a should you could not see would have mattered.
 ===job-heading===
 ## How to work
 ===job===
 Test the draft's claims against the code at the commit above instead of trusting them: every file, line, name, setting, and event it cites. Then:
 
-- State the shape before any criterion: one task or several, with smaller pull requests, and whether any piece should be stacked on another rather than merely blocked, with the reason either way. If you believe the draft should split, end with the question outcome and say so in the journal; a person answers by cancelling the plan and starting one on the resulting drafts. You cannot create drafts.
+- State the shape before any criterion: one task or several, with smaller pull requests, and whether any piece should be stacked on another rather than merely blocked, with the reason either way. If you believe the draft should split, end with the question outcome and say so {{QuestionPlace}}; a person answers by cancelling the plan and starting one on the resulting drafts. You cannot create drafts.
 - Write each criterion so that someone who did not write it can check it from its own words, stating the outcome rather than the mechanism, so a dispatched agent knows when it is done.
 - Propose the smallest change that ends the problem. A bigger proposal gets cut.
 - Never write a criterion that instructs the dispatched session to abandon, conclude, archive, publish, assign, retire, or otherwise drive the lifecycle of another task, idea, epic, or decision. A task that supersedes or answers another says so in its context as a note for the orchestrator, who performs that act at closeout.
@@ -126,7 +130,7 @@ End the report with exactly one closing line and nothing after it:
 
     {{OutcomeMarker}} <revised | unchanged | question>
 
-Use revised when you wrote a revision file, unchanged when the draft needs nothing, and question when only a person can settle something: put the question in the journal and name no revision. A report that does not end this way, or that says revised without a readable revision file, is thrown away, and the plan parks for a person.
+Use revised when you wrote a revision file, unchanged when the draft needs nothing, and question when only a person can settle something: put the question {{QuestionPlace}} and name no revision. A report that does not end this way, or that says revised without a readable revision file, is thrown away, and the plan parks for a person.
 ===closing===
 When the files are written, end with one line giving the outcome.
 ===writing-conventions-lead-in===

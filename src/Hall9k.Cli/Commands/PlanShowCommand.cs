@@ -27,7 +27,7 @@ public sealed class PlanShowCommand : Hall9kAsyncCommand<PlanShowCommand.Setting
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
-        using var store = CliStore.Open();
+        using DocumentStore store = CliStore.Open();
         await using IQuerySession session = store.QuerySession();
 
         PlanDetails plan = await PlanIdResolver.ResolveAsync(session, settings.Plan, cancellationToken);
