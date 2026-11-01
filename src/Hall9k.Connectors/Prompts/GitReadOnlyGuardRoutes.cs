@@ -305,7 +305,8 @@ public static class GitReadOnlyGuardRoutes
     /// is judged as a whole: if its reassembled text opens with a refused term
     /// (<see cref="BeginsWithARefusedTerm"/> — <c>--output</c>, <c>--no-index</c>, or an absolute
     /// path), the reassembled text is substituted in so the flag regexes see it exactly as git
-    /// would; otherwise the whole word is blanked out. That covers the ordinary multi-word argument
+    /// would; otherwise the whole word is blanked out (a word that quoting or a line continuation
+    /// reduced to nothing is dropped instead; see the comment where it is dropped). That covers the ordinary multi-word argument
     /// (a commit message, a <c>--format</c> string) that merely names a refused term somewhere
     /// inside itself — substituting it in place would read a flag's own name, or an absolute path,
     /// out of a value that never reaches git as one (a regression this method's own tests pin) — and
@@ -472,6 +473,18 @@ public static class GitReadOnlyGuardRoutes
             }
 
             string word = decodedWord.ToString();
+            if (word.Length == 0)
+            {
+                // A word that quoting or a line continuation reduced to nothing carries no text a
+                // refused term could hide in, so dropping it hides nothing. A line continuation is
+                // the case that matters: it is not a word to bash at all, and blanking it left a
+                // placeholder between "git" and "diff" that broke the anchor, so the command was
+                // not recognized as git diff/log. A real empty '' or "" argument is dropped the
+                // same way, which is safe for the same reason (an option that takes a separate
+                // value, such as --grep, accepts an empty one, so this is not because git rejects it).
+                continue;
+            }
+
             result.Append(
                 BeginsWithARefusedTerm(word) || IsGitLogOrDiffToken(word) ? word : new string('#', wordLength));
         }
