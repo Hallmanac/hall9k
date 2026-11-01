@@ -48,8 +48,8 @@ public static partial class TaskPassageQuery
     /// (<c>VerificationRunner</c>'s bounded commit-only agent for meaningful uncommitted files),
     /// <see cref="ReviewVerdictReprompted"/> (<c>claude -p --resume</c> for an unparseable
     /// verdict), <see cref="ContextSynthesisDispatched"/> (<c>BlockerContextAssembler</c>'s
-    /// synthesis over the blocker-review threshold), a <see cref="LessonPickRecorded"/> whose session
-    /// started, and a <see cref="DraftChallengeDispatched"/> (the two entries that sit on the task's own
+    /// synthesis over the blocker-review threshold), a <see cref="LessonPickRecorded"/> or a
+    /// <see cref="NotePromotionRecorded"/> whose session started, and a <see cref="DraftChallengeDispatched"/> (the two entries that sit on the task's own
     /// stream rather than a run's) each
     /// spawn a real process too and are counted alongside the rest (independent pre-PR review, cycle 6, conformance finding — the
     /// enumeration above omitted all three). <see cref="InteractiveSessionStarted"/> is excluded
@@ -71,6 +71,7 @@ public static partial class TaskPassageQuery
         or ReviewVerdictReprompted
         or ContextSynthesisDispatched
         or LessonPickRecorded { Outcome.SpawnedSession: true }
+        or NotePromotionRecorded { Outcome.SpawnedSession: true }
         or DraftChallengeDispatched;
 
     public static async Task<TaskPassage> ReadAsync(

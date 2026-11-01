@@ -531,6 +531,12 @@ public sealed class TaskDetails
     /// </summary>
     public LessonPickRecorded? LessonPick { get; set; }
     /// <summary>
+    /// The task's one note promotion record (<see cref="NotePromotionRecorded"/>), or null while it
+    /// has none. The first record wins, so a replicated duplicate or a racing second writer changes
+    /// nothing. It holds ids, counts and closed words, never a note's text.
+    /// </summary>
+    public NotePromotionRecorded? NotePromotion { get; set; }
+    /// <summary>
     /// Every note recorded on this task (<see cref="TaskNoteRecorded"/>), oldest first, one entry per
     /// note id. Read by nothing except the prompt read, <c>h9k task notes</c> and the project-home
     /// render sweep: no surface a review session reaches prints it.
@@ -1339,6 +1345,10 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     /// <summary>Keeps the first <see cref="LessonPickRecorded"/> only; the task aggregate has nothing to change, since no rule reads a lesson pick.</summary>
     public void Apply(IEvent<LessonPickRecorded> @event, TaskDetails view) =>
         view.LessonPick ??= @event.Data;
+
+    /// <summary>Keeps the first <see cref="NotePromotionRecorded"/> only; the task aggregate has nothing to change, since no rule reads a promotion record.</summary>
+    public void Apply(IEvent<NotePromotionRecorded> @event, TaskDetails view) =>
+        view.NotePromotion ??= @event.Data;
 
     /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskHolderTakenOver)"/> — see <see cref="TaskDetails.TakenOverFromNodeId"/>'s own doc.</summary>
     public void Apply(IEvent<TaskHolderTakenOver> @event, TaskDetails view)

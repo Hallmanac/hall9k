@@ -90,6 +90,12 @@ public static class TaskActClassificationRegistry
         // a later prompt carries, so a sender that holds nothing must not be able to forge one.
         [typeof(LessonPickRecorded)] = TaskActClassification.Conditional,
 
+        // The promotion record is the closing node's record of its own session and it burns the task's
+        // one step, so a sender that holds nothing must not be able to forge one that suppresses it.
+        // Conditional still replicates after the holder is released, because the verdict also accepts
+        // the sender's root as the assignee and the assignee stays on a closed task.
+        [typeof(NotePromotionRecorded)] = TaskActClassification.Conditional,
+
         // A note changes nothing about who controls the task and decides no later act, so any current
         // project member's note applies on every receiving node whoever holds the task: Conditional
         // would drop a teammate's note on a task someone else holds, and hold it (queueing that

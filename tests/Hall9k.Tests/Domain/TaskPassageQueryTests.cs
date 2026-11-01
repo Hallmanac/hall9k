@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -1253,6 +1254,20 @@ public sealed class TaskPassageQueryTests
         Compute([Ev(Pick(LessonPickOutcome.Picked))], []).Sessions.Should().Be(1);
         Compute([Ev(Pick(LessonPickOutcome.TimedOut))], []).Sessions.Should().Be(1);
         Compute([Ev(Pick(LessonPickOutcome.StartFailed))], []).Sessions.Should().Be(0);
+    }
+
+    [Fact]
+    public void Sessions_count_a_note_promotion_whose_session_started_and_not_one_that_never_did()
+    {
+        // The promotion's record sits on the task's own stream, after the merge, so it is counted the way
+        // the lesson pick is: once when a Claude Code process was started, never when the start failed.
+        Guid taskId = DomainId.New();
+        NotePromotionRecorded Promotion(NotePromotionOutcome outcome) => new(
+            taskId, DomainId.New(), outcome, [], 0, 0, AgentModel.Sonnet, TimeSpan.FromSeconds(3), Now);
+
+        Compute([Ev(Promotion(NotePromotionOutcome.Kept))], []).Sessions.Should().Be(1);
+        Compute([Ev(Promotion(NotePromotionOutcome.TimedOut))], []).Sessions.Should().Be(1);
+        Compute([Ev(Promotion(NotePromotionOutcome.StartFailed))], []).Sessions.Should().Be(0);
     }
 
     [Fact]
