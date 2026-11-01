@@ -98,4 +98,13 @@ public sealed record TaskRevised(
     /// <see cref="AgentEffort.Unknown"/> clears it so the levels beneath decide again. Draft-only like
     /// <see cref="Model"/>.
     /// </summary>
-    Optional<AgentEffort> Effort = default);
+    Optional<AgentEffort> Effort = default)
+{
+    /// <summary>
+    /// Whether this revision touched the text a draft challenge reads and judges: the objective, the acceptance
+    /// criteria, or the agent context. A revision of anything else (effort, model, epic, queue marker, type,
+    /// dependencies) leaves a verdict's changes exactly as unapplied as they were, so it does not count as having
+    /// revised the draft since a verdict. A method and not a property, so it is never serialized with the event.
+    /// </summary>
+    public bool ChangesDraftText() => Objective.HasValue || AcceptanceCriteria.HasValue || AgentContext.HasValue;
+}
