@@ -4,6 +4,7 @@ using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -577,11 +578,14 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
 
         ProjectDetails? taskProject = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
         bool challengeRequired = (taskProject?.ChallengeRequirementSetting ?? ChallengeRequirement.Unrecorded).IsOn;
+        PlanDetails? livePlan = await TaskNextStep.LivePlanOfAsync(session, taskId, cancellationToken);
         AnsiConsole.MarkupLine(
             "[dim]Next:[/] "
-            + TaskNextStep.PublishStep(
-                shortId, ChallengeGate.Shortfall(task, challengeRequired) is not null,
-                task.ChallengeRequested || task.RunningChallengeSessionId is not null));
+            + (livePlan is not null
+                ? TaskNextStep.PlanStep(TaskListCommand.ShortId(livePlan.Id))
+                : TaskNextStep.PublishStep(
+                    shortId, ChallengeGate.Shortfall(task, challengeRequired) is not null,
+                    task.ChallengeRequested || task.RunningChallengeSessionId is not null)));
         return ExitCodes.Ok;
     }
 
