@@ -162,7 +162,7 @@ public sealed class PlanRecordTests
             .And.Contain($"h9k plan show {DomainId.Short(plan)}").And.Contain($"h9k plan resume {DomainId.Short(plan)}");
 
         string published = OrchestratorFeedDescription.Of(new PlanPublished(plan, project, Now, [draft]));
-        published.Should().Contain(DomainId.Short(plan)).And.Contain("every draft is published").And.Contain(DomainId.Short(draft))
+        published.Should().Contain(DomainId.Short(plan)).And.Contain("each draft is published or was abandoned").And.Contain(DomainId.Short(draft))
             .And.Contain("no tracker item");
         OrchestratorFeedDescription.Of(new PlanPublished(plan, project, Now, [])).Should().NotContain("tracker");
 
@@ -280,12 +280,16 @@ public sealed class PlanRecordTests
         aggregate.Apply(effortOnly);
         view.RevisedWhileRefinementRan.Should().BeFalse("effort is not something the prompt carries");
         aggregate.RevisedWhileRefinementRan.Should().BeFalse();
+        view.RevisedSinceLastDraftSession.Should().BeFalse();
+        aggregate.RevisedSinceLastDraftSession.Should().BeFalse();
 
         TaskRevised text = effortOnly with { Objective = Optional<string>.Of("Ship it, revised") };
         projection.Apply(new FakeEvent<TaskRevised>(text), view);
         aggregate.Apply(text);
         view.RevisedWhileRefinementRan.Should().BeTrue();
         aggregate.RevisedWhileRefinementRan.Should().BeTrue();
+        view.RevisedSinceLastDraftSession.Should().BeTrue();
+        aggregate.RevisedSinceLastDraftSession.Should().BeTrue();
 
         DraftRefinementRecorded recorded = new(
             taskId, session, node, RefinementOutcome.Revised, RefinementFailureReason.DraftChanged, RefinementPurpose.Refine,
@@ -295,6 +299,8 @@ public sealed class PlanRecordTests
         view.RunningRefinementSessionId.Should().BeNull();
         view.LatestRefinementOutcome.Should().Be(recorded);
         view.RevisedWhileRefinementRan.Should().BeFalse();
+        view.RevisedSinceLastDraftSession.Should().BeFalse("the session's own revision is applied before its outcome is recorded");
+        aggregate.RevisedSinceLastDraftSession.Should().BeFalse();
         aggregate.LatestRefinementOutcome.Should().Be(recorded);
         aggregate.RunningRefinementSessionId.Should().BeNull();
     }

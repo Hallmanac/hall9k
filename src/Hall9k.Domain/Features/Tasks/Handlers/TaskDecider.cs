@@ -589,7 +589,7 @@ public static class TaskDecider
                 $"This project tracks its backlog in {tracker}, and task {task.Id} carries no linked "
                 + $"item yet. Search {tracker} for an open item that already covers this objective "
                 + "before publishing, so this does not mint a duplicate. Found one? Link it: "
-                + linkCommand + ". Confirmed none exists? {action} anyway with the attestation: "
+                + linkCommand + $". Confirmed none exists? {action} anyway with the attestation: "
                 + $"{command} --no-existing-item. Don't want this task tracked in "
                 + $"{tracker} at all? Skip tracking for it deliberately: {command} "
                 + "--untracked.");

@@ -427,7 +427,7 @@ revises, a revision file beside it; the daemon applies the revision with the sam
 after dispatch and the file names no model. Then the same challenge `h9k task challenge` runs, requested by the plan.
 `publish as written` makes the draft ready; `publish as revised` gets one refinement session told to apply the verdict's
 must and should changes, after which the draft is ready with no further challenge, and a session that changed nothing
-parks the plan; `do not publish` gets a session told to answer the verdict and then a new challenge; a park change
+parks the plan; `do not publish` gets a session told to answer the verdict and then a new challenge, even when that session changed nothing (it may have answered in the journal, which the new challenge reads); a park change
 drives nothing. A round is one challenge of one draft, and a plan runs at most two per draft. The cap is the daemon option
 `PlanRoundCap` and has no node, project, or task setting, because only a person's `h9k plan resume` or a new plan
 grants more; a `do not publish` on the last round parks the plan rather than starting another. When every draft is
@@ -456,7 +456,10 @@ no new session starts for any of its drafts, and a session already running finis
 plan's state and, for each draft, its phase (refinement, challenge, or published), its round, its latest outcome, and where
 its latest report is, and for a park the reason, the way forward, and where to read the rest, because the record holds
 nothing a session wrote. `h9k plan resume <plan>` re-runs the step that parked, and after `rounds exhausted` grants one more
-round. Publishing or abandoning a parked draft by hand answers its park, so the plan carries on with no resume.
+round. A draft a person revises after the session or challenge that last read it is never published unjudged: the plan
+parks as `draft changed`, whether the revision came while a challenge ran, after its verdict, or while the draft sat ready
+waiting on a sibling, and a resume challenges the draft as it now stands. Publishing or abandoning a parked draft by hand
+answers its park, so the plan carries on with no resume.
 `h9k plan cancel <plan> --reason "<why>"` ends a live plan, stops its refinement session without applying anything, and leaves
 its drafts as Drafts, free for another plan; a plan whose drafts have all been abandoned ends cancelled on its own. A
 published draft that has no tracker item and none on its way, on a project that tracks a backlog, and that was not

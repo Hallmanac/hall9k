@@ -1367,6 +1367,12 @@ hold stands, its spend budget is spent, or the project's max parallel tasks is 0
 requests no challenge, and `h9k plan show` says which. The session's tokens are recorded under the model it ran on and
 appear in the spend lines of `h9k status` and `h9k config show`.
 
+The child commands a plan runs, `h9k task revise` and `h9k task publish`, are run from the `h9k` installed at
+`~/.hall9k/bin`, then from the daemon's `PATH`, and never from the build in `src/Hall9k.Cli/bin`. To exercise a plan end to
+end from the development loop (`dotnet run --project src/Hall9k.AppHost`), install the build under test first with
+`h9k install --repo <path>`. With no installed binary the revise fails to start and the plan parks as revision refused, or as
+publish refused at the end, and an older install silently runs that older CLI instead of the build.
+
 The lesson picker has no role of its own. It resolves its model and effort exactly as the courier
 does for the same project and node, so `--model-courier` and `--effort-courier` move it too, and a
 task's own `--model` or `--effort` never does. It is a small session (one turn, no tools) that reads a

@@ -86,6 +86,7 @@ public sealed class PlanSurfaceTests
             draft.Outcome = PlanOutcome.PublishAsWritten;
             draft.Ready = true;
             draft.LatestSessionId = _session;
+            draft.LatestReportIsChallenge = true;
         });
         Show(challenged, Tasks()).Should().Contain("ready to publish").And.Contain("publish as written").And.Contain(RunPaths.ChallengeReportFile(_session));
     }
@@ -98,6 +99,7 @@ public sealed class PlanSurfaceTests
             draft.Outcome = PlanOutcome.Question;
             draft.ParkReason = PlanParkReason.Question;
             draft.LatestSessionId = _session;
+            draft.LatestReportIsChallenge = false;
         });
 
         string text = Show(parked, Tasks());
@@ -105,6 +107,29 @@ public sealed class PlanSurfaceTests
         text.Should().Contain("live, parked").And.Contain(TaskListCommand.ShortId(_draftId)).And.Contain(PlanParkReason.Question.Description)
             .And.Contain(PlanParkReason.Question.WayForward).And.Contain(RunPaths.RefinementReportFile(_session)).And.Contain("journal.md")
             .And.Contain($"h9k plan resume {TaskListCommand.ShortId(parked.Id)}");
+    }
+
+    [Fact]
+    public void A_refinement_session_after_a_verdict_points_at_its_own_report_and_a_closed_draft_still_shows_its_report()
+    {
+        Guid challengeSession = DomainId.New();
+        PlanDetails afterVerdict = Plan(draft =>
+        {
+            draft.Outcome = PlanOutcome.DoNotPublish;
+            draft.ParkReason = PlanParkReason.RevisionRefused;
+            draft.LatestSessionId = _session;
+            draft.LatestReportIsChallenge = false;
+        });
+        string parked = Show(afterVerdict, Tasks());
+        parked.Should().Contain(RunPaths.RefinementReportFile(_session)).And.NotContain(RunPaths.ChallengeReportFile(_session));
+
+        PlanDetails published = Plan(draft =>
+        {
+            draft.Published = true;
+            draft.LatestSessionId = challengeSession;
+            draft.LatestReportIsChallenge = true;
+        });
+        Show(published, Tasks(task => task.State = TaskState.Published)).Should().Contain(RunPaths.ChallengeReportFile(challengeSession));
     }
 
     [Fact]

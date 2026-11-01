@@ -37,6 +37,13 @@ public sealed class PlanDraftState
     /// <summary>The session whose report the latest outcome or park came from, which <c>h9k plan show</c> derives a path from.</summary>
     public Guid? LatestSessionId { get; set; }
 
+    /// <summary>
+    /// Whether <see cref="LatestSessionId"/> is a challenge's session (its report is <c>challenge-report.md</c>) rather than a
+    /// refinement session's (<c>refinement-report.md</c>). Tracked beside the id because the latest outcome and the latest
+    /// session fall out of step: a refinement session that parks leaves the outcome at the verdict it was answering.
+    /// </summary>
+    public bool LatestReportIsChallenge { get; set; }
+
     /// <summary>Rounds a person has granted beyond the daemon's cap, by resuming after rounds exhausted.</summary>
     public int ExtraRounds { get; set; }
 
@@ -64,6 +71,7 @@ public sealed class PlanDraftState
     {
         RunningSessionId = @event.SessionId;
         LatestSessionId = @event.SessionId;
+        LatestReportIsChallenge = false;
     }
 
     public void Apply(PlanChallengeRequested @event) => ChallengeRequestedAt = @event.RequestedAt;
@@ -77,7 +85,11 @@ public sealed class PlanDraftState
         Ready = @event.Ready;
         RunningSessionId = null;
         ChallengeRequestedAt = null;
-        LatestSessionId = @event.SessionId ?? LatestSessionId;
+        if (@event.SessionId is { } movedBy)
+        {
+            LatestSessionId = movedBy;
+            LatestReportIsChallenge = @event.Outcome.IsChallenge;
+        }
     }
 
     public void Apply(PlanParked @event)
@@ -85,15 +97,28 @@ public sealed class PlanDraftState
         ParkReason = @event.Reason;
         RunningSessionId = null;
         ChallengeRequestedAt = null;
-        LatestSessionId = @event.SessionId ?? LatestSessionId;
-        if (@event.Reason == PlanParkReason.SessionFailed)
+
+        // A challenge that was refused before it ran has no session, so nothing it wrote is anywhere to be read: the
+        // earlier refinement session's report is not this park's report, and is not offered as if it were.
+        bool challengePark = @event.Reason == PlanParkReason.ChallengeFailed || @event.Reason == PlanParkReason.RoundsExhausted;
+        if (@event.SessionId is { } parkedBy)
         {
-            Outcome = PlanOutcome.SessionFailed;
+            LatestSessionId = parkedBy;
+            LatestReportIsChallenge = challengePark;
         }
         else if (@event.Reason == PlanParkReason.ChallengeFailed)
         {
-            Outcome = PlanOutcome.ChallengeFailed;
+            LatestSessionId = null;
+            LatestReportIsChallenge = false;
         }
+
+        Outcome = @event.Reason switch
+        {
+            _ when @event.Reason == PlanParkReason.SessionFailed => PlanOutcome.SessionFailed,
+            _ when @event.Reason == PlanParkReason.ChallengeFailed => PlanOutcome.ChallengeFailed,
+            _ when @event.Reason == PlanParkReason.Question => PlanOutcome.Question,
+            _ => Outcome,
+        };
     }
 
     /// <summary>A resume answers the park; a draft that parked on rounds exhausted is granted one more round.</summary>

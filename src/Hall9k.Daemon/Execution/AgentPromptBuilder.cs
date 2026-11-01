@@ -4797,7 +4797,8 @@ public static class AgentPromptBuilder
     /// propose the smallest change, and to leave task text free of security detail. It cannot write to a task: it writes
     /// a report whose last line names one outcome, and a revision file beside it, and the daemon applies the revision.
     /// <para>
-    /// A session that follows a challenge verdict is told the verdict and where its report is. The idea workspace's
+    /// A session for a draft that already has a challenge verdict, whatever it was dispatched for, is told the verdict and
+    /// where its report is; one dispatched only to refine reads the wording that says the draft was judged before. The idea workspace's
     /// <c>tracker-item.md</c> rule and the adopted-context rule are the daemon's own words in the working rules, as in the
     /// challenge prompt. The closing line is the contract <see cref="Plan.RefinementReport"/> reads.
     /// </para>
@@ -4827,6 +4828,7 @@ public static class AgentPromptBuilder
         {
             "ApplyVerdict" => Fragment(file, "purpose-apply"),
             "AnswerVerdict" => Fragment(file, "purpose-answer"),
+            _ when facts.PriorVerdict is not null => Fragment(file, "purpose-refine-again"),
             _ => Fragment(file, "purpose-refine"),
         });
         if (facts.PriorVerdict is { } verdict)

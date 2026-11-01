@@ -28,9 +28,6 @@ public sealed record RefinementPurpose
         Description = description;
     }
 
-    /// <summary>Whether the session answers a challenge verdict, and so is told where its report is.</summary>
-    public bool FollowsVerdict => this == ApplyVerdict || this == AnswerVerdict;
-
     public static implicit operator string(RefinementPurpose? value) => value?.Value ?? string.Empty;
 
     public static implicit operator RefinementPurpose(string? value) => value switch

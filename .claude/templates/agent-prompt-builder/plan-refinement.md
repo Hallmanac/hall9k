@@ -70,6 +70,8 @@ The draft has no journal yet. You write it, at {{JournalToWrite}}.
 ## Why you were dispatched
 ===purpose-refine===
 The draft is going to its first challenge after you. Refine it so that the challenge has the least to find.
+===purpose-refine-again===
+An independent challenge has already judged this draft, and it is going to a challenge again after you, so what you change is what the next one judges. Refine it so that challenge has the least to find, starting from what the last one found.
 ===purpose-apply===
 An independent challenge has judged the draft and its verdict is publish as revised. Apply the verdict's must and should changes to the draft, and nothing beyond them. A park change in the report is real but drives nothing, so leave it alone. The draft is then ready to publish with no further challenge, so what you write is what ships. If a must can only be settled by a person, end with the question outcome and put the question in the journal.
 ===purpose-answer===

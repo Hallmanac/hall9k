@@ -124,6 +124,45 @@ public sealed class PlanDeciderTests
         PlanDecider.DraftsToPublish(plan).Should().Equal(draft);
     }
 
+    [Theory]
+    [InlineData("publish-as-written")]
+    [InlineData("publish-as-revised")]
+    public void A_verdict_that_judged_a_draft_since_revised_parks_as_draft_changed_and_a_resume_challenges_it_again(string word)
+    {
+        ChallengeVerdict verdict = word == "publish-as-written"
+            ? ChallengeVerdict.PublishAsWritten
+            : ChallengeVerdict.PublishAsRevised;
+        Guid draft = DomainId.New();
+        PlanAggregate plan = AtChallenge(draft);
+
+        Fold(plan, PlanDecider.AfterChallenge(plan, plan.Drafts[0], Verdict(draft, verdict, must: 1), Cap, Now, draftChangedSinceJudged: true));
+
+        plan.Drafts[0].Ready.Should().BeFalse();
+        plan.Drafts[0].ParkReason.Should().Be(PlanParkReason.DraftChanged);
+        plan.Drafts[0].LatestReportIsChallenge.Should().BeTrue("the report a person reads is still the challenge's");
+        PlanDecider.DraftsToPublish(plan).Should().BeEmpty();
+
+        plan.ApplyEvent(PlanDecider.Resume(plan, _owner, Now));
+        PlanDecider.NextStep(plan.Drafts[0]).Should().Be(PlanStepKind.RequestChallenge);
+    }
+
+    [Fact]
+    public void A_ready_draft_revised_since_parks_as_draft_changed_instead_of_publishing_with_its_siblings()
+    {
+        Guid revised = DomainId.New();
+        Guid sibling = DomainId.New();
+        PlanAggregate plan = Started(PlanPhase.Challenge, revised, sibling);
+        Fold(plan, PlanDecider.AfterChallenge(plan, plan.Drafts[0], Verdict(revised, ChallengeVerdict.PublishAsWritten), Cap, Now));
+
+        Fold(plan, PlanDecider.ParkReadyDraftChanged(plan, plan.Drafts[0], Now));
+
+        plan.Drafts[0].Ready.Should().BeFalse();
+        plan.Drafts[0].ParkReason.Should().Be(PlanParkReason.DraftChanged);
+        plan.Drafts[1].ParkReason.IsParked.Should().BeFalse();
+        plan.ApplyEvent(PlanDecider.Resume(plan, _owner, Now));
+        PlanDecider.NextStep(plan.Drafts[0]).Should().Be(PlanStepKind.RequestChallenge);
+    }
+
     [Fact]
     public void Publish_as_revised_gets_one_apply_session_and_then_the_draft_is_ready_without_another_challenge()
     {
@@ -181,7 +220,7 @@ public sealed class PlanDeciderTests
     }
 
     [Fact]
-    public void An_answer_session_that_changed_nothing_parks_the_plan_rather_than_challenge_the_same_text_again()
+    public void An_answer_session_that_changed_nothing_still_goes_to_a_new_challenge_because_it_may_have_answered_in_the_journal()
     {
         Guid draft = DomainId.New();
         PlanAggregate plan = AtChallenge(draft);
@@ -190,7 +229,48 @@ public sealed class PlanDeciderTests
         Fold(plan, PlanDecider.AfterRefinement(
             plan, plan.Drafts[0], RefinementPurpose.AnswerVerdict, RefinementOutcome.Unchanged, DomainId.New(), Now));
 
-        plan.Drafts[0].ParkReason.Should().Be(PlanParkReason.VerdictNotApplied);
+        plan.IsParked.Should().BeFalse();
+        plan.Drafts[0].Phase.Should().Be(PlanPhase.Challenge);
+        plan.Drafts[0].Round.Should().Be(2, "the round cap, not a park, bounds a loop of unchanged answers");
+        plan.Drafts[0].Outcome.Should().Be(PlanOutcome.Unchanged);
+        PlanDecider.NextStep(plan.Drafts[0]).Should().Be(PlanStepKind.RequestChallenge);
+    }
+
+    [Fact]
+    public void The_latest_report_is_the_challenges_after_a_verdict_and_the_refinement_sessions_once_one_is_dispatched_or_parks()
+    {
+        Guid draft = DomainId.New();
+        PlanAggregate plan = AtChallenge(draft);
+        DraftChallengeRecorded verdict = Verdict(draft, ChallengeVerdict.DoNotPublish, must: 1);
+        Fold(plan, PlanDecider.AfterChallenge(plan, plan.Drafts[0], verdict, Cap, Now));
+        plan.Drafts[0].LatestSessionId.Should().Be(verdict.SessionId);
+        plan.Drafts[0].LatestReportIsChallenge.Should().BeTrue();
+
+        Guid refinementSession = DomainId.New();
+        plan.ApplyEvent(new PlanRefinementDispatched(plan.Id, plan.ProjectId, draft, refinementSession, RefinementPurpose.AnswerVerdict, Now));
+        plan.Drafts[0].LatestSessionId.Should().Be(refinementSession);
+        plan.Drafts[0].LatestReportIsChallenge.Should().BeFalse("the verdict is still the outcome, but the newest report is the session's");
+
+        Fold(plan, [PlanDecider.ParkOn(plan, draft, PlanParkReason.RevisionRefused, refinementSession, Now)]);
+        plan.Drafts[0].Outcome.Should().Be(PlanOutcome.DoNotPublish);
+        plan.Drafts[0].LatestReportIsChallenge.Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_question_is_recorded_as_the_outcome_and_a_challenge_refused_before_it_ran_leaves_no_report_to_point_at()
+    {
+        Guid draft = DomainId.New();
+        PlanAggregate plan = Started(PlanPhase.Refinement, draft);
+        Guid session = DomainId.New();
+        plan.ApplyEvent(new PlanRefinementDispatched(plan.Id, plan.ProjectId, draft, session, RefinementPurpose.Refine, Now));
+
+        Fold(plan, PlanDecider.AfterRefinement(plan, plan.Drafts[0], RefinementPurpose.Refine, RefinementOutcome.Question, session, Now));
+        plan.Drafts[0].Outcome.Should().Be(PlanOutcome.Question);
+        plan.Drafts[0].LatestSessionId.Should().Be(session);
+        plan.Drafts[0].LatestReportIsChallenge.Should().BeFalse();
+
+        Fold(plan, [PlanDecider.ParkOn(plan, draft, PlanParkReason.ChallengeFailed, null, Now)]);
+        plan.Drafts[0].LatestSessionId.Should().BeNull("no challenge ran, so the refinement session's report is not this park's");
     }
 
     [Fact]
@@ -330,21 +410,5 @@ public sealed class PlanDeciderTests
         ended.Should().Throw<DomainConflictException>();
         Action resumeEnded = () => PlanDecider.Resume(plan, _owner, Now);
         resumeEnded.Should().Throw<DomainConflictException>();
-    }
-
-    [Fact]
-    public void A_plan_event_is_not_a_task_event_and_never_leaves_its_node()
-    {
-        foreach (Type type in typeof(PlanStarted).Assembly.GetTypes()
-                     .Where(type => type.Namespace == typeof(PlanStarted).Namespace && type.IsSealed && type.Name.StartsWith("Plan", StringComparison.Ordinal)))
-        {
-            Hall9k.Domain.Infrastructure.Persistence.EventScopeRegistry.ClassificationOf(type)
-                .Should().Be(Hall9k.Domain.Infrastructure.Persistence.EventScope.NodeScoped, $"{type.Name} is a plan record");
-        }
-
-        Hall9k.Domain.Infrastructure.Persistence.EventScopeRegistry.ClassificationOf(typeof(DraftRefinementDispatched))
-            .Should().Be(Hall9k.Domain.Infrastructure.Persistence.EventScope.ProjectScoped);
-        Hall9k.Domain.Infrastructure.Persistence.EventScopeRegistry.ClassificationOf(typeof(DraftRefinementRecorded))
-            .Should().Be(Hall9k.Domain.Infrastructure.Persistence.EventScope.ProjectScoped);
     }
 }

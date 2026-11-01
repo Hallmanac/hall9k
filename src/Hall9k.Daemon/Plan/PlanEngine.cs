@@ -112,7 +112,8 @@ public sealed class PlanEngine(
         AgentEffort Effort,
         RefinementOutcome Outcome,
         RefinementFailureReason Failure,
-        AgentResult? Result);
+        AgentResult? Result,
+        Guid? RanOnNodeId = null);
 
     /// <summary>Completes once every session started so far has recorded its outcome; the daemon never waits on it.</summary>
     internal Task WhenIdleAsync() => Task.WhenAll(_sessions.Values.Select(running => running.Finished.Task));
@@ -261,7 +262,10 @@ public sealed class PlanEngine(
                 && outcome.RecordedAt >= requestedAt)
             {
                 return await SavePlanAsync(
-                    session, fence, PlanDecider.AfterChallenge(plan, draft, outcome, _options.PlanRoundCap, now), cancellationToken);
+                    session, fence, PlanDecider.AfterChallenge(
+                        plan, draft, outcome, _options.PlanRoundCap, now,
+                        draftChangedSinceJudged: task.LatestChallengeVerdictJudgedOlderDraft || task.RevisedSinceLastDraftSession),
+                    cancellationToken);
             }
         }
 
@@ -277,6 +281,16 @@ public sealed class PlanEngine(
         if (plan.IsParked)
         {
             return StepOutcome.Nothing;
+        }
+
+        // A draft declared ready that a person revised since was never read by a challenge or a session: it waits for a
+        // person rather than publishing text nobody judged, however long a sibling's refinement kept it ready.
+        foreach (PlanDraftState draft in plan.Drafts.Where(draft => draft.Ready && !draft.IsClosed))
+        {
+            if (tasks.TryGetValue(draft.DraftId, out TaskDetails? ready) && ready.RevisedSinceLastDraftSession)
+            {
+                return await SavePlanAsync(session, fence, PlanDecider.ParkReadyDraftChanged(plan, draft, now), cancellationToken);
+            }
         }
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(plan.ProjectId, cancellationToken);
@@ -443,13 +457,17 @@ public sealed class PlanEngine(
             plan.Id, draftId, plan.NoExistingItemAttested, plan.UntrackedAttested, cancellationToken);
 
         // A draft that reads published counts as published however the step ended: a publish cut short exits non-zero
-        // having committed, and a tracker failure exits zero. The task is the authority, not the exit code.
+        // having committed, and a tracker failure exits zero. The task is the authority, not the exit code. A draft
+        // abandoned while the publish waited on the tracker is abandoned, not published, and is recorded as that.
         await using IDocumentSession session = store.LightweightSession();
         TaskDetails? task = await session.LoadAsync<TaskDetails>(draftId, cancellationToken);
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        object recorded = task is not null && task.State != TaskState.Draft
-            ? new PlanDraftPublished(plan.Id, plan.ProjectId, draftId, ByHand: false, now)
-            : PlanDecider.ParkOn(plan, draftId, PlanParkReason.PublishRefused, null, now);
+        object recorded = task switch
+        {
+            { State: var state } when state == TaskState.Abandoned => new PlanDraftAbandoned(plan.Id, plan.ProjectId, draftId, now),
+            { State: var state } when state != TaskState.Draft => new PlanDraftPublished(plan.Id, plan.ProjectId, draftId, ByHand: false, now),
+            _ => PlanDecider.ParkOn(plan, draftId, PlanParkReason.PublishRefused, null, now),
+        };
         if (recorded is PlanParked)
         {
             logger.LogWarning(
@@ -532,8 +550,9 @@ public sealed class PlanEngine(
         string? journal = taskDirectory is null
             ? null
             : DraftChallengeEngine.FindJournal(taskDirectory);
-        PriorVerdictFacts? prior = purpose.FollowsVerdict
-            && current.LatestChallengeVerdict is { SessionId: { } challengeSession } verdict
+        // Told to every session for a draft that has one: a plan started on a draft a person already challenged, or begun
+        // again after one that exhausted its rounds, dispatches a plain refine whose draft was judged before.
+        PriorVerdictFacts? prior = current.LatestChallengeVerdict is { SessionId: { } challengeSession } verdict
                 ? new PriorVerdictFacts(
                     verdict.Verdict, verdict.MustCount, verdict.ShouldCount, verdict.ParkCount,
                     RunPaths.ChallengeReportFile(challengeSession))
@@ -736,10 +755,21 @@ public sealed class PlanEngine(
     /// Applies the revision a session wrote with the same validation and effects as <c>h9k task revise --file</c>, by
     /// running that command. Applied only to the draft the session read: if anyone changed it since dispatch the revision
     /// is not applied. A revision that names a model is refused, because a refinement sets none and <c>--file</c> would
-    /// otherwise set one. Returns the reason nothing was applied, or null when it was.
+    /// otherwise set one. A plan that ended while the session ran applies nothing, however the session ended: the stop a
+    /// cancel sends reaches a job only at the top of a sweep, so the job asks the record itself. Returns the reason nothing
+    /// was applied, or null when it was.
     /// </summary>
     private async Task<RefinementFailureReason?> ApplyRevisionAsync(RefinementJob job, CancellationToken cancellationToken)
     {
+        await using (IQuerySession ended = store.QuerySession())
+        {
+            if (await ended.LoadAsync<PlanDetails>(job.PlanId, cancellationToken) is not { IsLive: true })
+            {
+                logger.LogInformation("Plan {PlanId} ended while refinement session {SessionId} ran; its revision is not applied", job.PlanId, job.SessionId);
+                return RefinementFailureReason.Cancelled;
+            }
+        }
+
         string text;
         try
         {
@@ -761,12 +791,14 @@ public sealed class PlanEngine(
             if (FrontmatterYaml.Parse(text).Scalar("model").IsNotBlank())
             {
                 logger.LogWarning("Draft {TaskId}: the revision names a model, which a refinement does not set; refused", job.TaskId);
+                await WriteRefusalAsync(job, "The revision names a model, which a refinement does not set, so it was not applied.", cancellationToken);
                 return RefinementFailureReason.RevisionRefused;
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(exception, "Draft {TaskId}: the revision file is not a task file; refused", job.TaskId);
+            await WriteRefusalAsync(job, $"The revision file is not a task file, so it was not applied: {exception.Message}", cancellationToken);
             return RefinementFailureReason.RevisionRefused;
         }
 
@@ -795,6 +827,24 @@ public sealed class PlanEngine(
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// A revision refused before the child <c>h9k</c> ran has no command output, so the reason is written where
+    /// <c>h9k plan show</c> sends a person to read a refusal, and the pointer is true.
+    /// </summary>
+    private async Task WriteRefusalAsync(RefinementJob job, string reason, CancellationToken cancellationToken)
+    {
+        string file = RunPaths.PlanReviseOutputFile(job.PlanId, job.SessionId);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(file) ?? throw new InvalidOperationException($"No directory for {file}."));
+            await File.WriteAllTextAsync(file, reason + Environment.NewLine, cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(exception, "Draft {TaskId}: could not write the refusal beside the plan's other output", job.TaskId);
+        }
     }
 
     private static SessionEnd EndOf(RefinementJob job, RefinementOutcome outcome, RefinementFailureReason failure, AgentResult? result) =>
@@ -840,7 +890,7 @@ public sealed class PlanEngine(
             }
 
             taskEvents.Add(new DraftRefinementRecorded(
-                end.TaskId, end.SessionId, node.NodeId, end.Outcome, end.Failure, end.Purpose, end.Model, end.Effort, now));
+                end.TaskId, end.SessionId, end.RanOnNodeId ?? node.NodeId, end.Outcome, end.Failure, end.Purpose, end.Model, end.Effort, now));
             session.Events.Append(end.TaskId, expectedVersion: taskFence.Version + taskEvents.Count, taskEvents.ToArray());
 
             if (await PlanOfAsync(session, end.TaskId, end.SessionId, cancellationToken) is { } owner)
@@ -933,6 +983,17 @@ public sealed class PlanEngine(
                     continue;
                 }
 
+                // A job commits its outcome before it leaves _sessions, so a session absent from it may have ended
+                // after the snapshot above was read. Read the task again: only one still recorded running is left behind.
+                await using (IQuerySession fresh = store.QuerySession())
+                {
+                    TaskDetails? latest = await fresh.LoadAsync<TaskDetails>(task.Id, cancellationToken);
+                    if (latest?.RunningRefinementSessionId != sessionId)
+                    {
+                        continue;
+                    }
+                }
+
                 logger.LogWarning(
                     "Draft {TaskId}: refinement session {SessionId} was dispatched by this node and nothing is watching it; stopping it and recording it as failed",
                     task.Id, sessionId);
@@ -953,7 +1014,7 @@ public sealed class PlanEngine(
                 await RecordEndAsync(
                     new SessionEnd(
                         task.Id, sessionId, RefinementPurpose.Unknown, model, effort, RefinementOutcome.Unknown,
-                        RefinementFailureReason.DispatchExpired, null),
+                        RefinementFailureReason.DispatchExpired, null, task.RunningRefinementNodeId),
                     cancellationToken);
                 expired++;
             }
