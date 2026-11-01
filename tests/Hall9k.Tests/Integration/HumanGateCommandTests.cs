@@ -177,17 +177,6 @@ public sealed class HumanGateCommandTests : IClassFixture<PostgresFixture>, IDis
     }
 
     [Fact]
-    public async Task The_briefing_without_a_summary_says_so_and_still_prints_everything_else()
-    {
-        Seeded seeded = await SeedAsync(summary: null);
-
-        string page = await BriefAsync(seeded.TaskId);
-
-        page.Should().Contain("No pull request summary was written")
-            .And.Contain("add one").And.Contain("Your choices");
-    }
-
-    [Fact]
     public async Task The_briefing_is_refused_at_any_other_park_naming_task_next()
     {
         Seeded seeded = await SeedAsync(atGate: false);

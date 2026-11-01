@@ -17,6 +17,7 @@ public sealed record BriefingCommit(string Sha, string Subject);
 /// <param name="TipAuthoredAt">The author date of the branch's tip commit, or null when unreadable.</param>
 /// <param name="SummaryPath">Where the full summary lives, for the pointer a cut summary ends with.</param>
 /// <param name="Settlement">How review ended, in the settlement word (Clean, Settled, Overridden), or empty when unrecorded.</param>
+/// <param name="Commits">The branch's commits beyond its base, oldest first, or null when git could not be asked, which is not the same as none.</param>
 /// <param name="FilesChanged">Files the whole change touches, or null when git could not be asked.</param>
 /// <param name="LinesChanged">Lines added plus deleted across the whole change, or null when git could not be asked.</param>
 /// <param name="HasRunSkill">Whether the project records how its product is started.</param>
@@ -35,7 +36,7 @@ public sealed record HumanGateBriefingFacts(
     int ReviewCycles,
     int UnfixedFindings,
     string MergedReportPath,
-    IReadOnlyList<BriefingCommit> Commits,
+    IReadOnlyList<BriefingCommit>? Commits,
     int? FilesChanged,
     int? LinesChanged,
     string WorktreePath,
@@ -169,11 +170,13 @@ public static class HumanGateBriefing
         AcceptanceCriteria = [.. facts.AcceptanceCriteria.Select(RelayedText.OneLine)],
         SummaryPath = RelayedText.OneLine(facts.SummaryPath),
         MergedReportPath = RelayedText.OneLine(facts.MergedReportPath),
-        Commits = [.. facts.Commits.Select(commit => commit with
-        {
-            Sha = RelayedText.OneLine(commit.Sha),
-            Subject = RelayedText.OneLine(commit.Subject),
-        })],
+        Commits = facts.Commits is null
+            ? null
+            : [.. facts.Commits.Select(commit => commit with
+            {
+                Sha = RelayedText.OneLine(commit.Sha),
+                Subject = RelayedText.OneLine(commit.Subject),
+            })],
         WorktreePath = RelayedText.OneLine(facts.WorktreePath),
         Branch = RelayedText.OneLine(facts.Branch),
         BaseCommit = RelayedText.OneLine(facts.BaseCommit),
@@ -260,13 +263,17 @@ public static class HumanGateBriefing
     private static void AppendCommits(StringBuilder page, HumanGateBriefingFacts facts)
     {
         page.AppendLine("The commits, oldest first");
-        if (facts.Commits.Count == 0)
+        if (facts.Commits is not { } commits)
+        {
+            page.AppendLine("  The commits could not be read, so whether the branch holds any is unknown.");
+        }
+        else if (commits.Count == 0)
         {
             page.AppendLine("  No commits found on the branch beyond its base.");
         }
-        else if (facts.Commits.Count <= MaxListedCommits)
+        else if (commits.Count <= MaxListedCommits)
         {
-            foreach (BriefingCommit commit in facts.Commits)
+            foreach (BriefingCommit commit in commits)
             {
                 page.AppendLine($"  {Short(commit.Sha)} {commit.Subject}");
             }
@@ -274,7 +281,7 @@ public static class HumanGateBriefing
         else
         {
             page.AppendLine(
-                $"  {facts.Commits.Count} commits, too many to list here: git log --reverse --oneline {Short(facts.BaseCommit)}..{Short(facts.HeadCommit)}");
+                $"  {commits.Count} commits, too many to list here: git log --reverse --oneline {Short(facts.BaseCommit)}..{Short(facts.HeadCommit)}");
         }
 
         page.AppendLine(facts.FilesChanged is { } files && facts.LinesChanged is { } lines
@@ -295,15 +302,15 @@ public static class HumanGateBriefing
 
         page.AppendLine("Compare, in the compare tool git is configured to use");
         page.AppendLine($"  The whole change: git -C {worktree} difftool --dir-diff {facts.BaseCommit} {facts.HeadCommit}");
-        if (facts.Commits.Count is > 0 and <= MaxListedCommits)
+        if (facts.Commits is { Count: > 0 and <= MaxListedCommits } listed)
         {
-            foreach (BriefingCommit commit in facts.Commits)
+            foreach (BriefingCommit commit in listed)
             {
                 page.AppendLine(
                     $"  {Short(commit.Sha)}: git -C {worktree} difftool --dir-diff {Short(commit.Sha)}^ {Short(commit.Sha)}");
             }
         }
-        else if (facts.Commits.Count > MaxListedCommits)
+        else if (facts.Commits is { Count: > MaxListedCommits })
         {
             page.AppendLine(
                 $"  One commit: git -C {worktree} difftool --dir-diff <sha>^ <sha>, with a sha from the log line above.");
@@ -321,9 +328,8 @@ public static class HumanGateBriefing
         page.AppendLine("Step in");
         page.AppendLine(
             $"  h9k task drive {id} prints a line that starts a Claude Code session in the worktree, for questions and "
-            + "changes. On a run a headless dispatch holds at the human gate it registers nothing and changes neither "
-            + "the claim nor this stop; on an interactive claim it re-enters that claim the usual way, and the "
-            + "session registers itself.");
+            + "changes. At the human gate it registers nothing and changes neither the claim nor this stop, "
+            + "whether a headless dispatch holds the run or you hold it as an interactive claim.");
         page.AppendLine();
 
         page.AppendLine("Your choices");

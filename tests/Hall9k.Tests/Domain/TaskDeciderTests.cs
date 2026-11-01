@@ -2807,6 +2807,18 @@ public sealed class TaskDeciderTests
     }
 
     [Fact]
+    public void A_draft_added_with_an_initial_scope_starts_there_so_an_evolved_private_task_stays_on_the_node()
+    {
+        TaskAdded privateDraft = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), objective: "Carry the words no further than they were allowed",
+            acceptanceCriteria: ["it stays private"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: DomainId.New(), initialScope: ReplicationScope.Private);
+
+        privateDraft.InitialScope.Should().Be(ReplicationScope.Private);
+    }
+
+    [Fact]
     public void Publishing_sets_team_scope_unconditionally()
     {
         TaskAggregate task = PublishedTask();

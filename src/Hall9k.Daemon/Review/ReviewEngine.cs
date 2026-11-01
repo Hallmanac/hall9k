@@ -257,8 +257,11 @@ public sealed class ReviewEngine(
     /// about to start in that same worktree. The launch sweep ticks every 20 seconds and knows nothing
     /// of run state, so the stop belongs here, in the loop's re-entry and ahead of everything the loop
     /// does: it ends the launch's processes and records why before the gate, the fix session, or the
-    /// pull request opener touches the worktree. Applies only to a run that has a human gate on the
-    /// record, so a launch on any other run is left to the sweep's own rules.
+    /// pull request opener touches the worktree. Applies only to a run that actually reached its human
+    /// gate (it parked at the pull-request boundary, or an answer at the gate is on its record), so a launch
+    /// on any other run is left to the sweep's own rules: that includes the owner's own interactive claim
+    /// on a gated task, who may have a product up while still building, with the gates and a review pass
+    /// still ahead of them and no gate left behind.
     /// </summary>
     private async Task EndLocalLaunchLeavingHumanGateAsync(ReviewContext context, CancellationToken cancellationToken)
     {
@@ -269,9 +272,9 @@ public sealed class ReviewEngine(
 
         RunAggregate run = await LoadRunAsync(context.RunId, cancellationToken);
         // Read from facts no fix lever erases: a hand fix or a redirect clears the tip and the answer, and
-        // a task revise made at the park clears the flag, yet the person may still have a product up.
-        bool gateOnTheRecord = context.Task.HumanGate || run.HasParkedAtPullRequestBoundary
-            || run.HumanGateAnswer != HumanGateAnswer.None;
+        // a task revise made at the park clears the flag, yet the person may still have a product up. The
+        // task's flag alone is no proof the run was ever at the gate, so it is not consulted here.
+        bool gateOnTheRecord = run.HasParkedAtPullRequestBoundary || run.HumanGateAnswer != HumanGateAnswer.None;
         if (!gateOnTheRecord || run.ReviewPhase == ReviewPhase.Parked || run.State == RunState.ReviewParked)
         {
             return;
@@ -7546,11 +7549,12 @@ public sealed class ReviewEngine(
     {
         IReadOnlyList<string>? uncommitted = await BranchObservation.ListBlockingUncommittedAsync(
             gitProcessRunner, context.Run.WorktreePath, cancellationToken);
-        string? observedTip = requireUnchangedTip
-            ? await BranchObservation.ReadBranchTipAsync(
-                gitProcessRunner, context.Run.WorktreePath, context.Run.Branch, cancellationToken)
-            : null;
-        return HumanGateFinding.Decide(run.HumanGateTipSha, observedTip, uncommitted, requireUnchangedTip);
+        string? observedTip = await BranchObservation.ReadBranchTipAsync(
+            gitProcessRunner, context.Run.WorktreePath, context.Run.Branch, cancellationToken);
+        string? worktreeHead = await BranchObservation.ReadHeadAsync(
+            gitProcessRunner, context.Run.WorktreePath, cancellationToken);
+        return HumanGateFinding.Decide(
+            run.HumanGateTipSha, observedTip, worktreeHead, uncommitted, requireUnchangedTip);
     }
 
     /// <summary>

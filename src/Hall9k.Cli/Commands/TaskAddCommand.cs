@@ -337,7 +337,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             "Mint a fresh Draft that evolves from this task, the discard outcome of the human gate: it "
             + "copies the source task's objective, acceptance criteria, context, type, epic, idea "
             + "provenance, and human gate, and adds the source's abandon reason to the context when it "
-            + "has one. h9k task show on the new draft names the task it evolved from. The source is "
+            + "has one. A private source starts a private draft (it never leaves this node, and neither "
+            + "do its words); any other source starts at the ordinary fleet scope. h9k task show on the "
+            + "new draft names the task it evolved from. The source is "
             + "left as it is (abandon it separately with h9k task abandon). Explicit --objective, "
             + "--criteria, --type, --epic, and --project override the copy, while an explicit --context is "
             + "added after the copied context and the abandon reason rather than replacing them (to start "
@@ -817,7 +819,13 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             spikeKind: spikeKind,
             exitCriterion: settings.ExitCriterion,
             humanGate: settings.HumanGate || evolvedFrom is { HumanGate: true },
-            evolvedFromTaskId: evolvedFrom?.Id);
+            evolvedFromTaskId: evolvedFrom?.Id,
+            // The copy carries the source's words, so it must not travel further than they were allowed
+            // to: a private source starts a private draft. A fleet or team source still starts at fleet,
+            // the ordinary resting scope for a fresh draft, because sharing is a separate, deliberate act.
+            initialScope: evolvedFrom is { } evolvedSource && evolvedSource.Scope == ReplicationScope.Private
+                ? ReplicationScope.Private
+                : null);
         session.Events.StartStream<TaskAggregate>(taskId, added);
 
         if (sourceIdea is not null)

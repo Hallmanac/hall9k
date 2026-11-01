@@ -361,7 +361,7 @@ change how the pipeline runs, and each has its own flags; what the types mean is
 | `h9k task add --human-gate` | Puts a human gate on the new task, so its run stops once after automated review has settled and before its GitHub pull request opens. Refused on a pr-review task and on a spike, which open no pull request of their own. |
 | `h9k task revise --human-gate` | Puts the gate on any live task whose pull request has not opened, not only a Draft, and may be the only thing revised in the call. |
 | `h9k task revise --clear-human-gate` | Takes the gate off. A run still in review then opens its pull request without stopping, while a run already parked at the gate stays parked until it is answered. |
-| `h9k task add --evolved-from <id>` | Creates a Draft that copies the source task's objective, criteria, context, type, epic, idea provenance, and human gate, and adds the source's abandon reason to the context when it has one. `h9k task show` on the new draft names the task it evolved from. |
+| `h9k task add --evolved-from <id>` | Creates a Draft that copies the source task's objective, criteria, context, type, epic, idea provenance, and human gate, and adds the source's abandon reason to the context when it has one. A private source starts a private draft, so its words never leave the node; any other source starts at the ordinary fleet scope. `h9k task show` on the new draft names the task it evolved from. |
 
 **A task can link both a GitHub issue and a Jira card, and one of them is primary.** Passing
 `--from-issue` and `--from-jira` together to `h9k task add` adopts both. `--primary-tracker

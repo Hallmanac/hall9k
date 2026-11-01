@@ -17,6 +17,12 @@ public enum HumanGateFindingKind
     /// <summary>The worktree holds uncommitted work, which no pull request would carry.</summary>
     UncommittedWork,
 
+    /// <summary>
+    /// The worktree's HEAD is not at the run's branch tip, so the gates would judge a commit the pull request
+    /// does not carry while the opener pushes a tip no gate ran over.
+    /// </summary>
+    HeadOffBranch,
+
     /// <summary>The worktree's status could not be read.</summary>
     StatusUnobservable,
 }
@@ -47,9 +53,17 @@ public sealed record HumanGateFinding(HumanGateFindingKind Kind, string Detail)
     /// src/ or tests/), or null when git could not be asked. <paramref name="requireUnchangedTip"/> is true
     /// for a bare proceed, which approves the tip that stood at the park, and false for a merge-ready
     /// resolve, which owns a tip that moved because the gates run over it, but never over uncommitted work.
+    /// <paramref name="worktreeHead"/> is where the worktree's HEAD stands. It must be the branch tip in
+    /// either case, because the gates judge HEAD while the opener pushes the branch: a worktree detached at
+    /// an older commit, with the person's later commits on the branch, would otherwise have its gate skipped
+    /// or run over a version that never ships.
     /// </summary>
     public static HumanGateFinding Decide(
-        string? recordedTip, string? observedTip, IReadOnlyList<string>? uncommitted, bool requireUnchangedTip)
+        string? recordedTip,
+        string? observedTip,
+        string? worktreeHead,
+        IReadOnlyList<string>? uncommitted,
+        bool requireUnchangedTip)
     {
         if (uncommitted is null)
         {
@@ -65,18 +79,33 @@ public sealed record HumanGateFinding(HumanGateFindingKind Kind, string Detail)
                 $"the worktree holds uncommitted work, which no pull request would carry: {Named(uncommitted)}");
         }
 
+        if (observedTip is null || worktreeHead is null)
+        {
+            return new HumanGateFinding(
+                HumanGateFindingKind.TipUnobservable,
+                observedTip is null
+                    ? "the branch tip could not be read, so whether the branch moved cannot be told"
+                    : "the worktree's HEAD could not be read, so whether it is on the branch cannot be told");
+        }
+
+        if (!string.Equals(worktreeHead, observedTip, StringComparison.Ordinal))
+        {
+            return new HumanGateFinding(
+                HumanGateFindingKind.HeadOffBranch,
+                $"the worktree is at {Short(worktreeHead)} but the branch stands at {Short(observedTip)}, so the "
+                + "gates would run over a commit the pull request does not carry");
+        }
+
         if (!requireUnchangedTip)
         {
             return new HumanGateFinding(HumanGateFindingKind.Unchanged, string.Empty);
         }
 
-        if (recordedTip is null || observedTip is null)
+        if (recordedTip is null)
         {
             return new HumanGateFinding(
                 HumanGateFindingKind.TipUnobservable,
-                recordedTip is null
-                    ? "the park recorded no branch tip, so whether the branch moved cannot be told"
-                    : "the branch tip could not be read, so whether the branch moved cannot be told");
+                "the park recorded no branch tip, so whether the branch moved cannot be told");
         }
 
         return string.Equals(recordedTip, observedTip, StringComparison.Ordinal)
@@ -114,6 +143,9 @@ public sealed record HumanGateFinding(HumanGateFindingKind Kind, string Detail)
             HumanGateFindingKind.TipUnobservable =>
                 "Check the branch yourself (git log in the worktree), then answer again. If you committed work, "
                 + $"{fixedLever}; otherwise {resolveLever}.",
+            HumanGateFindingKind.HeadOffBranch =>
+                "Check the branch out in the worktree (git switch <branch>), then answer again. Nothing is "
+                + "committed or opened on your behalf while the worktree is somewhere else.",
             _ =>
                 $"Hand the commits to review: {fixedLever}. Or {resolveLever}.",
         };

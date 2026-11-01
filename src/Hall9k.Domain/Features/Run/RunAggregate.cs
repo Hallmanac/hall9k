@@ -2051,9 +2051,17 @@ public sealed class RunAggregate
     /// <see cref="IsSupersededByCleanReread"/> is what "outstanding" excludes: a FixedUnreviewed
     /// residual a later mandatory <see cref="ReviewMode.FinalFullPass"/> on the same lens went on
     /// to read clean has now had exactly the re-read it was recorded for want of.
+    /// <para>
+    /// A fix that landed after the cycle's reviewers read the tip, and that no later cycle has
+    /// read, also makes the ending Settled: <see cref="FixDispatchedThisCycle"/> is still true
+    /// only when no <see cref="Events.ReviewDispatched"/> has started a cycle since. That is the
+    /// composition skip-final-pass waiver settling over a fix session's commits, or over a
+    /// person's hand fix at the human gate, and neither leaves a residual behind to say so.
+    /// </para>
     /// </summary>
     public ReviewSettlement DeriveSettlement() =>
         _humanEndedTheLoop
+        || _fixDispatchedThisCycle
         || _reviewResiduals.Any(residual => !IsSupersededByCleanReread(residual))
         || _concludedReviewTracks.Any(track => track.Settlement == ReviewSettlement.Settled)
             ? ReviewSettlement.Settled

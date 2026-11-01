@@ -123,7 +123,7 @@ public static class TaskDriveAnchorBuilder
 
     /// <summary>
     /// The anchor for the attended session <c>h9k task drive</c> prints a launch line for at a task's human
-    /// gate on a run a headless dispatch holds. It names the gate, the briefing command, and the outcomes
+    /// gate, whoever holds the run's claim. It names the gate, the briefing command, and the outcomes
     /// (rendered from <see cref="InteractiveBoundaryChoices"/>, the one vocabulary the park reason,
     /// <c>h9k task next</c>, <c>h9k status</c>, and the briefing also render, so no surface can offer a
     /// different set), and tells the session to leave the worktree alone once a lever has handed the branch

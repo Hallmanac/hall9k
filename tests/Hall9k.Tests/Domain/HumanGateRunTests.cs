@@ -158,6 +158,23 @@ public sealed class HumanGateRunTests
     }
 
     [Fact]
+    public void A_hand_fix_nobody_has_read_yet_is_never_settled_clean_and_a_later_review_cycle_restores_the_word()
+    {
+        (RunAggregate run, Guid id) = Settled();
+        run.DeriveSettlement().Should().Be(ReviewSettlement.Clean);
+        ParkAtTheGate(run, id);
+
+        run.Apply(new ReviewHumanFixApplied(id, run.ReviewCycle, "2222222222222222222222222222222222222222", null, false, Now, DomainId.New()));
+
+        run.DeriveSettlement().Should().Be(
+            ReviewSettlement.Settled, "a composition that waives the final pass settles right here, over commits no reviewer read");
+
+        run.Apply(new ReviewDispatched(id, DomainId.New(), run.ReviewCycle + 1, 5002, Now, Now));
+
+        run.DeriveSettlement().Should().Be(ReviewSettlement.Clean, "a reviewer now reads the tip, which is what Clean claims");
+    }
+
+    [Fact]
     public void Interactive_modes_own_pull_request_park_is_held_to_the_same_tip_rules_as_the_gate()
     {
         (RunAggregate run, Guid id) = Settled();

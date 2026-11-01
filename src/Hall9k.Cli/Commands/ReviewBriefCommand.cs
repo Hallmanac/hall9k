@@ -91,8 +91,8 @@ public sealed class ReviewBriefCommand : Hall9kAsyncCommand<ReviewBriefCommand.S
         string baseBranch = details.BaseBranchOr(project.BaseBranch);
         string? head = await BranchObservation.ReadBranchTipAsync(git, details.WorktreePath, details.Branch, cancellationToken);
         string baseCommit = await ResolveBaseAsync(git, details, baseBranch, cancellationToken);
-        IReadOnlyList<BriefingCommit> commits = head is null
-            ? []
+        IReadOnlyList<BriefingCommit>? commits = head is null
+            ? null
             : await ListCommitsAsync(git, details.WorktreePath, baseCommit, head, cancellationToken);
         (int? files, int? lines) = head is null
             ? (null, null)
@@ -186,11 +186,17 @@ public sealed class ReviewBriefCommand : Hall9kAsyncCommand<ReviewBriefCommand.S
         return details.BaseCommit.IsNotBlank() ? details.BaseCommit : "(the base commit could not be read)";
     }
 
-    private static async Task<IReadOnlyList<BriefingCommit>> ListCommitsAsync(
+    private static async Task<IReadOnlyList<BriefingCommit>?> ListCommitsAsync(
         ProcessRunner git, string worktree, string baseCommit, string head, CancellationToken cancellationToken)
     {
         string? log = await RunAsync(
             git, worktree, ["log", "--reverse", "--format=%H%x1f%s", $"{baseCommit}..{head}"], cancellationToken);
+        if (log is null)
+        {
+            // git failed (an unreadable base or tip), which says nothing about whether commits exist.
+            return null;
+        }
+
         if (log.IsBlank())
         {
             return [];
