@@ -111,9 +111,9 @@ public sealed class ClaudeExecutorNoToolsSpawnTests : IDisposable
         {
             if (File.Exists(file))
             {
-                string text = await File.ReadAllTextAsync(file);
-                int marker = text.IndexOf(DoneMarker, StringComparison.Ordinal);
-                if (marker >= 0 && text.EndsWith('\n'))
+                string? text = await TryReadAsync(file);
+                int marker = text?.IndexOf(DoneMarker, StringComparison.Ordinal) ?? -1;
+                if (text is not null && marker >= 0 && text.EndsWith('\n'))
                 {
                     return text[..marker];
                 }
@@ -123,5 +123,19 @@ public sealed class ClaudeExecutorNoToolsSpawnTests : IDisposable
         }
 
         throw new TimeoutException($"The stand-in for claude wrote nothing to {file} within {ObservationDeadline}.");
+    }
+
+    // On Windows the stand-in still holds the file open for writing, so the read can hit a sharing
+    // violation; that means "not written yet", and the caller keeps polling until its deadline.
+    private static async Task<string?> TryReadAsync(string file)
+    {
+        try
+        {
+            return await File.ReadAllTextAsync(file);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
     }
 }
