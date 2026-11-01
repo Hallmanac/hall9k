@@ -4,10 +4,8 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
-using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
-using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
@@ -106,15 +104,14 @@ public sealed class TaskNoteCommand : Hall9kAsyncCommand<TaskNoteCommand.Setting
             RefuseOtherTask(taskId, environment(DispatchedRunEnvironment.TaskIdVariable), dispatchedRun);
         }
 
-        _ = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
+        TaskDetails task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
         // Never inferred from the task's own current run: a dispatched session names the run its
         // environment carries (and its own session), an attended session names the attended run, and a
         // plain terminal names no run at all.
         (RecordedProvenance provenance, string? sessionId, string? sessionName) = string.IsNullOrWhiteSpace(dispatchedRun)
-            ? ((await RecordingProvenanceReader.ObserveAsync(
-                session, taskReference: null, ownerId, cancellationToken, environment)).Provenance, null, null)
+            ? (await ObserveAttendedOrShellAsync(session, task, ownerId, environment, cancellationToken), null, null)
             : (DispatchedProvenance(ownerId, dispatchedRun, taskId),
                 environment(DispatchedRunEnvironment.SessionIdVariable),
                 environment(DispatchedRunEnvironment.SessionNameVariable));
@@ -123,6 +120,27 @@ public sealed class TaskNoteCommand : Hall9kAsyncCommand<TaskNoteCommand.Setting
         StreamAction stream = session.Events.Append(taskId, note);
         EventRecordingNode.StampAtAppend(stream, thisNodeId);
         return note;
+    }
+
+    /// <summary>
+    /// What a process that is not a dispatched session can be observed to be. A session this platform
+    /// launched itself (<c>--direct-launch</c>) carries the attended run in its environment; a session
+    /// that was pasted a launch line and registered itself does not, so the task's current run is
+    /// checked against this process's own <c>CLAUDE_PID</c> as well. Anything else is a plain terminal
+    /// and names no run.
+    /// </summary>
+    private static async Task<RecordedProvenance> ObserveAttendedOrShellAsync(
+        IDocumentSession session, TaskDetails task, Guid ownerId, Func<string, string?> environment,
+        CancellationToken cancellationToken)
+    {
+        RecordedProvenance fromEnvironment = (await RecordingProvenanceReader.ObserveAsync(
+            session, taskReference: null, ownerId, cancellationToken, environment)).Provenance;
+
+        return fromEnvironment.RunId is not null
+            ? fromEnvironment
+            : await RecordingProvenanceReader.ObserveSelfRegisteredSessionAsync(
+                    session, task, ownerId, environment, cancellationToken)
+                ?? fromEnvironment;
     }
 
     /// <summary>

@@ -112,8 +112,8 @@ public sealed class TaskNotesCommand : Hall9kAsyncCommand<TaskNotesCommand.Setti
         string held = view.ReachesAPrompt ? string.Empty : " [red]HELD[/]";
         string task = view.IsOwn ? string.Empty : $"task {DomainId.Short(view.TaskId)} · ";
         string session = note.SessionName.IsNotBlank()
-            ? ExternalText.OneLineMarkup(note.SessionName!)
-            : note.SessionId.IsNotBlank() ? ExternalText.OneLineMarkup(note.SessionId!) : "no session";
+            ? ExternalText.OneLineMarkup(note.SessionName)
+            : note.SessionId.IsNotBlank() ? ExternalText.OneLineMarkup(note.SessionId) : "no session";
         yield return $"[dim]{task}[[{note.NoteId}]] {note.RecordedAt.ToLocalTime():yyyy-MM-dd HH:mm} · "
             + $"{Author(view.Entry, localFleet).EscapeMarkup()} · session: {session} · "
             + $"source: {note.Source.Label.EscapeMarkup()} · {view.Mark.Label.EscapeMarkup()}[/]{held}";

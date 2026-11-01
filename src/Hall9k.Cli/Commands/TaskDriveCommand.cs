@@ -19,6 +19,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Tasks.Rendering;
 using Hall9k.Domain.Infrastructure.Bootstrap;
@@ -234,7 +235,8 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
 
         // The pasted prompt (and --direct-launch's opening message) carries the whole task; the
         // default launch line does not, because the anchor it names has the session read the
-        // record with h9k task show instead, so none of this is assembled for it.
+        // record with h9k task show instead, so none of this is assembled for it. The one exception
+        // is the task's notes, which the anchor carries itself (PrintLaunchLineAsync).
         string prompt = settings.PrintPrompt || settings.DirectLaunch
             ? await BuildPromptAsync(
                 session, context, taskDetails, project, branch, worktreePath, resumesPreviousWork,
@@ -311,6 +313,9 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
                     currentRun.IsFollowUp
                         ? await BuildPullRequestStageAsync(session, task, taskDetails, project, currentRun, cancellationToken)
                         : null,
+                    await TaskNoteFeed.LoadForPromptAsync(
+                        session, taskId, new LocalFleetSource(session, project, context.OwnerId).LessonReader,
+                        cancellationToken),
                     cancellationToken);
     }
 
@@ -425,7 +430,8 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
     private static async Task<int> PrintLaunchLineAsync(
         TaskDetails task, ProjectDetails project, RunDetails run, string worktreePath, string branch,
         string runDirectory, string settingsFile, string sessionName, bool isFreshInteractiveClaim,
-        TaskDriveAnchorBuilder.PullRequestStage? pullRequestStage, CancellationToken cancellationToken)
+        TaskDriveAnchorBuilder.PullRequestStage? pullRequestStage, InjectedTaskNotes? taskNotes,
+        CancellationToken cancellationToken)
     {
         string anchorFile = Path.GetFullPath(RunPaths.TaskAnchorFile(runDirectory));
         string? recipeFile = project.HomeDirectory.HasValue
@@ -437,7 +443,7 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
             anchorFile,
             TaskDriveAnchorBuilder.Build(
                 task.Id, worktreePath, branch, RunPaths.PrSummaryDraftFile(runDirectory), project.WritingConventions, recipeFile,
-                pullRequestStage),
+                pullRequestStage, taskNotes),
             cancellationToken);
 
         // The pair a headless build of this task would get on this node, named on the line rather than

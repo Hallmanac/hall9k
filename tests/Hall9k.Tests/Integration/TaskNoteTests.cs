@@ -128,30 +128,30 @@ public sealed class TaskNoteTests : IClassFixture<PostgresFixture>, IAsyncLifeti
         recorded.SessionId.Should().BeNull("only a dispatched session records its session");
     }
 
-    [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    public async Task Blank_text_is_refused_and_records_nothing(string text)
-    {
-        (NodeContext node, ProjectDetails project) = await SeedProjectAsync();
-        (Guid taskId, _) = await SeedClaimedRunAsync(node, project, node.NodeId);
-
-        Func<Task> act = () => RecordAsync(node, taskId, text, _ => null);
-
-        await act.Should().ThrowAsync<DomainValidationException>();
-        (await ViewsAsync(taskId)).Should().BeEmpty();
-    }
-
     [Fact]
-    public async Task Text_over_a_thousand_characters_is_refused_naming_the_limit_and_records_nothing()
+    public async Task A_session_that_registered_itself_is_recognised_by_its_process_with_no_run_variable_set()
     {
         (NodeContext node, ProjectDetails project) = await SeedProjectAsync();
-        (Guid taskId, _) = await SeedClaimedRunAsync(node, project, node.NodeId);
+        (Guid taskId, Guid runId) = await SeedClaimedRunAsync(node, project, Guid.Empty);
+        // The pasted-launch-line flow: the platform never spawned this session, so it carries no
+        // HALL9K_INTERACTIVE_RUN_ID and is recognised by CLAUDE_PID matching the process it registered.
+        using (System.Diagnostics.Process self = System.Diagnostics.Process.GetCurrentProcess())
+        {
+            await using IDocumentSession session = _postgres.Store.LightweightSession();
+            session.Events.Append(runId, new InteractiveSessionStarted(
+                runId, DomainId.New(), self.StartTime.ToUniversalTime(), Environment.ProcessId,
+                Environment.MachineName, "my-own-session"));
+            await session.SaveChangesAsync();
+        }
 
-        Func<Task> act = () => RecordAsync(node, taskId, new string('x', 1001), _ => null);
+        TaskNoteRecorded fromThatSession = await RecordAsync(node, taskId, "Learned while driving", name =>
+            name == InteractiveSessionLiveness.ClaudeCodePidEnvironmentVariable ? Environment.ProcessId.ToString() : null);
+        TaskNoteRecorded fromAnotherProcess = await RecordAsync(node, taskId, "Typed elsewhere", name =>
+            name == InteractiveSessionLiveness.ClaudeCodePidEnvironmentVariable ? (Environment.ProcessId + 1).ToString() : null);
 
-        (await act.Should().ThrowAsync<DomainValidationException>()).Which.Message.Should().Contain("1000");
-        (await ViewsAsync(taskId)).Should().BeEmpty();
+        fromThatSession.Provenance.RunId.Should().Be(runId, "the registered session is attended and names its run");
+        fromThatSession.Provenance.Attendance.Should().Be(HumanAttendance.Attended);
+        fromAnotherProcess.Provenance.RunId.Should().BeNull("a process that is not the registered session names no run");
     }
 
     [Fact]
@@ -229,6 +229,29 @@ public sealed class TaskNoteTests : IClassFixture<PostgresFixture>, IAsyncLifeti
         section.HeldForProvenance.Should().Be(1);
     }
 
+    [Theory]
+    [InlineData("Feature", true)]
+    [InlineData("Spike", false)]
+    public async Task A_spike_gets_no_notes_section_at_all_so_no_composing_site_asks_for_a_block_nothing_records(
+        string type, bool carriesSection)
+    {
+        (NodeContext node, ProjectDetails project) = await SeedProjectAsync();
+        Guid taskId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<TaskAggregate>(taskId, TaskDecider.Add(
+                taskId, project.Id, "A spike", ["an answer"], type == "Spike" ? TaskType.Spike : TaskType.Feature,
+                null, null, null, Now, node.OwnerId, spikeKind: type == "Spike" ? SpikeKind.Research : null,
+                exitCriterion: type == "Spike" ? "an answer" : null));
+            await session.SaveChangesAsync();
+        }
+
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        InjectedTaskNotes? section = await TaskNoteFeed.LoadForPromptAsync(query, taskId, null, CancellationToken.None);
+
+        (section is not null).Should().Be(carriesSection);
+    }
+
     [Fact]
     public async Task A_closing_block_records_one_note_per_bullet_once_and_hands_back_the_message_without_it()
     {
@@ -276,7 +299,7 @@ public sealed class TaskNoteTests : IClassFixture<PostgresFixture>, IAsyncLifeti
     }
 
     [Fact]
-    public async Task A_failure_to_record_never_throws_and_the_block_is_still_removed()
+    public async Task An_unknown_task_leaves_the_message_alone_and_a_block_with_no_bullets_is_still_removed()
     {
         (NodeContext node, ProjectDetails project) = await SeedProjectAsync();
         (Guid taskId, Guid runId) = await SeedClaimedRunAsync(node, project, node.NodeId);

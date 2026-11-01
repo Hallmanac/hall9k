@@ -2059,7 +2059,9 @@ public static class WorkPromptBuilder
         {
             prompt.AppendLine();
             AppendFragment(prompt, file, "left-out",
-                ("LeftOut", notes.LeftOut.ToString(CultureInfo.InvariantCulture)),
+                ("LeftOut", notes.LeftOut == 1
+                    ? "1 more note"
+                    : $"{notes.LeftOut.ToString(CultureInfo.InvariantCulture)} more notes"),
                 ("MaxNotes", TaskNoteLimits.MaxPromptNotes.ToString(CultureInfo.InvariantCulture)),
                 ("MaxCharacters", TaskNoteLimits.MaxPromptCharacters.ToString(CultureInfo.InvariantCulture)),
                 ("TaskId", id));

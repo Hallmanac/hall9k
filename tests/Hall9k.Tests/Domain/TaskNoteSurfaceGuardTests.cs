@@ -26,6 +26,7 @@ public sealed class TaskNoteSurfaceGuardTests
         "src/Hall9k.Domain/Infrastructure/Persistence/EventScopeRegistry.cs",
         "src/Hall9k.Domain/Infrastructure/Persistence/TaskActClassificationRegistry.cs",
         "src/Hall9k.Connectors/Prompts/WorkPromptBuilder.cs",
+        "src/Hall9k.Connectors/Prompts/TaskDriveAnchorBuilder.cs",
         "src/Hall9k.Daemon/Execution/AgentPromptBuilder.cs",
         "src/Hall9k.Daemon/Execution/RunLauncher.cs",
         "src/Hall9k.Daemon/Execution/TaskNoteCapture.cs",
@@ -80,7 +81,7 @@ public sealed class TaskNoteSurfaceGuardTests
         task.Notes.Add(new TaskNoteEntry(
             new TaskNoteRecorded(
                 task.Id, DomainId.New(), "SECRET-NOTE-TEXT", RecordedProvenance.FromShell(DomainId.New()),
-                TaskNoteSource.Verb, DateTimeOffset.UtcNow),
+                TaskNoteSource.Verb, new DateTimeOffset(2026, 11, 1, 12, 0, 0, TimeSpan.Zero)),
             DomainId.New(), null, null));
 
         TaskDocumentRenderer.Render(task, "hall9k", epicJiraReference: null).Should().NotContain("SECRET-NOTE-TEXT");

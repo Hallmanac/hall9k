@@ -1,6 +1,7 @@
 using System.Text;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -57,9 +58,16 @@ public static class TaskDriveAnchorBuilder
     /// observation, the triage report, and how commits land on the branch. Null for every task still
     /// before its pull request.
     /// </param>
+    /// <param name="taskNotes">
+    /// The task's notes section, which the anchor carries because the default launch line sends the
+    /// session to read the record rather than handing it a composed prompt, so this is the only
+    /// route the notes and the verb that writes one take to it. Null composes nothing. An attended
+    /// session is taught the verb but never asked for the closing block, since nothing records an
+    /// attended session's final message.
+    /// </param>
     public static string Build(
         Guid taskId, string worktreePath, string branch, string prSummaryDraftPath, WritingConventions conventions,
-        string? recipeFile, PullRequestStage? pullRequestStage = null)
+        string? recipeFile, PullRequestStage? pullRequestStage = null, InjectedTaskNotes? taskNotes = null)
     {
         const string file = $"{TemplateDirectory}/anchor.md";
         Dictionary<string, string> values = new()
@@ -80,6 +88,7 @@ public static class TaskDriveAnchorBuilder
             ? BuildFragments(file, values, ["title", "register", "read-first", "never-advance", "verb-map", "job-changes", "worktree-rules", "pr-summary", "skip-to-pr"])
             : BuildFollowUp(file, values, pullRequestStage);
 
+        WorkPromptBuilder.AppendTaskNotes(anchor, taskNotes, taskId);
         WorkPromptBuilder.AppendWritingConventions(
             anchor, string.Empty, conventions, PromptTemplates.Load(file, "writing-conventions-lead"));
         if (recipeFile is not null)

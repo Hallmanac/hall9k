@@ -46,6 +46,18 @@ public sealed class TaskDeliverCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task The_closing_notes_block_comes_out_of_the_handoff_only_when_the_caller_says_the_daemon_read_it()
+    {
+        await WriteStreamFileAsync(
+            """{"type":"result","is_error":false,"result":"HANDOFF: deploy the endpoint first\n\nTASK NOTES:\n- the seam is in the loader"}""");
+
+        TaskDeliverCommand.ReadHeadlessResult(_runDirectory, stripNotesBlock: true).Handoff
+            .Should().Be("deploy the endpoint first", "a start-it-mine session's block is the daemon's, not the handoff's");
+        TaskDeliverCommand.ReadHeadlessResult(_runDirectory).Handoff
+            .Should().Contain("TASK NOTES:", "a delegated contractor's transcript is read exactly as it always was");
+    }
+
+    [Fact]
     public async Task The_last_result_line_wins_when_more_than_one_is_present()
     {
         await WriteStreamFileAsync(

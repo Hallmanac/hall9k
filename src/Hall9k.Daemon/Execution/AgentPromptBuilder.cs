@@ -643,7 +643,7 @@ public static class AgentPromptBuilder
         AppendChangesRequestedDisagreementRules(prompt, voiceSkill);
 
         AppendRecordedLessons(prompt, lessons, task.Id);
-        AppendTaskNotes(prompt, taskNotes, task.Id);
+        AppendTaskNotes(prompt, taskNotes, task.Id, asksForClosingBlock: true);
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
@@ -1152,7 +1152,7 @@ public static class AgentPromptBuilder
         AppendProjectHome(prompt, project);
 
         AppendRecordedLessons(prompt, lessons, task.Id);
-        AppendTaskNotes(prompt, taskNotes, task.Id);
+        AppendTaskNotes(prompt, taskNotes, task.Id, asksForClosingBlock: true);
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
@@ -1306,7 +1306,7 @@ public static class AgentPromptBuilder
         AppendProjectHome(prompt, project);
 
         AppendRecordedLessons(prompt, lessons, task.Id);
-        AppendTaskNotes(prompt, taskNotes, task.Id);
+        AppendTaskNotes(prompt, taskNotes, task.Id, asksForClosingBlock: true);
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
@@ -1852,6 +1852,8 @@ public static class AgentPromptBuilder
         AppendProjectHome(prompt, project);
 
         AppendRecordedLessons(prompt, lessons, task.Id);
+        // Teaches the verb but does not ask for the closing block: ReviewEngine awaits this session on
+        // its own path, which never reads its final message for notes.
         AppendTaskNotes(prompt, taskNotes, task.Id);
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
@@ -2007,6 +2009,8 @@ public static class AgentPromptBuilder
         AppendProjectHome(prompt, project);
 
         AppendRecordedLessons(prompt, lessons, task.Id);
+        // Teaches the verb but does not ask for the closing block: ReviewEngine awaits this session on
+        // its own path, which never reads its final message for notes.
         AppendTaskNotes(prompt, taskNotes, task.Id);
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();

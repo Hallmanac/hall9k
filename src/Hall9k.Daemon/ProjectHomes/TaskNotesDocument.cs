@@ -53,8 +53,8 @@ public static class TaskNotesDocument
         {
             TaskNoteRecorded note = view.Entry.Note;
             string session = note.SessionName.IsNotBlank()
-                ? RelayedText.OneLine(note.SessionName!)
-                : note.SessionId.IsNotBlank() ? RelayedText.OneLine(note.SessionId!) : "no session";
+                ? RelayedText.OneLine(note.SessionName)
+                : note.SessionId.IsNotBlank() ? RelayedText.OneLine(note.SessionId) : "no session";
             document.AppendLine();
             document.AppendLine(
                 $"## {note.RecordedAt.ToUniversalTime():yyyy-MM-dd HH:mm:ss}Z{(view.ReachesAPrompt ? string.Empty : " (HELD)")}");
