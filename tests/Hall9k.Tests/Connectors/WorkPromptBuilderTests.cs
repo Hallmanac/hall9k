@@ -696,6 +696,26 @@ public sealed class WorkPromptBuilderTests
             isInteractive: isInteractive, isDeliberateHeadlessStart: isDeliberateHeadlessStart);
 
     /// <summary>
+    /// A task with a human gate asks its build session to open the summary body with a plain,
+    /// behaviour-first paragraph of at most 120 words, which the gate's briefing prints. The gate starts
+    /// no session of its own, and a task without it is given no such ask.
+    /// </summary>
+    [Fact]
+    public void A_gated_tasks_headless_build_asks_for_a_plain_opening_paragraph_and_an_ungated_one_does_not()
+    {
+        TaskDetails gated = SomeTask();
+        gated.HumanGate = true;
+
+        string withGate = WorkPromptBuilder.Build(
+            gated, SomeProject(), branch: "task/abc12345-do-the-thing", worktreePath: _worktreePath);
+        string withoutGate = Build(isInteractive: false, isDeliberateHeadlessStart: false);
+
+        Flatten(withGate).Should().Contain("This task has a human gate")
+            .And.Contain("at most 120 words").And.Contain("what someone using the product will see change");
+        withoutGate.Should().NotContain("human gate").And.NotContain("120 words");
+    }
+
+        /// <summary>
     /// Decisions Log #163: the build session composes the pull request itself, so
     /// the marker and the skill order have to be in the prompt that asks for it, not only in the
     /// parser that reads it back.

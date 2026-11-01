@@ -4544,6 +4544,20 @@ public sealed class AgentPromptBuilderTests : IDisposable
     private static string Flatten(string prompt) =>
         string.Join(' ', prompt.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
+    [Fact]
+    public void A_gated_tasks_fix_prompt_asks_for_the_plain_opening_paragraph_and_an_ungated_one_does_not()
+    {
+        TaskDetails gated = SomeTask();
+        gated.HumanGate = true;
+
+        string withGate = AgentPromptBuilder.BuildReviewFix(gated, SomeProject(), "task/1-slug", "findings go here", cycle: 1);
+        string withoutGate = AgentPromptBuilder.BuildReviewFix(SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
+
+        string flat = string.Join(' ', withGate.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        flat.Should().Contain("This task has a human gate").And.Contain("at most 120 words");
+        withoutGate.Should().NotContain("human gate").And.NotContain("120 words");
+    }
+
     private static TaskDetails SomeTask() => new()
     {
         Objective = "Add rate limiting to auth endpoints",

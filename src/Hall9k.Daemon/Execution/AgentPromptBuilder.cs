@@ -4266,6 +4266,12 @@ public static class AgentPromptBuilder
         AppendFragment(
             prompt, file, "pr-summary-refresh",
             ("PrSummaryMarker", PrSummaryParser.Marker), ("PrSummaryTitlePrefix", PrSummaryParser.TitlePrefix));
+        if (task.HumanGate)
+        {
+            // Asked here too, because a refreshed block replaces the summary the gate's briefing prints.
+            WorkPromptBuilder.AppendHumanGateSummaryAsk(prompt);
+        }
+
         AppendWritingConventions(
             prompt, "  ", project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));
         // The same artifact the build session's own pull-request summary step produces — a

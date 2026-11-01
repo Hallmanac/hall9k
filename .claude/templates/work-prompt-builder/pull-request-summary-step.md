@@ -71,3 +71,10 @@
 ===do-not-run-gh===
 {{Indent}}- Do not run `gh pr create` or `gh pr edit`: the platform opens the pull request,
 {{Indent}}  and agents never do (PLAN.md §6.6).
+===gate-opening-paragraph===
+{{Indent}}- **This task has a human gate, so the body opens differently.** Its owner reads the
+{{Indent}}  first paragraph of your `{{PrSummaryMarker}}` body in a short briefing before the pull
+{{Indent}}  request exists. Open the body with one plain paragraph of at most 120 words, behaviour
+{{Indent}}  first: what someone using the product will see change. Say it the way you would to a
+{{Indent}}  colleague who has not read the code, with no file names, no list of what you edited, and
+{{Indent}}  no heading above it. Everything the rule above asks for follows that paragraph.
