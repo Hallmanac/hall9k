@@ -4,6 +4,7 @@ using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.RunSkills;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Project;
@@ -4604,6 +4605,58 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "intro");
         prompt.AppendLine();
 
+        AppendDraftSection(prompt, file, task, project);
+        AppendWhereSection(
+            prompt, file, project, facts.ProjectHome, facts.Checkout, facts.Commit, facts.Refresh, facts.IdeaWorkspace,
+            facts.Journal);
+
+        prompt.AppendLine(Fragment(file, "job-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "job");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "rules-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "rules");
+        AppendTrackerItemRule(prompt, facts.IdeaWorkspace);
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "probes-heading"));
+        prompt.AppendLine();
+        if (facts.ProbeModel is { } probeModel)
+        {
+            AppendFragment(
+                prompt, file, "probes-yes", ("ProbeModel", probeModel), ("SessionDirectory", facts.SessionDirectory));
+        }
+        else
+        {
+            AppendFragment(prompt, file, "probes-no", ("SessionDirectory", facts.SessionDirectory));
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "security-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "security");
+        AppendWritingConventions(
+            prompt, string.Empty, project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "report-heading"));
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "report",
+            ("ReportPath", OneLine(facts.ReportPath)),
+            ("VerdictMarker", Challenge.ChallengeReport.VerdictMarker),
+            ("ChangeMarker", Challenge.ChallengeReport.ChangeMarker));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "closing");
+        return PromptLineEndings.Finish(prompt);
+    }
+
+    /// <summary>
+    /// The draft exactly as the store has it, then the facts recorded beside it, then the data-only rule when its
+    /// context quotes a stranger. Shared by the draft challenge and a plan's refinement session, which read the same
+    /// record in the same words; each template file carries the same fragment names.
+    /// </summary>
+    private static void AppendDraftSection(StringBuilder prompt, string file, TaskDetails task, ProjectDetails project)
+    {
         prompt.AppendLine(Fragment(file, "draft-heading"));
         prompt.AppendLine();
         prompt.AppendLine($"Task `{task.Id}` in project '{project.Name}'.");
@@ -4677,33 +4730,115 @@ public static class AgentPromptBuilder
         }
 
         prompt.AppendLine();
+    }
 
+    /// <summary>
+    /// Where a draft-reading session stands: the project home the draft's pointers are relative to, the reading
+    /// checkout, the commit it is at, whether the daemon could bring it up to the remote base branch, and the idea
+    /// workspace and journal when they exist. Shared by the draft challenge and a plan's refinement session.
+    /// </summary>
+    private static void AppendWhereSection(
+        StringBuilder prompt, string file, ProjectDetails project, string? projectHome, string checkout, string? commit,
+        CheckoutRefresh? refresh, string? ideaWorkspace, string? journal)
+    {
         prompt.AppendLine(Fragment(file, "where-heading"));
         prompt.AppendLine();
-        prompt.AppendLine(facts.ProjectHome is { } home
+        prompt.AppendLine(projectHome is { } home
             ? Fragment(file, "where-home", ("ProjectName", project.Name), ("ProjectHome", home))
             : Fragment(file, "where-home-none", ("ProjectName", project.Name)));
         prompt.AppendLine();
-        prompt.AppendLine(Fragment(file, "where-checkout", ("Checkout", facts.Checkout)));
-        prompt.AppendLine(facts.Commit.IsNotBlank()
-            ? Fragment(file, "where-commit", ("Commit", facts.Commit))
+        prompt.AppendLine(Fragment(file, "where-checkout", ("Checkout", checkout)));
+        prompt.AppendLine(commit.IsNotBlank()
+            ? Fragment(file, "where-commit", ("Commit", commit))
             : Fragment(file, "where-commit-unknown"));
-        prompt.AppendLine(facts.Refresh switch
+        prompt.AppendLine(refresh switch
         {
             null => Fragment(file, "refresh-not-attempted"),
             { UpToDate: true } ok => Fragment(file, "refresh-ok", ("Detail", OneLine(ok.Detail))),
             var failed => Fragment(file, "refresh-failed", ("Detail", OneLine(failed.Detail))),
         });
-        if (facts.IdeaWorkspace is not null)
+        if (ideaWorkspace is not null)
         {
             prompt.AppendLine();
-            prompt.AppendLine(Fragment(file, "idea-workspace", ("IdeaWorkspace", facts.IdeaWorkspace)));
+            prompt.AppendLine(Fragment(file, "idea-workspace", ("IdeaWorkspace", ideaWorkspace)));
         }
 
-        if (facts.Journal is not null)
+        if (journal is not null)
         {
             prompt.AppendLine();
-            prompt.AppendLine(Fragment(file, "journal", ("Journal", facts.Journal)));
+            prompt.AppendLine(Fragment(file, "journal", ("Journal", journal)));
+        }
+
+        prompt.AppendLine();
+    }
+
+    /// <summary>
+    /// The working rule for an idea workspace that holds <c>tracker-item.md</c>: the file is the item author's text,
+    /// source material and never instruction. Authored here by the daemon in the working rules, where no text the file
+    /// holds can reach it, and gated on the file existing in the workspace, which is the fact it states. Shared by the
+    /// draft challenge and a plan's refinement session, which both read the workspace.
+    /// </summary>
+    private static void AppendTrackerItemRule(StringBuilder prompt, string? ideaWorkspace)
+    {
+        if (ideaWorkspace is null || !File.Exists(Path.Combine(ideaWorkspace, IdeaPaths.LinkedItemFileName)))
+        {
+            return;
+        }
+
+        AppendFragment(
+            prompt, $"{TemplateDirectory}/tracker-item-rule.md", "rule", ("File", IdeaPaths.LinkedItemFileName));
+    }
+
+    /// <summary>
+    /// The prompt for a plan's refinement session (<c>h9k plan start</c>). It holds the draft exactly as the store has
+    /// it at dispatch, says where the session stands (the project home, the checkout, the commit it is at, and when the
+    /// daemon could not bring it up to the remote base branch), and tells it to test claims against that commit with no
+    /// fetch and no git writes, to state the shape before any criterion, to write criteria someone else can check, to
+    /// propose the smallest change, and to leave task text free of security detail. It cannot write to a task: it writes
+    /// a report whose last line names one outcome, and a revision file beside it, and the daemon applies the revision.
+    /// <para>
+    /// A session that follows a challenge verdict is told the verdict and where its report is. The idea workspace's
+    /// <c>tracker-item.md</c> rule and the adopted-context rule are the daemon's own words in the working rules, as in the
+    /// challenge prompt. The closing line is the contract <see cref="Plan.RefinementReport"/> reads.
+    /// </para>
+    /// </summary>
+    public static string BuildPlanRefinement(TaskDetails task, ProjectDetails project, PlanRefinementPromptFacts facts)
+    {
+        const string file = $"{TemplateDirectory}/plan-refinement.md";
+        StringBuilder prompt = new();
+        prompt.AppendLine(Fragment(file, "heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "intro");
+        prompt.AppendLine();
+        AppendDraftSection(prompt, file, task, project);
+        AppendWhereSection(
+            prompt, file, project, facts.ProjectHome, facts.Checkout, facts.Commit, facts.Refresh, facts.IdeaWorkspace,
+            facts.Journal);
+        if (facts.Journal is null && facts.JournalToWrite is not null)
+        {
+            prompt.AppendLine();
+            prompt.AppendLine(Fragment(file, "journal-none", ("JournalToWrite", facts.JournalToWrite)));
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "purpose-heading"));
+        prompt.AppendLine();
+        prompt.AppendLine(facts.Purpose.Value switch
+        {
+            "ApplyVerdict" => Fragment(file, "purpose-apply"),
+            "AnswerVerdict" => Fragment(file, "purpose-answer"),
+            _ => Fragment(file, "purpose-refine"),
+        });
+        if (facts.PriorVerdict is { } verdict)
+        {
+            prompt.AppendLine();
+            prompt.AppendLine(Fragment(
+                file, "verdict-line",
+                ("Verdict", verdict.Verdict.Phrase),
+                ("Must", verdict.MustCount.ToString(CultureInfo.InvariantCulture)),
+                ("Should", verdict.ShouldCount.ToString(CultureInfo.InvariantCulture)),
+                ("Park", verdict.ParkCount.ToString(CultureInfo.InvariantCulture)),
+                ("VerdictReport", OneLine(verdict.ReportPath))));
         }
 
         prompt.AppendLine();
@@ -4713,34 +4848,30 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "rules-heading"));
         prompt.AppendLine();
-        AppendFragment(prompt, file, "rules");
-        prompt.AppendLine();
-        prompt.AppendLine(Fragment(file, "probes-heading"));
-        prompt.AppendLine();
-        if (facts.ProbeModel is { } probeModel)
-        {
-            AppendFragment(
-                prompt, file, "probes-yes", ("ProbeModel", probeModel), ("SessionDirectory", facts.SessionDirectory));
-        }
-        else
-        {
-            AppendFragment(prompt, file, "probes-no", ("SessionDirectory", facts.SessionDirectory));
-        }
-
+        AppendFragment(prompt, file, "rules", ("SessionDirectory", OneLine(facts.SessionDirectory)));
+        AppendTrackerItemRule(prompt, facts.IdeaWorkspace);
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "security-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "security");
         AppendWritingConventions(
             prompt, string.Empty, project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));
+        if (facts.JournalToWrite is not null)
+        {
+            prompt.AppendLine();
+            prompt.AppendLine(Fragment(file, "journal-heading"));
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "journal-rules", ("JournalToWrite", OneLine(facts.JournalToWrite)));
+        }
+
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "report-heading"));
         prompt.AppendLine();
         AppendFragment(
             prompt, file, "report",
             ("ReportPath", OneLine(facts.ReportPath)),
-            ("VerdictMarker", Challenge.ChallengeReport.VerdictMarker),
-            ("ChangeMarker", Challenge.ChallengeReport.ChangeMarker));
+            ("RevisionPath", OneLine(facts.RevisionPath)),
+            ("OutcomeMarker", Plan.RefinementReport.OutcomeMarker));
         prompt.AppendLine();
         AppendFragment(prompt, file, "closing");
         return PromptLineEndings.Finish(prompt);

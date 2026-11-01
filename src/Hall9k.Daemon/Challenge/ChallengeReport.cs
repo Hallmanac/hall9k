@@ -44,7 +44,7 @@ public static partial class ChallengeReport
     internal const int MaxReportChars = 200_000;
 
     [GeneratedRegex(@"^`{3,}[\w+-]*$", RegexOptions.CultureInvariant)]
-    private static partial Regex FenceLine();
+    internal static partial Regex FenceLine();
 
     [GeneratedRegex(@"^(?:(?:[-*+]|\d+[.)])\s+)?[*_`]*(VERDICT|CHANGE)[*_`]*\s*:[*_`]*\s*(.*)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MarkerLine();
@@ -160,7 +160,7 @@ public static partial class ChallengeReport
         string.Equals(marker, expected, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Emphasis, backticks, and a trailing period are not text; what is left is the verdict line's content.</summary>
-    private static string StripVerdictDecoration(string value)
+    internal static string StripVerdictDecoration(string value)
     {
         string current = value.Trim();
         while (true)
@@ -203,7 +203,7 @@ public static partial class ChallengeReport
             : null;
     }
 
-    private static async Task<string> ReadTailAsync(string path, CancellationToken cancellationToken)
+    internal static async Task<string> ReadTailAsync(string path, CancellationToken cancellationToken)
     {
         // Bytes, not characters, so a multi-byte report cannot make the cap larger than it says.
         const int maxBytes = MaxReportChars * 4;

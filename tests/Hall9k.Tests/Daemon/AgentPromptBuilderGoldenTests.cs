@@ -586,6 +586,38 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
                 SomeChallengeFacts(
                     null, new CheckoutRefresh(false, "could not be fast-forwarded: origin was unreachable."))));
 
+    private static PlanRefinementPromptFacts SomeRefinementFacts(
+        RefinementPurpose purpose, CheckoutRefresh? refresh, PriorVerdictFacts? prior) => new(
+        purpose, "/home/agent/.hall9k/projects/hall9k", "/home/agent/.hall9k/projects/hall9k/repo/dev",
+        "0123456789abcdef0123456789abcdef01234567", refresh,
+        "/home/agent/.hall9k/runs/01a09285-6a21-7259-a883-c5ebe5482c3e/refinement-report.md",
+        "/home/agent/.hall9k/runs/01a09285-6a21-7259-a883-c5ebe5482c3e/refinement-revision.md",
+        "/home/agent/.hall9k/runs/01a09285-6a21-7259-a883-c5ebe5482c3e",
+        "/home/agent/.hall9k/projects/hall9k/ideas/01a09285-idea/workspace",
+        "/home/agent/.hall9k/projects/hall9k/tasks/01a09285-draft/journal.md",
+        "/home/agent/.hall9k/projects/hall9k/tasks/01a09285-draft/journal.md", prior);
+
+    [Fact]
+    public void BuildPlanRefinement_first_session_matches_its_golden() =>
+        AssertMatchesGolden(
+            "build-plan-refinement",
+            AgentPromptBuilder.BuildPlanRefinement(
+                SomeDraftToChallenge(), SomeProject(),
+                SomeRefinementFacts(RefinementPurpose.Refine, new CheckoutRefresh(true, "is up to date with origin/main."), null)));
+
+    [Fact]
+    public void BuildPlanRefinement_applying_a_verdict_with_a_stale_checkout_matches_its_golden() =>
+        AssertMatchesGolden(
+            "build-plan-refinement-apply",
+            AgentPromptBuilder.BuildPlanRefinement(
+                SomeDraftToChallenge(), SomeProject(),
+                SomeRefinementFacts(
+                    RefinementPurpose.ApplyVerdict,
+                    new CheckoutRefresh(false, "could not be fast-forwarded: origin was unreachable."),
+                    new PriorVerdictFacts(
+                        ChallengeVerdict.PublishAsRevised, 2, 1, 1,
+                        "/home/agent/.hall9k/runs/01a09285-7b32-7259-a883-c5ebe5482c3e/challenge-report.md"))));
+
     private static void AssertMatchesGolden(string name, string actual)
     {
         actual.ShouldHaveOnlyLineFeeds();
