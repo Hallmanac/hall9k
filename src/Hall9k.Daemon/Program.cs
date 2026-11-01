@@ -221,6 +221,7 @@ builder.Services.AddSingleton<PrReviewEngine>();
 builder.Services.AddSingleton<SpikeEngine>();
 builder.Services.AddSingleton<PullRequestOpener>();
 builder.Services.AddSingleton<BlockerContextAssembler>();
+builder.Services.AddSingleton<LessonPicker>();
 builder.Services.AddSingleton<PrimarySessionResumer>();
 builder.Services.AddSingleton<LaunchHoldEngine>();
 builder.Services.AddSingleton<RunSupervisor>();

@@ -785,6 +785,16 @@ public sealed class DaemonOptions
     public TimeSpan BlockerSynthesisTimeout { get; set; } = TimeSpan.FromMinutes(5);
 
     /// <summary>
+    /// How long a dispatch waits for the lesson picker session before building on newest-first
+    /// lessons (30 seconds). The picker sits on the same critical path as
+    /// <see cref="BlockerSynthesisTimeout"/>, since <c>RunLauncher.LaunchAsync</c> is awaited inside
+    /// the dispatch loop and a slow picker would hold every other claim on the node, so the bound is
+    /// far shorter: the picker reads one prompt and answers with ids. A session past it is
+    /// terminated and the pick is recorded as timed out.
+    /// </summary>
+    public TimeSpan LessonPickerTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// This node's default answer to "ask the reviewers for another pass once a fix
     /// follow-up pushed?" (Decisions Log #62), under both the project and the owner
     /// settings in the resolution chain. Off, because each pass costs review quota and a
