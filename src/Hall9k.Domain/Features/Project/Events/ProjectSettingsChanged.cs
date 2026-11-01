@@ -364,4 +364,13 @@ public sealed record ProjectSettingsChanged(
     /// binding. Present-with-<see cref="LinearTeamKey.None"/> clears it. Trailing and optional so
     /// every stream written before this setting existed replays byte-for-byte unchanged.
     /// </summary>
-    Optional<LinearTeamKey> LinearTeam = default);
+    Optional<LinearTeamKey> LinearTeam = default,
+    /// <summary>
+    /// Whether <c>h9k task publish</c> on this project refuses a draft with no usable challenge verdict on
+    /// record unless a person states why (<c>--skip-challenge</c>). Absent means the project recorded no
+    /// value, which reads on (<see cref="Project.ChallengeRequirement"/>), so a project registered before this
+    /// setting existed is covered by the default rather than by a migration. Trailing and optional so every
+    /// stream written before it replays byte-for-byte unchanged. A node setting like the rest of this
+    /// event's untagged fields: it is not mirrored into <see cref="ProjectTeamSettingsChanged"/>.
+    /// </summary>
+    Optional<bool> RequireChallenge = default);

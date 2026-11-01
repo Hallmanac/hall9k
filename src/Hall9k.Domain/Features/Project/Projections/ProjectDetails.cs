@@ -134,6 +134,16 @@ public sealed class ProjectDetails
     /// that never chose.
     /// </summary>
     public bool SecurityReview { get; set; } = SecurityReviewSetting.Default;
+
+    /// <summary>
+    /// The challenge requirement the stream last recorded, or null when no change ever set one, which reads on
+    /// (<see cref="ChallengeRequirement"/>). Read <see cref="ChallengeRequirementSetting"/>, not this field.
+    /// </summary>
+    public bool? RequireChallengeRecorded { get; set; }
+
+    /// <summary>The effective challenge requirement and whether it is the default.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ChallengeRequirement ChallengeRequirementSetting => ChallengeRequirement.From(RequireChallengeRecorded);
     /// <summary>
     /// What has to be true on this install before a task linked to a Jira card, a GitHub issue, or a Linear issue
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
@@ -430,6 +440,11 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
         if (@event.Data.LinearTeam.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.LinearTeam), @event.Data.ChangedAt))
         {
             view.LinearTeam = @event.Data.LinearTeam.Value ?? LinearTeamKey.None;
+        }
+
+        if (@event.Data.RequireChallenge.HasValue)
+        {
+            view.RequireChallengeRecorded = @event.Data.RequireChallenge.Value;
         }
 
         if (@event.Data.HomeDirectory.HasValue)

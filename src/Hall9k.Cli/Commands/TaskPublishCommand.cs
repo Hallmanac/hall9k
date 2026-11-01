@@ -116,6 +116,17 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             + "PRD, an ADR, or an issue split into several tasks, where an explicit 'never' or "
             + "'on-closeout' here beats an inherited default on every sibling task")]
         public string? CloseLinkedIssue { get; init; }
+
+        [CommandOption("--skip-challenge <REASON>")]
+        [Description(
+            "Publish past the challenge gate by stating why. The gate (h9k project set --require-challenge, "
+            + "on unless the project recorded otherwise) refuses a draft whose latest challenge verdict is "
+            + "missing, is 'do not publish', or is 'publish as revised' holding a must change the draft has "
+            + "not been revised since; run h9k task challenge <id> to get a verdict. The reason and who gave it "
+            + "are recorded on the publish and shown by h9k task show. A blank reason is refused, and a reason "
+            + "passed where the gate asked for nothing (a verdict that passes, a project that does not require "
+            + "one, a pr-review task, a spike) is not recorded")]
+        public string? SkipChallenge { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -154,7 +165,8 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             settings.NoExistingItem, settings.Untracked, PreApprovalInput.FromFlag(settings.PreApproved),
             settings.CloseLinkedIssue is { } closeLinkedIssue
                 ? Optional<string?>.Of(closeLinkedIssue)
-                : Optional<string?>.None);
+                : Optional<string?>.None,
+            new ChallengeGateInput(project.ChallengeRequirementSetting.IsOn, project.Name, settings.SkipChallenge));
 
         // A Linear project's publish that will create an issue needs the team's id and default state
         // from Linear, and asks for them here rather than after the commit: past the save there is
@@ -214,6 +226,13 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         string shortId = TaskListCommand.ShortId(taskId);
         AnsiConsole.MarkupLine(
             $"[green]Task {shortId} published[/]: {ExternalText.OneLineMarkup(task.Objective)}");
+        if (published.ChallengeSkipReason is { } skippedChallenge)
+        {
+            AnsiConsole.MarkupLine(
+                "[yellow]  Published past the challenge gate[/] [dim]with no usable verdict on record; the reason "
+                + $"is recorded with who gave it: {ExternalText.OneLineMarkup(skippedChallenge)}[/]");
+        }
+
         if (published.EffectivePreApproval.MergesAutomatically)
         {
             AnsiConsole.MarkupLine(

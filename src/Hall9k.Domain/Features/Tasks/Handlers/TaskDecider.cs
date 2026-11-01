@@ -331,7 +331,8 @@ public static class TaskDecider
         bool noExistingItemAttested = false,
         bool untracked = false,
         PreApprovalMode? preApproval = null,
-        Optional<string?> closeLinkedIssue = default)
+        Optional<string?> closeLinkedIssue = default,
+        ChallengeGateInput? challenge = null)
     {
         if (task.State != TaskState.Draft)
         {
@@ -535,6 +536,8 @@ public static class TaskDecider
         bool noExistingItemRecorded = needsExistingItemCheck && noExistingItemAttested;
         bool untrackedRecorded = needsExistingItemCheck && untracked;
 
+        string? challengeSkipRecorded = DecideChallengeGate(task, challenge);
+
         // An unrecognized mode is refused rather than read as off: the publisher typed something,
         // and silently publishing without the pre-approval they asked for would be the worst of
         // the three answers. Null is not that — it is nothing passed at all, and pre-approval
@@ -555,7 +558,46 @@ public static class TaskDecider
             : Optional<CloseLinkedIssueRule?>.None;
         return new TaskPublished(
             task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded, untrackedRecorded,
-            preApprovalRecorded.LegacyPreApproved, preApprovalRecorded, closeLinkedIssueForEvent);
+            preApprovalRecorded.LegacyPreApproved, preApprovalRecorded, closeLinkedIssueForEvent,
+            challengeSkipRecorded);
+    }
+
+    /// <summary>
+    /// The challenge gate (<see cref="ChallengeGate"/>): refuses a publish that lacks a usable verdict unless the
+    /// publisher states why, and returns the reason to record, or null when nothing is to be recorded. A reason
+    /// passed where the gate asked for nothing is clamped to null, never asserted on the stream, the way
+    /// <c>noExistingItemRecorded</c> is. A blank reason is refused wherever it is passed.
+    /// </summary>
+    private static string? DecideChallengeGate(TaskAggregate task, ChallengeGateInput? challenge)
+    {
+        if (challenge is null)
+        {
+            return null;
+        }
+
+        if (challenge.SkipReason is { } reason && reason.IsBlank())
+        {
+            throw new DomainValidationException(
+                "--skip-challenge takes the reason you are publishing without a usable challenge verdict, and it "
+                + "was blank. Say why in a sentence, for example: "
+                + $"h9k task publish {task.Id} --skip-challenge \"the change is a typo fix\". It is recorded with "
+                + "who gave it.");
+        }
+
+        if (ChallengeGate.Shortfall(task, challenge.Required) is not { } shortfall)
+        {
+            return null;
+        }
+
+        return challenge.SkipReason is { } stated
+            ? stated.Trim()
+            : throw new DomainBusinessRuleException(
+                $"Task {task.Id} cannot publish yet: {shortfall}, and project {challenge.ProjectName} requires one. "
+                + $"Run h9k task challenge {task.Id}, read the verdict, apply what it accepts with h9k task revise, "
+                + "then publish. To publish without one, state why: "
+                + $"h9k task publish {task.Id} --skip-challenge \"<reason>\" (the reason is recorded with who gave "
+                + $"it). The requirement is a project setting: h9k project set {challenge.ProjectName} "
+                + "--require-challenge off.");
     }
 
     /// <summary>

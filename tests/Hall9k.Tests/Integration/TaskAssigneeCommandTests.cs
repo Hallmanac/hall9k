@@ -462,7 +462,10 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
         refusal.Should().BeOfType<DomainValidationException>().Which.Message.Should().Contain("--queue");
         (await ReadAsync(refused, cts.Token)).State.Should().Be(TaskState.Draft);
 
-        (await RunCliAsync(cts.Token, "task", "publish", queuedAtPublish.ToString(), "--queue")).Should().BeNull();
+        (await RunCliAsync(
+            cts.Token, "task", "publish", queuedAtPublish.ToString(), "--queue",
+            // This test is about queueing at publish, not the challenge gate (default on for a project that recorded none).
+            "--skip-challenge", "the challenge gate is not what this test exercises")).Should().BeNull();
         TaskAggregate queued = await ReadAsync(queuedAtPublish, cts.Token);
         queued.State.Should().Be(TaskState.Queued, "publish --queue publishes and queues in one transaction");
         queued.AssigneeOwnerId.Should().Be(_me.OwnerId);
