@@ -134,9 +134,13 @@ public sealed class ReviewPersonaRegistryTests
     [
         "Shell commands are restricted in this session.",
         "You start in the checkout, so never use `cd` or `git -C`.",
-        "anything else is refused without a prompt: run one git command per call, with no pipes and no chained commands.",
-        "search with the Grep tool only if this session lists one; never use shell grep.",
-        "Without a search tool you can read only the paths you can already name.",
+        "anything else is refused without a prompt.",
+        "A pipe or a chain runs only if every command in it is allowed, and `$(...)` is always refused.",
+        "Search the checkout with `grep -rn <pattern> <path>`, `find <path> -name <glob>`, and `ls`, or with the Grep tool if this session lists one.",
+        "Read files with the Read tool or `cat`.",
+        "`git log -p -- <path>` shows a file's changes",
+        "`git log -G<regex> --oneline` finds the commits that changed a matching line",
+        "`git diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 <revision> -- <path>` prints a file as it stood at any revision",
         "do not retry a variation of it",
         "say in your report what you could not check or search as a result",
     ];
@@ -159,16 +163,21 @@ public sealed class ReviewPersonaRegistryTests
     }
 
     [Fact]
-    public void The_shell_limits_statement_names_no_individual_allowed_command()
+    public void The_shell_limits_statement_teaches_only_the_commands_checked_to_work()
     {
         System.Text.StringBuilder statement = new();
         AgentPromptBuilder.AppendShellLimits(statement);
 
         string text = statement.ToString();
-        foreach (string command in new[] { "git diff", "git log", "git show", "git status", "git rev-parse", "gh pr", "gh issue" })
+        foreach (string command in new[] { "git show", "git grep", "git ls-files", "git blame", "git status", "git rev-parse" })
         {
             text.Should().NotContain(command);
         }
+
+        System.Text.RegularExpressions.Regex.IsMatch(text, @"\bgh\s").Should().BeFalse("no gh command is named");
+        text.Should().NotContain("never use shell grep")
+            .And.NotContain("only the paths you can already name")
+            .And.NotContain("no pipes and no chained commands");
     }
 
     [Fact]
