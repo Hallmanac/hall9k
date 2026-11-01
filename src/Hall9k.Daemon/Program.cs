@@ -33,7 +33,6 @@ using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx;
 using JasperFx.CodeGeneration;
 using Marten;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Wolverine;
 using Wolverine.Marten;
