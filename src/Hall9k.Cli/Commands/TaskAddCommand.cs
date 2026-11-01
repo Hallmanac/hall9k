@@ -319,6 +319,31 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "dropped rather than refused, since there is no consequence to acknowledge there.")]
         public bool AcceptReducedReview { get; init; }
 
+        [CommandOption("--human-gate")]
+        [Description(
+            "Put a human gate on this task: its run stops once, after automated review has settled and "
+            + "before its GitHub pull request opens, parked as needing you. There h9k review brief prints a "
+            + "short, plain briefing (what changed, how review settled, the commits, how to walk and run "
+            + "the branch), and you approve (h9k review proceed), change (h9k review resolve --needs-fixes "
+            + "\"<what to change>\", or commit by hand and h9k review fixed), or discard it (h9k task "
+            + "abandon, then h9k task add --evolved-from). Chosen per task when it is planned, never a "
+            + "project or node default, because a stop on every task makes you the bottleneck. A "
+            + "pr-review task and a spike refuse it: they open no pull request of their own. Revise it "
+            + "later with h9k task revise --human-gate or --clear-human-gate")]
+        public bool HumanGate { get; init; }
+
+        [CommandOption("--evolved-from <TASK>")]
+        [Description(
+            "Mint a fresh Draft that evolves from this task, the discard outcome of the human gate: it "
+            + "copies the source task's objective, acceptance criteria, context, type, epic, idea "
+            + "provenance, and human gate, and adds the source's abandon reason to the context when it "
+            + "has one. h9k task show on the new draft names the task it evolved from. The source is "
+            + "left as it is (abandon it separately with h9k task abandon). Explicit --objective, "
+            + "--criteria, --context, --type, --epic, and --project override the copy. Cannot be "
+            + "combined with another seed (--file, --from-idea, --from-issue, --from-jira, --from-linear, "
+            + "--from-pr), and a pr-review task cannot be evolved because it is bound to one pull request")]
+        public string? EvolvedFrom { get; init; }
+
         [CommandOption("--pre-approved [MODE]")]
         [Description(
             "Give this task standing pre-approval from the start (task: a task can be published "
@@ -346,6 +371,34 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                     query, importerToken, processRunner: new ProjectScopedGitHubRunner(store).Runner);
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// The context an evolved draft starts with: the source's own, then the reason the source was
+    /// abandoned when it has one (the evolving task should not repeat what already failed), then
+    /// whatever the caller passed explicitly. Plain sentences, because this text rides into the
+    /// next run's prompt.
+    /// </summary>
+    internal static string? EvolvedContext(TaskDetails source, string? explicitContext)
+    {
+        string id = TaskListCommand.ShortId(source.Id);
+        List<string> parts = [];
+        if (source.AgentContext.IsNotBlank())
+        {
+            parts.Add(source.AgentContext!.Trim());
+        }
+
+        if (source.AbandonedReason.IsNotBlank())
+        {
+            parts.Add($"This task evolved from task {id}, which was abandoned with this reason: {source.AbandonedReason!.Trim()}");
+        }
+
+        if (explicitContext.IsNotBlank())
+        {
+            parts.Add(explicitContext!.Trim());
+        }
+
+        return string.Join("\n\n", parts);
     }
 
     /// <summary>
@@ -436,6 +489,38 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         }
 
         await using IDocumentSession session = store.LightweightSession();
+
+        // The discard outcome of the human gate: a fresh draft that starts from this task's own
+        // words instead of a blank page. Seeds only what the caller left unsaid, so an explicit
+        // option always wins over the copy.
+        TaskDetails? evolvedFrom = null;
+        if (settings.EvolvedFrom.IsNotBlank())
+        {
+            if (adoption is not null || settings.FromIdea.IsNotBlank() || settings.File.IsNotBlank())
+            {
+                throw new DomainValidationException(
+                    "--evolved-from seeds a draft from an earlier task, and --file, --from-idea, and the "
+                    + "--from-* adoption options each seed one from somewhere else; pass one.");
+            }
+
+            Guid evolvedFromId = await TaskIdResolver.ResolveAsync(session, settings.EvolvedFrom, cancellationToken);
+            evolvedFrom = await session.LoadAsync<TaskDetails>(evolvedFromId, cancellationToken)
+                ?? throw new DomainNotFoundException($"No task {evolvedFromId}.");
+            if (evolvedFrom.Type == TaskType.PrReview)
+            {
+                throw new DomainValidationException(
+                    $"Task {evolvedFromId} is a pr-review task, bound to the one pull request it reviews, so "
+                    + "there is nothing to evolve: a new review of that pull request is "
+                    + "h9k task add --from-pr <url> --again.");
+            }
+
+            project ??= evolvedFrom.ProjectId.ToString();
+            objective ??= evolvedFrom.Objective;
+            type ??= evolvedFrom.Type.Value;
+            epic ??= evolvedFrom.EpicId?.ToString();
+            criteria = criteria.Count > 0 ? criteria : [.. evolvedFrom.AcceptanceCriteria];
+            agentContext = EvolvedContext(evolvedFrom, agentContext);
+        }
 
         // Unfenced, like every other ordinary idea mutation (h9k idea move, h9k idea revise):
         // cutting has no "once" invariant to protect against racing itself, unlike promotion's
@@ -588,6 +673,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // network call and re-typed criteria and then throw both away.
         Guid taskId = DomainId.New();
         TaskDecider.RefuseCompositionOnPrReview(taskType, reviewStageComposition);
+        TaskDecider.RefuseHumanGateWithoutPullRequest(taskType, settings.HumanGate || evolvedFrom is { HumanGate: true });
         // Vetted on the near side of the prompts for the identical reason, and with the identical
         // arguments the decider itself will re-vet with below: a stacked edge on a pr-review task,
         // or one naming this task itself, is refused before AdoptAsync's own gh call and the
@@ -724,10 +810,12 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             // actually creates is local, original work — never a copy of another node's (idea
             // 202383dc, A3a; the record's own doc comment carries the fuller argument).
             origin: null,
-            sourceIdeaId: sourceIdea?.Id,
+            sourceIdeaId: sourceIdea?.Id ?? evolvedFrom?.SourceIdeaId,
             secondaryExternalReference: secondaryImported?.Reference,
             spikeKind: spikeKind,
-            exitCriterion: settings.ExitCriterion);
+            exitCriterion: settings.ExitCriterion,
+            humanGate: settings.HumanGate || evolvedFrom is { HumanGate: true },
+            evolvedFromTaskId: evolvedFrom?.Id);
         session.Events.StartStream<TaskAggregate>(taskId, added);
 
         if (sourceIdea is not null)

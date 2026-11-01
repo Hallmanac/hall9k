@@ -137,6 +137,39 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Interactive mode", "[blue]on[/] [dim](every review/fix/PR boundary parks for h9k review proceed; h9k task handback or a default h9k task release turns it off)[/]");
         }
 
+        // Says whether the gate is on, either way, for every type that could have one: a pr-review task and a
+        // spike open no pull request of their own, so the question does not arise for them.
+        if (details.HumanGate)
+        {
+            header.AddRow(
+                "Human gate",
+                "[blue]on[/] [dim](the run stops once after automated review settles and before the pull "
+                + "request opens; h9k review brief prints the briefing there, h9k task revise --clear-human-gate "
+                + "takes the gate off)[/]");
+        }
+        else if (details.Type != TaskType.PrReview && details.Type != TaskType.Spike)
+        {
+            header.AddRow("Human gate", "[dim]off (h9k task revise --human-gate stops the run once before its pull request opens)[/]");
+        }
+
+        if (details.CurrentRunId is { } gatedRunId
+            && await session.LoadAsync<RunDetails>(gatedRunId, cancellationToken) is { HumanGateAnsweredAt: { } answeredAt } gatedRun)
+        {
+            // Who answered the gate, and when, so a task that went on to open its pull request still says
+            // a person looked at it first. A skip to the pull request carries no person, and says so.
+            string who = gatedRun.HumanGateAnsweredByOwnerId is { } answeredBy
+                ? (await KnowledgeRecordRendering.OwnerLabelAsync(session, answeredBy, cancellationToken)).EscapeMarkup()
+                : "the owner";
+            header.AddRow("Gate approved", $"by {who} at {answeredAt.ToLocalTime():g}");
+        }
+
+        if (details.EvolvedFromTaskId is { } evolvedFromId)
+        {
+            header.AddRow(
+                "Evolved from",
+                $"[dim]{TaskListCommand.ShortId(evolvedFromId)}[/] [dim](h9k task show {TaskListCommand.ShortId(evolvedFromId)})[/]");
+        }
+
         if (details.Model != AgentModel.Unknown)
         {
             header.AddRow("Model", $"{details.Model.Value.EscapeMarkup()} [dim](task override)[/]");

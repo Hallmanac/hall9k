@@ -112,6 +112,14 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
         IInteractiveConfirmation confirmation, CancellationToken cancellationToken)
     {
         string worktree = RequireWorktree(task, run);
+        // On a gated task the worktree is the person's only at the gate. Anywhere the run is live, the
+        // gates and sessions own it, and the launch the sweep tears down on its own would not be torn
+        // down before they started.
+        if (task.HumanGate && run.State.IsLive)
+        {
+            throw new DomainConflictException(LocalLaunchRefusal.GatedRunIsWorking(task.Id));
+        }
+
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"No project {task.ProjectId} for task {task.Id}.");
 

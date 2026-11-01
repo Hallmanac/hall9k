@@ -47,6 +47,13 @@ namespace Hall9k.Cli.Commands;
 /// commits are sitting in the diff it is reading changed nothing.
 /// </para>
 /// <para>
+/// It is also the "change it by hand" outcome at the boundary before the pull request opens, which is the
+/// task's human gate (<c>h9k task add --human-gate</c>) and interactive mode's gates-to-pull-request park alike:
+/// accepted there, where it is otherwise refused, comparing the branch against the tip recorded at that
+/// park, refusing <c>--no-change</c> because no finding is waiting, and re-entering the loop so the gates
+/// and a review pass read the commits before the run stops at the gate again.
+/// </para>
+/// <para>
 /// The same lever works at a closeout-side fix park — a follow-up run reopened by a human's
 /// changes-requested review or by failing checks — because that park is the identical
 /// <see cref="ReviewPhase.FixNeeded"/> interactive gate inside that follow-up's own review loop,
@@ -144,7 +151,20 @@ public sealed class ReviewFixedCommand : Hall9kAsyncCommand<ReviewFixedCommand.S
         // at a boundary where nothing has asked for a fix. The other three boundaries already have
         // their own correct lever, and the message names it rather than leaving the operator to
         // guess (AGENTS.md's CLI standard: an agent must be able to self-correct from the message).
-        if (run.ParkedFromReviewPhase != ReviewPhase.FixNeeded)
+        // The boundary before the pull request opens (a task's human gate, or interactive mode's own
+        // gates-to-pull-request park) is the one other boundary this verb answers: the person changes the
+        // branch by hand after reading the briefing and hands it back, and the gates and a review pass then
+        // read their commits as they would a fix session's. No finding is waiting there, so there is nothing
+        // to dismiss and --no-change means nothing.
+        if (run.ParkedAtPullRequestBoundary && settings.NoChange.IsNotBlank())
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} is parked at the boundary before its pull request opens, where no finding is "
+                + "waiting for an answer, so --no-change has nothing to dismiss. If you changed nothing and the "
+                + $"branch is fine as it stands, approve it: h9k review proceed {taskId}.");
+        }
+
+        if (run.ParkedFromReviewPhase != ReviewPhase.FixNeeded && !run.ParkedAtPullRequestBoundary)
         {
             throw new DomainConflictException(
                 $"Task {taskId} is parked at interactive mode's {BoundaryLabel(run.ParkedFromReviewPhase)} " +
@@ -382,6 +402,27 @@ public sealed class ReviewFixedCommand : Hall9kAsyncCommand<ReviewFixedCommand.S
             AnsiConsole.MarkupLineInterpolated(
                 $"[yellow]Could not read the worktree's HEAD at {runDetails.WorktreePath}; skipping the moved-tip check. The recorded fix names no commit.[/]");
             return (null, TipObservation.Unobserved);
+        }
+
+        // At the boundary before the pull request the tip compared against is the one recorded at that
+        // park, not the cycle's head: the cycle's head predates every fix and rebase that review ran,
+        // and this boundary exists to catch commits made after the reviewed tip.
+        if (run.ParkedAtPullRequestBoundary)
+        {
+            if (run.HumanGateTipSha is null)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]This park recorded no tip, so there is nothing to compare your branch against; skipping the moved-tip check.[/]");
+                return (headSha, TipObservation.Unobserved);
+            }
+
+            return headSha == run.HumanGateTipSha
+                ? throw new DomainConflictException(
+                    $"Task {taskId}'s branch '{runDetails.Branch}' is still at {Short(headSha)}, the tip this "
+                    + "park recorded, so there are no commits of yours for a review pass to read. Commit "
+                    + $"your change and run this again; if the branch is fine as it stands, approve it with "
+                    + $"h9k review proceed {taskId}.")
+                : (headSha, TipObservation.Moved);
         }
 
         if (run.CycleHeadSha is null)

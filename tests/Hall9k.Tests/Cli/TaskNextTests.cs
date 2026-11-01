@@ -205,6 +205,22 @@ public sealed class TaskNextTests
     }
 
     [Fact]
+    public void A_human_gate_park_lists_the_gates_choices_and_never_mentions_interactive_mode()
+    {
+        Fixture gate = Parked(ReviewPhase.MergeReady, interactiveGate: true, humanGate: true);
+
+        string text = Text(gate);
+
+        text.Should().Contain("Your choices at this park:");
+        foreach (string choice in InteractiveBoundaryChoices.Lines(InteractiveBoundaryLevers.HumanGate, gate.Facts.Details.Id))
+        {
+            text.Should().Contain($"  - {choice}");
+        }
+
+        text.Should().NotContain("clear-interactive-mode").And.NotContainEquivalentOf("interactive mode");
+    }
+
+    [Fact]
     public void The_boundary_mapping_names_no_boundary_for_a_phase_that_is_not_one()
     {
         ReviewPhase[] boundaries =
@@ -466,17 +482,22 @@ public sealed class TaskNextTests
             Run: new TaskNextRun(RunState.UnderReview, phase, 2, ReviewPhase.None, false)));
     }
 
-    private static Fixture Parked(ReviewPhase parkedFrom, bool interactiveGate)
+    private static Fixture Parked(ReviewPhase parkedFrom, bool interactiveGate, bool humanGate = false)
     {
         Guid runId = DomainId.New();
         TaskListItem task = StatusFixtures.Task(TaskState.NeedsHuman, runId, claimedByNodeId: DomainId.New());
         RunDetails run = StatusFixtures.Run(runId, RunState.ReviewParked, sessionProcessId: null);
         run.ParkedIsInteractiveGate = interactiveGate;
-        run.ParkedReason = interactiveGate ? "an interactive boundary" : "a finding was disputed";
+        run.ParkedIsHumanGate = humanGate;
+        run.ParkedReason = humanGate
+            ? "This task has a human gate."
+            : interactiveGate ? "an interactive boundary" : "a finding was disputed";
         TaskStatusRow row = StatusFixtures.Compose(task, run);
         return new Fixture($"park from {parkedFrom}", new TaskNextFacts(
             row, Details(task, TaskState.NeedsHuman), false, false, Now,
-            Run: new TaskNextRun(RunState.ReviewParked, ReviewPhase.Parked, 1, parkedFrom, interactiveGate)));
+            Run: new TaskNextRun(
+                RunState.ReviewParked, ReviewPhase.Parked, 1, parkedFrom, interactiveGate,
+                ParkedIsHumanGate: humanGate)));
     }
 
     private static Fixture Closeout(RunState state, bool withEvent = true, ExternalReviewState? externalReview = null)

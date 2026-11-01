@@ -97,8 +97,10 @@ public sealed class ReviewProceedCommand : Hall9kAsyncCommand<ReviewProceedComma
         }
 
         await Doorbell.RingAsync($"review-proceed:{taskId}", cancellationToken);
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]Task {taskId} proceeds — the daemon continues the review loop exactly where it parked.[/]");
+        FormattableString outcome = run.ParkedAtPullRequestBoundary
+            ? (FormattableString)$"[dim]Task {taskId} approved at the boundary before its pull request opens: the daemon checks the branch is still where the park found it and the worktree holds nothing uncommitted, then opens the pull request on its next sweep. If either changed it parks here again instead of opening anything.[/]"
+            : $"[dim]Task {taskId} proceeds — the daemon continues the review loop exactly where it parked.[/]";
+        AnsiConsole.MarkupLineInterpolated(outcome);
         return ExitCodes.Ok;
     }
 }

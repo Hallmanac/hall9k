@@ -426,6 +426,10 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         bool settlingGateRepairCapReached = run.ParkedFromReviewPhase == ReviewPhase.SettlingGateRepairCapReached;
         FormattableString outcome = (settings.MergeReady, run.ParkedFromState == RunState.Verifying) switch
         {
+            (true, _) when run.ParkedAtPullRequestBoundary =>
+                $"[dim]Run {runId} resolved merge-ready at the boundary before its pull request opens: the daemon runs the gates on the branch's tip, dispatches no review session, records the settlement as Settled, and opens the pull request. If the worktree holds uncommitted work it opens nothing and the run stays at this boundary with a reason naming it.[/]",
+            (false, _) when run.ParkedAtPullRequestBoundary =>
+                $"[dim]Run {runId} resolved needs-fixes at the boundary before its pull request opens: the daemon dispatches a fix session with your text as its findings, runs the gates, has a review pass read the fix, and stops at this boundary again before any pull request opens.[/]",
             (true, true) =>
                 $"[dim]Run {runId} resolved merge-ready — the daemon re-enters the pipeline at the gates, then review; the pull request opens if both pass.[/]",
             (true, false) =>
