@@ -10,6 +10,7 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.AutoPrReview;
+using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -26,6 +27,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
@@ -5908,6 +5910,253 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             {
                 Directory.Delete(home, recursive: true);
             }
+        }
+    }
+
+    /// <summary>
+    /// With the picker on, a fresh build's prompt carries the lessons the picker chose for the task,
+    /// in the picker's order, instead of the newest ones, says so, and the pick is on the task's
+    /// stream. The picker is spawned once, before the build, with no tools.
+    /// </summary>
+    [Fact]
+    public async Task A_fresh_build_under_on_carries_the_picked_lessons_and_records_the_pick()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using ScopedTestHome home = new(postgres.ConnectionString);
+        await PlatformConfigFile.WriteOperatingSettingsAsync(
+            settings =>
+            {
+                settings.LessonPicker = "on";
+                settings.LessonPromptMaxLessons = 2;
+            },
+            cts.Token);
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, Guid projectId, string projectName) = await SeedFreshBuildAsync(store, node, cts.Token);
+        List<Guid> lessonIds = await SeedLessonsAsync(store, node, projectName, 5, cts.Token);
+        CapturingExecutor build = new();
+        PickerExecutor picker = new($"{DomainId.Short(lessonIds[4])} {DomainId.Short(lessonIds[3])}");
+
+        await NewLauncherWithPicker(store, node, build, picker).LaunchAsync(
+            taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        string prompt = Collapsed(build.Request!.Prompt);
+        prompt.Should().Contain("Lesson number 4 ").And.Contain("Lesson number 3 ");
+        prompt.Should().NotContain("Lesson number 0 ", "the picker left the newest lesson out");
+        prompt.IndexOf("Lesson number 4 ", StringComparison.Ordinal).Should()
+            .BeLessThan(prompt.IndexOf("Lesson number 3 ", StringComparison.Ordinal), "the picker's order, not the dates");
+        prompt.Should().Contain("chosen for this task rather than taken newest first");
+        picker.Requests.Should().ContainSingle().Which.NoTools.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        LessonPickRecorded pick = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.LessonPick!;
+        pick.Outcome.Should().Be(LessonPickOutcome.Picked);
+        pick.Mode.Should().Be(LessonPickerMode.On);
+        pick.PickedLessonIds.Should().Equal(lessonIds[4], lessonIds[3]);
+        pick.NewestFirstLessonIds.Should().Equal(lessonIds[0], lessonIds[1]);
+        pick.EligibleCount.Should().Be(5);
+    }
+
+    /// <summary>
+    /// Under shadow the picker runs and records exactly as under on, and the lesson section the
+    /// prompt carries is the one the setting off composes from the same lessons: the task's own id is
+    /// the only thing that differs between the two prompts' sections.
+    /// </summary>
+    [Fact]
+    public async Task A_fresh_build_under_shadow_records_the_pick_and_composes_the_same_section_as_off()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using ScopedTestHome home = new(postgres.ConnectionString);
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        async Task<(string Section, TaskDetails Task, PickerExecutor Picker)> LaunchAsync(string setting)
+        {
+            await PlatformConfigFile.WriteOperatingSettingsAsync(
+                settings =>
+                {
+                    settings.LessonPicker = setting;
+                    settings.LessonPromptMaxLessons = 2;
+                },
+                cts.Token);
+            (Guid taskId, Guid runId, Guid projectId, string projectName) = await SeedFreshBuildAsync(store, node, cts.Token);
+            List<Guid> lessonIds = await SeedLessonsAsync(store, node, projectName, 5, cts.Token);
+            CapturingExecutor build = new();
+            PickerExecutor picker = new($"{DomainId.Short(lessonIds[4])} {DomainId.Short(lessonIds[3])}");
+            await NewLauncherWithPicker(store, node, build, picker).LaunchAsync(
+                taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+            await using IQuerySession query = store.QuerySession();
+            string prompt = Collapsed(build.Request!.Prompt).Replace(taskId.ToString(), "<task>");
+            for (int index = 0; index < lessonIds.Count; index++)
+            {
+                // Each launch seeds lessons of its own, so the ids are the one thing that differs.
+                prompt = prompt.Replace(DomainId.Short(lessonIds[index]), $"<lesson-{index}>");
+            }
+
+            int start = prompt.IndexOf("## What this project's earlier runs already learned", StringComparison.Ordinal);
+            int end = prompt.IndexOf(" ## ", start + 3, StringComparison.Ordinal);
+            return (prompt[start..(end < 0 ? prompt.Length : end)], (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!, picker);
+        }
+
+        (string shadowSection, TaskDetails shadowTask, PickerExecutor shadowPicker) = await LaunchAsync("shadow");
+        (string offSection, TaskDetails offTask, PickerExecutor offPicker) = await LaunchAsync("off");
+
+        Assert.Equal(offSection, shadowSection);
+        shadowSection.Should().Contain("newest first").And.NotContain("chosen for this task");
+        shadowTask.LessonPick!.Mode.Should().Be(LessonPickerMode.Shadow);
+        shadowTask.LessonPick.Outcome.Should().Be(LessonPickOutcome.Picked);
+        shadowPicker.Requests.Should().ContainSingle();
+        offTask.LessonPick.Should().BeNull("at off no pick is recorded");
+        offPicker.Requests.Should().BeEmpty("at off no picker session runs");
+    }
+
+    /// <summary>
+    /// A follow-up lap of a task with no pick stays on newest-first and spawns no picker: the pick is
+    /// made before a task's first build prompt and nowhere else.
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_of_a_task_with_no_pick_spawns_no_picker_and_carries_newest_first()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using ScopedTestHome home = new(postgres.ConnectionString);
+        await PlatformConfigFile.WriteOperatingSettingsAsync(
+            settings =>
+            {
+                settings.LessonPicker = "on";
+                settings.LessonPromptMaxLessons = 2;
+            },
+            cts.Token);
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = DomainId.New();
+        Guid previousRunId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string projectName = $"follow-up-picker-{taskId:N}";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), projectName, "/tmp/follow-up-picker-repo",
+                new Uri("https://github.com/x/y"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "A task with a review lap", ["it has a lap"],
+                    TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                node.OwnerId, Now.AddHours(-1));
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, previousRunId, Now.AddHours(-1));
+            aggregate.Apply(firstClaim);
+            Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed = TaskDecider.Complete(aggregate, previousRunId, "https://github.com/x/y/pull/9", Now.AddMinutes(-40));
+            aggregate.Apply(completed);
+            Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+                aggregate, previousRunId, "task/follow-up-picker", "Unresolved review comments.", FollowUpKind.ReviewFeedback,
+                automatic: true, Now.AddMinutes(-30), node.OwnerId, pullRequestHeadSha: "cafe1234");
+            aggregate.Apply(reopened);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+            aggregate.Apply(claimed);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, firstClaim, completed, reopened, claimed]);
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await SeedLessonsAsync(store, node, projectName, 5, cts.Token);
+        CapturingExecutor build = new();
+        PickerExecutor picker = new("aaaaaaaa");
+
+        await NewLauncherWithPicker(store, node, build, picker).LaunchAsync(
+            taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        picker.Requests.Should().BeEmpty();
+        Collapsed(build.Request!.Prompt).Should().Contain("Lesson number 0 ").And.NotContain("chosen for this task");
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.LessonPick.Should().BeNull();
+    }
+
+    private RunLauncher NewLauncherWithPicker(DocumentStore store, NodeContext node, IExecutor build, IExecutor pickerExecutor)
+    {
+        StubWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        FakeProcessManager processes = new();
+        LessonPicker picker = new(
+            store, pickerExecutor, processes, Options.Create(new DaemonOptions()), NullLogger<LessonPicker>.Instance);
+        return new RunLauncher(store, worktrees, build,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance, lessonPicker: picker);
+    }
+
+    /// <summary>A project and a claimed, never-run task on it: what a fresh dispatch starts from.</summary>
+    private static async Task<(Guid TaskId, Guid RunId, Guid ProjectId, string ProjectName)> SeedFreshBuildAsync(
+        DocumentStore store, NodeContext node, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string projectName = $"picker-{taskId:N}";
+        await using IDocumentSession session = store.LightweightSession();
+        ProjectRegistered registered = ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), projectName, "/tmp/picker-repo", null, "main", Now);
+        session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+        (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, projectId, "Change the Marten projection", ["the projection keeps the first pick"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+            TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+        session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+        await session.SaveChangesAsync(cancellationToken);
+        return (taskId, runId, projectId, projectName);
+    }
+
+    /// <summary>Records <paramref name="count"/> project lessons, "Lesson number 0" the newest.</summary>
+    private static async Task<List<Guid>> SeedLessonsAsync(
+        DocumentStore store, NodeContext node, string projectName, int count, CancellationToken cancellationToken)
+    {
+        List<Guid> ids = [];
+        await using IDocumentSession session = store.LightweightSession();
+        for (int index = 0; index < count; index++)
+        {
+            (Hall9k.Domain.Features.Learning.LearningRecorded recorded, _) = await Hall9k.Cli.Commands.LearnCommand.RunAsync(
+                session,
+                new Hall9k.Cli.Commands.LearnCommand.Settings { Statement = $"Lesson number {index} for the picker", Project = projectName },
+                node.OwnerId, node.NodeId, Now.AddMinutes(-index), cancellationToken);
+            ids.Add(recorded.Id);
+        }
+
+        await session.SaveChangesAsync(cancellationToken);
+        return ids;
+    }
+
+    private static string Collapsed(string text) => System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ");
+
+    /// <summary>
+    /// Stands in for the picker session: writes the scripted answer as the session's result, the way
+    /// a real claude session ends, and remembers what it was asked to spawn.
+    /// </summary>
+    private sealed class PickerExecutor(string answer) : IExecutor
+    {
+        public List<AgentSpawnRequest> Requests { get; } = [];
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            Directory.CreateDirectory(request.RunDirectory);
+            string line = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "result",
+                ["subtype"] = "success",
+                ["is_error"] = false,
+                ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 10, ["output_tokens"] = 5 },
+                ["result"] = answer,
+            });
+            await File.WriteAllTextAsync(
+                RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!), line + "\n", cancellationToken);
+            return new SpawnedAgent(5150, Now);
         }
     }
 

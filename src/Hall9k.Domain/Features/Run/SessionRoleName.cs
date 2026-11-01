@@ -60,6 +60,13 @@ public static class SessionRoleName
     public const string Synthesis = "synthesis";
 
     /// <summary>
+    /// The small session that picks which of a project's lessons a task's prompts carry. A session
+    /// name, not a role: there is no model-policy role for it, and it resolves its model and effort
+    /// as the <see cref="Courier"/> does.
+    /// </summary>
+    public const string LessonPicker = "lesson-picker";
+
+    /// <summary>
     /// Delivers a project's orchestrator feed to its live orchestrator session and exits (idea
     /// 89471598, piece 3). Composed with the project's own short id rather than a task's — a
     /// courier runs as a run with no task, so there is no task short id to prefix it with.

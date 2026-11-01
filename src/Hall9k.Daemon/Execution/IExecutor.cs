@@ -75,6 +75,13 @@ namespace Hall9k.Daemon.Execution;
 /// (<c>FeedbackEvaluators</c>), or a closeout triage, the fifth (<c>CloseoutTriageSessions</c>, whose
 /// report is the one file it may write), which is what adds that one path to the permission file's writes.
 /// </para>
+/// <para>
+/// <see cref="NoTools"/> spawns the session with every tool disabled (<c>claude --tools ""</c>), for
+/// the one session that must answer from its prompt alone: the lesson picker, which reads task text
+/// that can come from outside and has nothing to act on. It is the last argument on the command line,
+/// because <c>--tools</c> takes a variable number of values and its position decides what a lost
+/// empty value would swallow.
+/// </para>
 /// </summary>
 public sealed record AgentSpawnRequest(
     Guid RunId,
@@ -92,7 +99,8 @@ public sealed record AgentSpawnRequest(
     int? MaxTurns = null,
     bool UsesReviewPermissions = false,
     IReadOnlyList<VerifyCommand>? QaGateCommands = null,
-    string? AssessmentFile = null)
+    string? AssessmentFile = null,
+    bool NoTools = false)
 {
     /// <summary>
     /// Environment variables layered onto the owner's environment for this session only.

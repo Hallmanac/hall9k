@@ -202,5 +202,16 @@ public sealed class ClaudeExecutor(
         {
             yield return "--setting-sources user";
         }
+
+        // `claude --help` documents an empty value as disabling every tool. Emitted last, after
+        // everything else, on purpose: --tools is variadic, so were its empty value ever lost on the
+        // way to the process, a following flag would be read as a tool name and the session would
+        // keep the tools it was meant to lose, while nothing follows this one for it to swallow. The
+        // empty quotes survive the platform shell on both operating systems (the real-spawn test
+        // observes them arriving).
+        if (request.NoTools)
+        {
+            yield return "--tools \"\"";
+        }
     }
 }

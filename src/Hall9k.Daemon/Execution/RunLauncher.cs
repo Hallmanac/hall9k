@@ -55,7 +55,8 @@ public sealed class RunLauncher(
     ProcessRunner processRunner,
     IOptions<DaemonOptions> options,
     ILogger<RunLauncher> logger,
-    LocalFleetProvider? fleets = null)
+    LocalFleetProvider? fleets = null,
+    LessonPicker? lessonPicker = null)
 {
     /// <summary>
     /// Bounds the reread-and-redecide retry <see cref="EnsurePrReviewPreflightSafeAsync"/> takes
@@ -917,6 +918,18 @@ public sealed class RunLauncher(
                     ? null
                     : await blockerContext.AssembleAsync(
                         runId, runDirectory, task, project, worktree.Path, mode, cancellationToken);
+                // The lesson pick, once per task and only for a fresh build prompt: a follow-up, a retry
+                // of a task that already has a pick, a spike and a pull-request review all skip it
+                // (LessonPicker.ShouldPick). It waits here, on the dispatch loop, under a short bound,
+                // and shadow waits exactly as on does so its record shows the timing live will have.
+                // Whatever happens, the build below goes ahead: a failed pick composes newest-first.
+                if (lessonPicker is not null)
+                {
+                    lessons = await PickLessonsAsync(
+                        lessonPicker, runId, runDirectory, task, project, lessonCandidates, lessons, mode,
+                        cancellationToken);
+                }
+
                 // interactiveMilestoneAddress stays null: this is a brand-new RunDispatched, so no
                 // h9k task register-session call could possibly have landed on it yet (task:
                 // agents on an interactive-mode task report outbound) — a genuinely fresh headless
@@ -1812,6 +1825,32 @@ public sealed class RunLauncher(
                 "Run {RunId}: could not read {Project}'s recorded lessons, so this session's prompt "
                 + "carries no lesson section; h9k learn list still shows them", runId, project.Name);
             return LessonCandidates.None;
+        }
+    }
+
+    /// <summary>
+    /// Runs the lesson pick for a fresh build and returns the section the prompt carries: the one
+    /// <paramref name="current"/> already is when no pick ran or the pick failed, or the picked set
+    /// when the setting is on. Never throws for anything but the daemon's own cancellation, because
+    /// a pick that cannot be recorded must not stop a build.
+    /// </summary>
+    private async Task<InjectedLessons> PickLessonsAsync(
+        LessonPicker picker, Guid runId, string runDirectory, TaskDetails task, ProjectDetails project,
+        LessonCandidates candidates, InjectedLessons current, ExecutorMode mode, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await picker.PickAsync(runId, runDirectory, task, project, candidates, mode, cancellationToken)
+                is { } pick
+                ? candidates.For(pick)
+                : current;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Run {RunId}: the lesson pick could not be recorded, so this prompt carries the newest lessons",
+                runId);
+            return current;
         }
     }
 
