@@ -8,7 +8,6 @@ using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
-using Microsoft.Extensions.Logging;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -28,7 +27,9 @@ namespace Hall9k.Daemon.Execution;
 /// Nothing in here can change a run's outcome. A message without a block is returned as the very
 /// same string with no store read at all. A failure to record is logged with the run id and the
 /// message is still returned clean, because the block must stay out of derived text whether or not
-/// the notes landed. The note ids are derived from the run and the bullet, so reading the same
+/// the notes landed. A failure to load the task or run, which is what says whether this is a work
+/// session at all, leaves the message untouched, block included: removing a block from a session
+/// that may be a review would lose lines a report quoted, and the leftover is public text. The note ids are derived from the run and the bullet, so reading the same
 /// message twice (an error-result retry, a resumed pipeline) records each note once.
 /// </para>
 /// </summary>
@@ -39,11 +40,12 @@ internal static class TaskNoteCapture
     /// work session. <paramref name="thisNodeId"/> is stamped onto the events so the inline projection
     /// can read the recording node. <paramref name="sessionId"/> and <paramref name="sessionName"/>
     /// name the session that wrote the message when it is not the run's primary one (a fix session);
-    /// null takes the run's own.
+    /// null takes the run's own. A <see cref="ValueTask{TResult}"/> because a message with no block
+    /// completes before any store read.
     /// </summary>
-    public static async Task<string?> ExtractAndRecordAsync(
+    public static async ValueTask<string?> ExtractAndRecordAsync(
         IDocumentStore store, ILogger logger, Guid thisNodeId, Guid runId, Guid taskId, string? message,
-        CancellationToken cancellationToken, Guid? sessionId = null, string? sessionName = null)
+        Guid? sessionId, string? sessionName, CancellationToken cancellationToken)
     {
         TaskNotesBlock.Result block = TaskNotesBlock.Extract(message);
         if (!block.HadBlock)
@@ -96,12 +98,12 @@ internal static class TaskNoteCapture
     /// The result of a work session with its notes block removed, or the same instance when it
     /// carried none.
     /// </summary>
-    public static async Task<AgentResult> ExtractAndRecordAsync(
+    public static async ValueTask<AgentResult> ExtractAndRecordAsync(
         IDocumentStore store, ILogger logger, Guid thisNodeId, Guid runId, Guid taskId, AgentResult result,
-        CancellationToken cancellationToken, Guid? sessionId = null, string? sessionName = null)
+        Guid? sessionId, string? sessionName, CancellationToken cancellationToken)
     {
         string? clean = await ExtractAndRecordAsync(
-            store, logger, thisNodeId, runId, taskId, result.Summary, cancellationToken, sessionId, sessionName);
+            store, logger, thisNodeId, runId, taskId, result.Summary, sessionId, sessionName, cancellationToken);
         return ReferenceEquals(clean, result.Summary) ? result : result with { Summary = clean };
     }
 

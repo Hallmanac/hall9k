@@ -1,10 +1,8 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
-using Hall9k.Connectors.Replication;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Learning;
-using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -16,10 +14,8 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Notes;
-using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
@@ -194,7 +190,7 @@ public sealed class TaskNoteTests : IClassFixture<PostgresFixture>, IAsyncLifeti
         (await ViewsAsync(outsideAnyEpic)).Select(view => view.Entry.Note.Text).Should().Equal("loner note");
 
         await using IQuerySession query = _postgres.Store.QuerySession();
-        InjectedTaskNotes? section = await TaskNoteFeed.LoadForPromptAsync(query, own, null, CancellationToken.None);
+        InjectedTaskNotes? section = await TaskNoteFeed.LoadForPromptAsync(query, own, null, null, CancellationToken.None);
         section!.Notes[1].Line.Should().StartWith($"- task {DomainId.Short(sibling)}: sibling note");
     }
 
@@ -224,7 +220,7 @@ public sealed class TaskNoteTests : IClassFixture<PostgresFixture>, IAsyncLifeti
         view.Mark.Should().Be(LessonProvenanceMark.ReplicatedFromOutsideFleet);
         view.ReachesAPrompt.Should().BeFalse();
         await using IQuerySession query = _postgres.Store.QuerySession();
-        InjectedTaskNotes? section = await TaskNoteFeed.LoadForPromptAsync(query, taskId, null, CancellationToken.None);
+        InjectedTaskNotes? section = await TaskNoteFeed.LoadForPromptAsync(query, taskId, null, null, CancellationToken.None);
         section!.Any.Should().BeFalse();
         section.HeldForProvenance.Should().Be(1);
     }
@@ -247,7 +243,7 @@ public sealed class TaskNoteTests : IClassFixture<PostgresFixture>, IAsyncLifeti
         }
 
         await using IQuerySession query = _postgres.Store.QuerySession();
-        InjectedTaskNotes? section = await TaskNoteFeed.LoadForPromptAsync(query, taskId, null, CancellationToken.None);
+        InjectedTaskNotes? section = await TaskNoteFeed.LoadForPromptAsync(query, taskId, null, null, CancellationToken.None);
 
         (section is not null).Should().Be(carriesSection);
     }
@@ -260,9 +256,9 @@ public sealed class TaskNoteTests : IClassFixture<PostgresFixture>, IAsyncLifeti
         string message = $"Summary.\n\n{Hall9k.Connectors.Prompts.TaskNotesBlock.Marker}\n- first\n- second\n\nHANDOFF:\nDone.";
 
         string? clean = await TaskNoteCapture.ExtractAndRecordAsync(
-            _postgres.Store, NullLogger.Instance, node.NodeId, runId, taskId, message, CancellationToken.None);
+            _postgres.Store, NullLogger.Instance, node.NodeId, runId, taskId, message, null, null, CancellationToken.None);
         string? again = await TaskNoteCapture.ExtractAndRecordAsync(
-            _postgres.Store, NullLogger.Instance, node.NodeId, runId, taskId, message, CancellationToken.None);
+            _postgres.Store, NullLogger.Instance, node.NodeId, runId, taskId, message, null, null, CancellationToken.None);
 
         clean.Should().Be("Summary.\n\nHANDOFF:\nDone.");
         again.Should().Be(clean);
@@ -292,7 +288,7 @@ public sealed class TaskNoteTests : IClassFixture<PostgresFixture>, IAsyncLifeti
 
         string message = $"A report that quotes the marker.\n{Hall9k.Connectors.Prompts.TaskNotesBlock.Marker}\n- looks like a note";
         string? result = await TaskNoteCapture.ExtractAndRecordAsync(
-            _postgres.Store, NullLogger.Instance, node.NodeId, runId, taskId, message, CancellationToken.None);
+            _postgres.Store, NullLogger.Instance, node.NodeId, runId, taskId, message, null, null, CancellationToken.None);
 
         result.Should().BeSameAs(message);
         (await ViewsAsync(taskId)).Should().BeEmpty();
@@ -307,13 +303,13 @@ public sealed class TaskNoteTests : IClassFixture<PostgresFixture>, IAsyncLifeti
 
         // A task with no stream: nothing to look up, so nothing is recorded and the message comes back as it was.
         string? unknownTask = await TaskNoteCapture.ExtractAndRecordAsync(
-            _postgres.Store, NullLogger.Instance, node.NodeId, runId, DomainId.New(), message, CancellationToken.None);
+            _postgres.Store, NullLogger.Instance, node.NodeId, runId, DomainId.New(), message, null, null, CancellationToken.None);
         unknownTask.Should().Be(message);
 
         // A closing block that is only a marker records nothing and still leaves the message clean.
         string? emptyBlock = await TaskNoteCapture.ExtractAndRecordAsync(
             _postgres.Store, NullLogger.Instance, node.NodeId, runId, taskId,
-            $"Summary.\n{Hall9k.Connectors.Prompts.TaskNotesBlock.Marker}", CancellationToken.None);
+            $"Summary.\n{Hall9k.Connectors.Prompts.TaskNotesBlock.Marker}", null, null, CancellationToken.None);
         emptyBlock.Should().Be("Summary.");
         (await ViewsAsync(taskId)).Should().BeEmpty();
     }

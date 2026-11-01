@@ -1355,7 +1355,7 @@ public sealed class RunSupervisor(
         // reasons and the dispute and reply paths below all read text that never carried it. A review,
         // pr-review or spike primary is returned untouched (TaskNoteCapture).
         result = await TaskNoteCapture.ExtractAndRecordAsync(
-            store, logger, node.NodeId, runId, taskId, result, cancellationToken);
+            store, logger, node.NodeId, runId, taskId, result, sessionId: null, sessionName: null, cancellationToken);
         await CaptureHandoffAsync(runId, runDirectory, result, cancellationToken);
 
         // Loaded here, ahead of the launch-hold decisions below, rather than inside the
@@ -1897,7 +1897,7 @@ public sealed class RunSupervisor(
         if (result is not null)
         {
             result = await TaskNoteCapture.ExtractAndRecordAsync(
-                store, logger, node.NodeId, runId, taskId, result, cancellationToken);
+                store, logger, node.NodeId, runId, taskId, result, sessionId: null, sessionName: null, cancellationToken);
         }
 
         await using IDocumentSession session = store.LightweightSession();

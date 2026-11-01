@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Run;
-using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -134,7 +133,7 @@ public sealed class TaskNoteCommand : Hall9kAsyncCommand<TaskNoteCommand.Setting
         CancellationToken cancellationToken)
     {
         RecordedProvenance fromEnvironment = (await RecordingProvenanceReader.ObserveAsync(
-            session, taskReference: null, ownerId, cancellationToken, environment)).Provenance;
+            session, taskReference: null, ownerId, environment, cancellationToken)).Provenance;
 
         return fromEnvironment.RunId is not null
             ? fromEnvironment

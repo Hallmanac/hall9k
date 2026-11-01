@@ -188,7 +188,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             // The task's notes, through the same Domain read the daemon uses. A failed read composes
             // the prompt without the section.
             taskNotes: await TaskNoteFeed.LoadForPromptAsync(
-                session, taskDetails.Id, fleet.LessonReader, cancellationToken));
+                session, taskDetails.Id, fleet.LessonReader, onFailure: null, cancellationToken));
 
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
         Directory.CreateDirectory(resolvedRunDirectory);
