@@ -27,7 +27,7 @@ namespace Hall9k.Cli.Commands;
 /// <para>
 /// The reviewer names nothing. The offer in the report carries the identity — task, run, worktree
 /// — so a yes resolves to exactly one branch and one checkout, and this command reads the rest off
-/// that: the worktree the pr-review task already created, and the run skill that project recorded
+/// that: the checkout the pr-review task already created, and the run skill that project recorded
 /// on its ledger. Nothing here invents a launch command; a project with no run skill is refused
 /// with the sentence saying so, because the alternative is a review offering to run something
 /// nobody wrote down how to run.

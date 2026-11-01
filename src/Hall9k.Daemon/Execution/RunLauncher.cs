@@ -141,7 +141,7 @@ public sealed class RunLauncher(
 
             // A pr-review task never has a branch or a PR of its own to resume — every
             // dispatch (including a retry) fetches the reviewed pull request fresh instead,
-            // since nothing is ever committed into its read-only worktree to preserve
+            // since nothing is ever committed into its read-only checkout to preserve
             // between attempts. Checked before the follow-up/retry logic below, which is
             // written entirely in terms of this task's own branch and PR.
             bool isPrReview = task.Type == TaskType.PrReview;
@@ -264,7 +264,7 @@ public sealed class RunLauncher(
                         taskId, runId, leaseGeneration,
                         $"{task.ExternalReference} lives in {prReviewFacts.Repository}, not "
                         + $"{project.Name}'s own repository ({projectRepository}). A pr-review task's "
-                        + "worktree is always cut from the project it was adopted against, so reviewing "
+                        + "checkout is always cut from the project it was adopted against, so reviewing "
                         + $"a pull request from another repository needs a project registered against "
                         + $"{prReviewFacts.Repository} instead.", cancellationToken);
                     return;
@@ -331,7 +331,8 @@ public sealed class RunLauncher(
                 {
                     worktree = await worktrees.CreatePrReviewCheckoutAsync(
                         new PrReviewWorktreeRequest(
-                            project.RepositoryPath, prReviewFacts!.Number, taskId, runId, prReviewFacts.HeadRefOid),
+                            project.RepositoryPath, prReviewFacts!.Number, taskId, runId, prReviewFacts.HeadRefOid,
+                            prReviewFacts.BaseRefName),
                         cancellationToken);
                 }
                 catch (PullRequestHeadMovedException exception)
@@ -1195,7 +1196,7 @@ public sealed class RunLauncher(
                 await RecordLaunchFailureAsync(
                     taskId, runId, leaseGeneration,
                     $"{task.ExternalReference} lives in {facts.Repository}, not {project.Name}'s own repository "
-                    + $"({projectRepository}). A pr-review task's worktree is always cut from the project it "
+                    + $"({projectRepository}). A pr-review task's checkout is always cut from the project it "
                     + $"was adopted against, so reviewing a pull request from another repository needs a "
                     + $"project registered against {facts.Repository} instead.", cancellationToken);
                 return MentionFollowUpLaunch.Handled;
@@ -1218,7 +1219,8 @@ public sealed class RunLauncher(
             try
             {
                 worktree = await worktrees.CreatePrReviewCheckoutAsync(
-                    new PrReviewWorktreeRequest(project.RepositoryPath, facts.Number, taskId, runId, facts.HeadRefOid),
+                    new PrReviewWorktreeRequest(
+                        project.RepositoryPath, facts.Number, taskId, runId, facts.HeadRefOid, facts.BaseRefName),
                     cancellationToken);
             }
             catch (PullRequestHeadMovedException exception)

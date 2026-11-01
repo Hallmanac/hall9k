@@ -5,7 +5,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// Decisions Log #149). Provenance rather than a state change: the task is already Claimed —
 /// either by the machine review this lap is reading the report of, or by the lap's own
 /// interactive claim moments earlier — and this records who opened the lap, which run it is
-/// riding on, and where the read-only worktree they are reading in actually is.
+/// riding on, and where the read-only checkout they are reading in actually is.
 /// <para>
 /// <see cref="RunId"/> is the run the lap rides on, which is the run <c>h9k pr approve</c> /
 /// <c>h9k pr request-changes</c> will append <c>PrReviewDelivered</c> to: the machine review's

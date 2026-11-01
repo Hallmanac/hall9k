@@ -563,7 +563,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             RunDetails run = await session.LoadAsync<RunDetails>(existingRunId, cancellationToken)
                 ?? throw new DomainConflictException(
                     $"Task {task.Id} names run {existingRunId} but that run has no record — the automated "
-                    + $"review likely died while preparing its worktree. h9k task retry {task.Id} to dispatch "
+                    + $"review likely died while preparing its checkout. h9k task retry {task.Id} to dispatch "
                     + "a fresh one, then open the lap again.");
 
             // Re-entry into the reviewer's own still-open lap is not subject to the run-state
@@ -737,7 +737,9 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
 
         await worktrees.PruneAsync(project.RepositoryPath, cancellationToken);
         Worktree cut = await worktrees.CreatePrReviewCheckoutAsync(
-            new PrReviewWorktreeRequest(project.RepositoryPath, pullRequest.Number, taskId, runId), cancellationToken);
+            new PrReviewWorktreeRequest(
+                project.RepositoryPath, pullRequest.Number, taskId, runId, BaseBranch: pullRequest.BaseRefName),
+            cancellationToken);
         AnsiConsole.MarkupLineInterpolated(
             $"[dim]The run's read-only checkout was gone, so it was fetched again at {cut.Path}.[/]");
         return cut.Path;
@@ -971,7 +973,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             if (!noWorktree)
             {
                 Worktree cut = await worktrees.CreatePrReviewCheckoutAsync(
-                    new PrReviewWorktreeRequest(project.RepositoryPath, pullRequest.Number, taskId, runId),
+                    new PrReviewWorktreeRequest(
+                        project.RepositoryPath, pullRequest.Number, taskId, runId, BaseBranch: pullRequest.BaseRefName),
                     cancellationToken);
                 worktreePath = cut.Path;
             }
