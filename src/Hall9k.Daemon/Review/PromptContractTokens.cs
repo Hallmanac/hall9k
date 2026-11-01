@@ -86,6 +86,10 @@ internal static class PromptContractTokens
         // The closing block of task notes, read out of a work session's final message; the notes
         // section injects it through a placeholder, so no template can type it.
         Hall9k.Connectors.Prompts.TaskNotesBlock.Marker,
+        // The promotion step's answer grammar, read out of its session's answer; the prompt injects
+        // each word through a placeholder, so no template can type one.
+        Hall9k.Domain.Features.Tasks.Notes.NotePromotionAnswer.KeepMarker,
+        Hall9k.Domain.Features.Tasks.Notes.NotePromotionAnswer.NoneMarker,
         Hall9k.Connectors.Prompts.PrSummaryParser.Marker,
         Hall9k.Connectors.Prompts.PrSummaryParser.TitlePrefix,
         // The CLI's own command-name registrations (Hall9k.Cli.Infrastructure.CliCommandTree),

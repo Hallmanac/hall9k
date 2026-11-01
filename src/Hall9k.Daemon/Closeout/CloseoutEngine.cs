@@ -103,7 +103,8 @@ public sealed class CloseoutEngine(
     ILedger? ledger = null,
     EnrolledNodeSnapshots? enrolledNodes = null,
     FeedbackEvaluators? feedbackEvaluators = null,
-    CloseoutTriageSessions? triageSessions = null)
+    CloseoutTriageSessions? triageSessions = null,
+    NotePromotionSessions? notePromotions = null)
 {
     private readonly DaemonOptions _options = options.Value;
 
@@ -2743,6 +2744,14 @@ public sealed class CloseoutEngine(
 
         await UnblockDependentsAsync(run.TaskId, now, cancellationToken);
         await TellTheCardAsync(run.TaskId, project, task, cancellationToken);
+
+        // The last of the closeout's own post-commit steps and the only one that starts something
+        // rather than finishing it: whether the task's notes become a lesson is decided by a small
+        // session in the background, which this call starts and does not wait for. It sits before the
+        // kept-worktree and preserved-workspace returns below because every merged closeout path
+        // reaches here, and none of those returns says anything about the notes. The job reads the
+        // task fresh and stands down unless it is Done on this run.
+        notePromotions?.Start(task.Id, run.Id, project.Id);
 
         // The owner was iterating on this pull request by hand and a session is still live in the
         // worktree, the tree holds uncommitted work, or the branch holds commits the pull request never
