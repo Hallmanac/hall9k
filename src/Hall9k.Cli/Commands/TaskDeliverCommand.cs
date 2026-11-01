@@ -342,7 +342,12 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // further down already walks every delegation's own session file for its own tokens;
         // reading a delegation's file into headlessResult here too would double-count whichever
         // delegation happened to be latest.
-        HeadlessResult headlessResult = ReadHeadlessResult(run.RunDirectory);
+        // A start-it-mine session's final message is read by the daemon for a closing notes block, so
+        // the block comes out of the handoff recovered here too. A spike's message is read exactly as
+        // it always was (TaskNoteCapture leaves it untouched), and a delegated contractor's transcript,
+        // read below, is never split at all.
+        HeadlessResult headlessResult = ReadHeadlessResult(
+            run.RunDirectory, stripNotesBlock: task.Type != TaskType.Spike);
 
         // The latest delegation's own session-scoped stream file (RunPaths.SessionStreamFile)
         // wins over the run-level one for HANDOFF TEXT ONLY when this run was ever delegated: h9k
@@ -558,16 +563,22 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
     /// that authored no handoff and spent no tokens rather than one this command could not
     /// measure (AGENTS.md: never guess at unobserved facts).
     /// </summary>
-    internal static HeadlessResult ReadHeadlessResult(string runDirectory) =>
-        ReadHeadlessResultFromStreamFile(RunPaths.StreamFile(RunPaths.ResolveCurrentDirectory(runDirectory)));
+    internal static HeadlessResult ReadHeadlessResult(string runDirectory, bool stripNotesBlock = false) =>
+        ReadHeadlessResultFromStreamFile(
+            RunPaths.StreamFile(RunPaths.ResolveCurrentDirectory(runDirectory)), stripNotesBlock);
 
     /// <summary>
     /// The same parse <see cref="ReadHeadlessResult"/> runs, pointed at an explicit stream file
     /// rather than always the run-level one — <see cref="HeadlessTokenRecovery"/> needs this to
     /// read a delegated contractor's own session-scoped stream file
     /// (<see cref="RunPaths.SessionStreamFile"/>), which never shares the run-level file's path.
+    /// <paramref name="stripNotesBlock"/> removes the closing notes block from the message before the
+    /// handoff is parsed. It is true only for the run-level file of a work session whose final message
+    /// the daemon records notes from (<c>h9k task start</c>'s), and false for a delegated
+    /// contractor's transcript, which is read exactly as it was before notes existed: its prompt never
+    /// asks for the block, so a line that looks like one is the contractor's own text.
     /// </summary>
-    internal static HeadlessResult ReadHeadlessResultFromStreamFile(string streamFile)
+    internal static HeadlessResult ReadHeadlessResultFromStreamFile(string streamFile, bool stripNotesBlock = false)
     {
         if (!File.Exists(streamFile))
         {
@@ -633,10 +644,11 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
             return new HeadlessResult(null, null);
         }
 
-        // The closing notes block is stripped and recorded nowhere: this reads a delegated contractor's
-        // or a start-it-mine session's transcript, and nothing records either session's final message
-        // as notes, so the block must simply not ride into the handoff this recovers.
-        return new HeadlessResult(HandoffParser.Parse(TaskNotesBlock.Extract(summary).Clean), usage);
+        // The daemon already recorded a start-it-mine session's block when it read this same message
+        // (RunSupervisor.HandleDeliberateHeadlessStartExitAsync), so it is only removed here, never
+        // recorded again.
+        return new HeadlessResult(
+            HandoffParser.Parse(stripNotesBlock ? TaskNotesBlock.Extract(summary).Clean : summary), usage);
     }
 
     private static long ReadTokenCount(JsonElement usage, string property) =>

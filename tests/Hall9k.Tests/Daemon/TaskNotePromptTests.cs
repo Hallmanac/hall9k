@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Project;
@@ -73,12 +74,12 @@ public sealed class TaskNotePromptTests : IDisposable
     [InlineData("fresh build", true)]
     [InlineData("follow-up", true)]
     [InlineData("review fix", true)]
-    [InlineData("changes-requested lap", false)]
-    [InlineData("checks follow-up", false)]
-    [InlineData("rebase follow-up", false)]
+    [InlineData("changes-requested lap", true)]
+    [InlineData("checks follow-up", true)]
+    [InlineData("rebase follow-up", true)]
     [InlineData("pre-final-pass rebase", false)]
     [InlineData("settling-gate repair", false)]
-    public void Only_a_fresh_build_a_follow_up_and_a_review_fix_ask_for_the_closing_block(string family, bool asks)
+    public void Only_the_sessions_whose_final_message_the_daemon_reads_for_notes_ask_for_the_closing_block(string family, bool asks)
     {
         string prompt = BuildReading(family, WithNotes(NoteText));
 
@@ -105,6 +106,22 @@ public sealed class TaskNotePromptTests : IDisposable
         contractor.Should().Contain("Notes the sessions on this task left each other").And.NotContain(TaskNotesBlock.Marker);
         attended.Should().Contain("h9k task note");
         contractor.Should().Contain("h9k task note");
+    }
+
+    [Fact]
+    public void The_task_anchor_the_default_launch_line_names_carries_the_section_but_never_asks_for_the_block()
+    {
+        string Anchor(InjectedTaskNotes? notes) => TaskDriveAnchorBuilder.Build(
+            TheTask.Id, "/wt/task", "task/1-slug", "/runs/r1/pr-summary-draft.md", WritingConventions.Default,
+            recipeFile: null, taskNotes: notes);
+
+        string withNotes = Anchor(WithNotes(NoteText));
+
+        withNotes.Should().Contain("Notes the sessions on this task left each other");
+        withNotes.Should().Contain($"- this task: {NoteText} (recorded by an agent run on this node)");
+        withNotes.Should().Contain($"h9k task note {TheTask.Id} \"<text>\"");
+        withNotes.Should().NotContain(TaskNotesBlock.Marker);
+        Anchor(null).Should().NotContain("Notes the sessions on this task left each other");
     }
 
     [Fact]
@@ -151,7 +168,7 @@ public sealed class TaskNotePromptTests : IDisposable
     {
         string prompt = BuildReading("fresh build", InjectedTaskNotes.None);
 
-        prompt.Should().Contain("No notes are recorded on this task yet");
+        prompt.Should().Contain("No notes that this prompt may carry are recorded on this task or on the other tasks in its epic yet");
     }
 
     [Fact]
@@ -187,6 +204,8 @@ public sealed class TaskNotePromptTests : IDisposable
             with.Should().Be(without, $"the {name} prompt must not change when its task holds a note");
             with.Should().NotContain(NoteText, $"the {name} prompt must not carry note text");
             with.Should().NotContain("h9k task note", $"the {name} prompt must not teach the verb");
+            with.Should().NotContain("Notes the sessions on this task left each other", $"the {name} prompt must carry no notes section");
+            with.Should().NotContain(TaskNotesBlock.Marker, $"the {name} prompt must not ask for the closing block");
         }
     }
 
@@ -209,9 +228,29 @@ public sealed class TaskNotePromptTests : IDisposable
             task, project, "task/1-slug", ReviewLens.Adversarial, "main"));
         yield return ("stack replay", task => AgentPromptBuilder.BuildStackReplay(
             task, project, "task/1-slug", "https://github.test/pull/1", CommitStyle.Narrative, "main", "abc1234", "def5678"));
+        // These three take no task at all, so a task holding a note cannot change them; what this guards is
+        // a later change that gives one of them a notes section of its own.
+        yield return ("review lap", _ => ReviewLapPromptBuilder.Build(ReviewLapBriefing()));
+        yield return ("mention follow-up", _ => MentionFollowUpPromptBuilder.Build(
+            "acme/web", 42, _worktreePath, "main",
+            new PullRequestMentionComment("c1", "someone-else", "@owner thoughts?", "https://github.test/c1", Now),
+            priorReport: "A prior report.", project));
+        yield return ("mention mint addendum", _ => MentionFollowUpPromptBuilder.BuildMintAddendum(
+            "someone-else", Now, "@owner thoughts?", "https://github.test/c1", _worktreePath));
         yield return ("budget retry", AgentPromptBuilder.BuildBudgetRetry);
         yield return ("session error retry", AgentPromptBuilder.BuildSessionErrorRetry);
     }
+
+    private ReviewLapBriefing ReviewLapBriefing() => new(
+        TheTask.Id,
+        new PullRequestSurface(
+            "acme/web", 42, "Teach the closeout monitor to read a rebase conflict", "Adds the conflict read.",
+            "OPEN", "main", "task/9f2-conflict-read", "0f1e2d3c4b5a69788796a5b4c3d2e1f001234567",
+            new Uri("https://github.com/acme/web/pull/42"), "someone-else", Additions: 120, Deletions: 18,
+            ChangedFiles: 1, Files: [new PullRequestFileChange("src/Closeout.cs", 80, 10)],
+            Checks: [new PullRequestCheck("build", "ci", "COMPLETED", "SUCCESS")], ChecksObserved: true),
+        "hall9k", _worktreePath, _worktreePath, StatedObjective: null, AcceptanceCriteria: [],
+        AuthorTaskShortId: null, FindingsReport: null, AuthorRun: null);
 
     private string BuildReading(string family, InjectedTaskNotes? notes) => family switch
     {

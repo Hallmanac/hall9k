@@ -5,7 +5,9 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.Fakes;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -150,10 +152,28 @@ public sealed class TaskNoteInjectionTests
         Action blank = () => TaskNoteDecider.Record(TheTask, "   ", Provenance(), null, null, Now);
         Action tooLong = () => TaskNoteDecider.Record(TheTask, new string('a', 1001), Provenance(), null, null, Now);
 
-        blank.Should().Throw<DomainValidationException>();
+        blank.Should().Throw<DomainValidationException>().WithMessage("*1000*");
         tooLong.Should().Throw<DomainValidationException>().WithMessage("*1000*");
         TaskNoteDecider.Record(TheTask, new string('a', 1000), Provenance(), null, null, Now)
             .Text.Should().HaveLength(1000);
+    }
+
+    [Fact]
+    public void A_replicated_note_missing_its_text_or_provenance_is_left_out_and_one_missing_its_source_reads_as_unknown()
+    {
+        TaskDetails view = new() { Id = TheTask };
+        TaskDetailsProjection projection = new();
+
+        // A replicated event is deserialized without the decider's checks, so a member's node can omit any field.
+        projection.Apply(new FakeEvent<TaskNoteRecorded>(
+            new TaskNoteRecorded(TheTask, DomainId.New(), null!, Provenance(), TaskNoteSource.Verb, Now)), view);
+        projection.Apply(new FakeEvent<TaskNoteRecorded>(
+            new TaskNoteRecorded(TheTask, DomainId.New(), "no provenance", null!, TaskNoteSource.Verb, Now)), view);
+        projection.Apply(new FakeEvent<TaskNoteRecorded>(
+            new TaskNoteRecorded(TheTask, DomainId.New(), "no source", Provenance(), null!, Now)), view);
+
+        view.Notes.Should().ContainSingle().Which.Note.Should().Match<TaskNoteRecorded>(
+            note => note.Text == "no source" && note.Source == TaskNoteSource.Unknown);
     }
 
     [Fact]

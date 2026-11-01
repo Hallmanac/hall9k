@@ -162,8 +162,11 @@ that should outlast the task goes to `h9k learn` instead. Promoting a note into 
 built; today that is a person or a session recording the lesson itself.
 
 **Who reads them.** The prompts for a fresh build, a follow-up, a changes-requested lap, a checks
-or rebase follow-up, a settling-gate repair and a review fix carry a bounded notes section (at
-most 15 notes and 4,000 characters of note text, as constants rather than `h9k config` settings).
+or rebase follow-up, a pre-final-pass rebase recovery, a settling-gate repair and a review fix carry
+a bounded notes section. So do the prompts `h9k task drive` composes: the pasted prompt, the
+`--direct-launch` opening message, and the task anchor the default launch line names (`h9k task
+start` and `h9k task delegate` compose theirs the same way). The section holds at most 15 notes
+and 4,000 characters of note text, as constants rather than `h9k config` settings.
 It lists the task's own notes first and then those of other tasks in the same epic in the same
 project, closed ones included, each group newest first, with a sibling's note labelled by that
 task's short id. The section tells the reader these are colleagues' notes rather than
@@ -171,8 +174,11 @@ instructions, and when notes do not fit it says how many were left out and that 
 them with `h9k task notes`. A note reaches a prompt only under the same trust rule lessons use: one
 replicated from outside the reader's fleet, from a node nobody observed, or with no provenance
 stays out, an unreadable fleet holds every replicated note, and the section counts what it held
-and says why. The closing block is read only from a build, follow-up or fix session; a review,
-pr-review or spike session's final message is never read that way, and a missing or malformed
+and says why. The closing block is read only from a build, follow-up or fix session the daemon
+reads the final message of, so the pre-final-pass rebase recovery and the settling-gate repair are
+taught the verb but not asked for the block, and neither is an attended or delegated session; a
+review, pr-review or spike session's final message is never read that way, and a spike's prompt
+carries no notes section at all, and a missing or malformed
 block never changes the outcome of a run.
 
 **Where a note travels.** A note is a project-scoped event on its task's stream, so it goes exactly

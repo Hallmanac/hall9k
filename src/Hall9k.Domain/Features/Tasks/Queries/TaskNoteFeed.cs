@@ -66,7 +66,10 @@ public static class TaskNoteFeed
     /// The section a prompt carries for <paramref name="taskId"/>, or null when it could not be read.
     /// Null is a real answer: this runs on the dispatch path, and a prompt composed without its notes
     /// section is a worse prompt, never a failed dispatch. A task that simply holds no notes yields
-    /// <see cref="InjectedTaskNotes.None"/>, which still teaches the verb.
+    /// <see cref="InjectedTaskNotes.None"/>, which still teaches the verb. A spike or pr-review task
+    /// also yields null: the daemon reads no notes block from either session's final message
+    /// (<c>TaskNoteCapture</c>), so a section there would ask for a block nothing records, and every
+    /// composing caller, daemon or CLI, gets that rule from here rather than repeating it.
     /// </summary>
     public static async Task<InjectedTaskNotes?> LoadForPromptAsync(
         IQuerySession query, Guid taskId, LocalFleetReader? localFleet, CancellationToken cancellationToken,
@@ -74,6 +77,12 @@ public static class TaskNoteFeed
     {
         try
         {
+            TaskDetails? task = await query.LoadAsync<TaskDetails>(taskId, cancellationToken);
+            if (task?.Type == TaskType.Spike || task?.Type == TaskType.PrReview)
+            {
+                return null;
+            }
+
             return TaskNoteInjection.Select(await LoadViewsAsync(query, taskId, localFleet, cancellationToken));
         }
         catch (Exception exception) when (exception is not OperationCanceledException)

@@ -1300,13 +1300,26 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     /// </summary>
     public void Apply(IEvent<TaskNoteRecorded> @event, TaskDetails view)
     {
-        if (view.Notes.Any(entry => entry.Note.NoteId == @event.Data.NoteId))
+        TaskNoteRecorded note = @event.Data;
+
+        // A replicated event is deserialized without the checks the CLI's decider runs, so a member's
+        // node can send one with a field omitted, and every reader of a note (the prompt read, the
+        // terminal list, the project-home render) would fail on it for as long as the ledger keeps
+        // it. A note with no text or no provenance says nothing a reader could use, so it is left
+        // out of the projection; one with no source is kept and reads as an unknown source.
+        if (string.IsNullOrWhiteSpace(note.Text) || note.Provenance is null)
+        {
+            return;
+        }
+
+        if (view.Notes.Any(entry => entry.Note.NoteId == note.NoteId))
         {
             return;
         }
 
         view.Notes.Add(new TaskNoteEntry(
-            @event.Data, EventRecordingNode.Of(@event), ReplicatedSender.Of(@event), ReplicatedSender.OriginOf(@event)));
+            note.Source is null ? note with { Source = TaskNoteSource.Unknown } : note,
+            EventRecordingNode.Of(@event), ReplicatedSender.Of(@event), ReplicatedSender.OriginOf(@event)));
     }
 
     /// <summary>Keeps the first <see cref="LessonPickRecorded"/> only; the task aggregate has nothing to change, since no rule reads a lesson pick.</summary>

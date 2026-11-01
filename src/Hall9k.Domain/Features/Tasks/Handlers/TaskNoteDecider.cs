@@ -32,7 +32,8 @@ public static class TaskNoteDecider
         if (trimmed.Length == 0)
         {
             throw new DomainValidationException(
-                "A task note needs some text. Say what the next session on this task should know.");
+                "A task note needs some text, at most "
+                + $"{TaskNoteLimits.MaxTextLength} characters. Say what the next session on this task should know.");
         }
 
         return trimmed.Length > TaskNoteLimits.MaxTextLength

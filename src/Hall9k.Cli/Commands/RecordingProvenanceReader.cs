@@ -77,6 +77,33 @@ internal static class RecordingProvenanceReader
     }
 
     /// <summary>
+    /// The provenance of a call made about <paramref name="task"/> with no run named by the
+    /// environment variable: the task's current run, but only when this very process is that run's
+    /// recorded interactive session (<see cref="InteractiveSessionLiveness.IsSelfInvocation(RunDetails, Func{string, string?})"/>),
+    /// otherwise null. This is how a session that was pasted a launch line, or <c>--print-prompt</c>'s
+    /// prompt, and registered itself is recognised: this platform never spawned it, so
+    /// <see cref="InteractiveSessionLiveness.InteractiveRunEnvironmentVariable"/> was never injected,
+    /// and its <c>CLAUDE_PID</c> matching the run's recorded session is the observation. A plain
+    /// terminal, or any process that is not that session, gets null and records no run, even while
+    /// the task has a live one.
+    /// </summary>
+    public static async Task<RecordedProvenance?> ObserveSelfRegisteredSessionAsync(
+        IQuerySession session, TaskDetails task, Guid ownerId, Func<string, string?> environment,
+        CancellationToken cancellationToken)
+    {
+        if (task.CurrentRunId is not { } runId
+            || await session.LoadAsync<RunDetails>(runId, cancellationToken) is not { } run
+            || !InteractiveSessionLiveness.IsSelfInvocation(run, environment))
+        {
+            return null;
+        }
+
+        return new RecordedProvenance(
+            ownerId, run.Id, task.Id,
+            Classify(task, run, environment(HeadlessLaunch.DetachedSessionEnvironmentVariable)));
+    }
+
+    /// <summary>
     /// Whether a human is attached to this run, from the run's own record and one fact about the
     /// calling process. Three outcomes, because two would mean guessing: a run whose session was
     /// never named records nothing this can read, and <see cref="HumanAttendance.Unobserved"/>

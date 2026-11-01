@@ -225,9 +225,16 @@ internal static class InteractiveSessionLiveness
     /// recycled pid almost never started at the recorded instant too.
     /// </para>
     /// </summary>
-    public static bool IsSelfInvocation(RunDetails run)
+    public static bool IsSelfInvocation(RunDetails run) => IsSelfInvocation(run, Environment.GetEnvironmentVariable);
+
+    /// <summary>
+    /// <see cref="IsSelfInvocation(RunDetails)"/> against an explicit environment, so a caller that
+    /// carries its environment as an argument (<c>h9k task note</c>) is provable without mutating
+    /// the real one.
+    /// </summary>
+    public static bool IsSelfInvocation(RunDetails run, Func<string, string?> environment)
     {
-        if (Environment.GetEnvironmentVariable(InteractiveRunEnvironmentVariable) == run.Id.ToString())
+        if (environment(InteractiveRunEnvironmentVariable) == run.Id.ToString())
         {
             return true;
         }
@@ -274,7 +281,7 @@ internal static class InteractiveSessionLiveness
             return false;
         }
 
-        string? claudePid = Environment.GetEnvironmentVariable(ClaudeCodePidEnvironmentVariable);
+        string? claudePid = environment(ClaudeCodePidEnvironmentVariable);
         return claudePid.IsNotBlank() && int.TryParse(claudePid, out int pid) && pid == interactive.ProcessId
             && IsAlive(pid, startedAt);
     }

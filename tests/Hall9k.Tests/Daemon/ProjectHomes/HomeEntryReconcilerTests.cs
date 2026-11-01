@@ -50,6 +50,35 @@ public sealed class HomeEntryReconcilerTests : IDisposable
     }
 
     [Fact]
+    public void A_directory_holding_only_the_generated_task_and_notes_documents_is_removed()
+    {
+        string directory = Path.Combine(_root, "11111111-gone-task");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "task.md"), "generated");
+        File.WriteAllText(Path.Combine(directory, TaskNotesDocument.FileName), $"> {TaskNotesDocument.GeneratedMarker}: ...");
+
+        IReadOnlyList<string> handled = HomeEntryReconciler.RemoveOrMarkOrphans(_root, new HashSet<string>(), "task.md");
+
+        handled.Should().ContainSingle().Which.Should().Be(directory);
+        Directory.Exists(directory).Should().BeFalse("a rendered notes.md is a disposable projection, like task.md");
+    }
+
+    [Fact]
+    public void A_notes_file_a_person_wrote_keeps_the_directory_and_gets_it_marked()
+    {
+        string directory = Path.Combine(_root, "22222222-gone-task");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "task.md"), "generated");
+        File.WriteAllText(Path.Combine(directory, TaskNotesDocument.FileName), "my own notes");
+
+        IReadOnlyList<string> handled = HomeEntryReconciler.RemoveOrMarkOrphans(_root, new HashSet<string>(), "task.md");
+
+        handled.Should().ContainSingle().Which.Should().Be(directory);
+        Directory.Exists(directory).Should().BeTrue();
+        File.Exists(Path.Combine(directory, "ORPHANED.md")).Should().BeTrue();
+    }
+
+    [Fact]
     public void A_directory_whose_short_id_failed_to_render_this_sweep_is_left_alone_even_though_it_matches_no_known_name()
     {
         // A failed Directory.Move (e.g. a transient IOException) can leave a live entry's directory

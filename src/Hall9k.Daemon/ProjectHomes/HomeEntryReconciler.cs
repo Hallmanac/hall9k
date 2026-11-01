@@ -110,6 +110,11 @@ public static class HomeEntryReconciler
                 continue;
             }
 
+            if (IsGeneratedNotesDocument(entry))
+            {
+                continue;
+            }
+
             if (string.Equals(name, "workspace", StringComparison.OrdinalIgnoreCase)
                 && Directory.Exists(entry)
                 && !Directory.EnumerateFileSystemEntries(entry).Any())
@@ -121,5 +126,29 @@ public static class HomeEntryReconciler
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="entry"/> is the <c>notes.md</c> the sweep itself renders beside
+    /// <c>task.md</c>: a disposable projection of events, so it is as generated as the task file is.
+    /// Recognised by its marker line and not by name alone, because a <c>notes.md</c> a person wrote
+    /// there is their material and keeps the directory from being deleted.
+    /// </summary>
+    private static bool IsGeneratedNotesDocument(string entry)
+    {
+        if (!string.Equals(Path.GetFileName(entry), TaskNotesDocument.FileName, StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(entry))
+        {
+            return false;
+        }
+
+        try
+        {
+            return File.ReadAllText(entry).Contains(TaskNotesDocument.GeneratedMarker, StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 }
