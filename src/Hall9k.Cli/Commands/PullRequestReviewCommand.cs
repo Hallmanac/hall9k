@@ -36,7 +36,7 @@ namespace Hall9k.Cli.Commands;
 /// built ON TOP of the pr-review task the platform already adopts rather than beside it: this
 /// command finds the pr-review task this node already holds for the pull request — auto-adopted
 /// from a GitHub reviewer assignment, or minted by hand with <c>h9k task add --from-pr</c> —
-/// attaches to it, reuses its read-only worktree, and opens an interactive session with a
+/// attaches to it, reuses its read-only checkout, and opens an interactive session with a
 /// factual briefing that includes the platform's own findings report when one exists. Only when
 /// no live task exists at all does it adopt the pull request itself, through the same adoption
 /// path both of those already use.
@@ -198,8 +198,10 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
 
         string prompt = ReviewLapPromptBuilder.Build(briefing);
 
-        string settingsFile = await WriteLapSettingsAsync(session, runId, prompt, cancellationToken);
-        ReviewLapGuardOutcome guard = await ReviewLapGuardFile.InstallAsync(worktreePath, cancellationToken);
+        string settingsFile = await WriteLapSettingsAsync(
+            session, runId, prompt, pullRequest.Repository, cancellationToken);
+        ReviewLapGuardOutcome guard = await ReviewLapGuardFile.InstallAsync(
+            worktreePath, pullRequest.Repository, cancellationToken);
 
         await Doorbell.RingAsync($"pr-review-lap:{taskId}", cancellationToken);
         PrintHandoff(taskId, worktreePath, settingsFile, guard, prompt);
@@ -1080,7 +1082,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             catch (Exception exception)
             {
                 AnsiConsole.MarkupLineInterpolated(
-                    $"[yellow]The read-only checkout at {worktreePath} could not be removed ({exception.Message}), and no run records it — git worktree remove --force it, or git worktree prune, to reclaim the space.[/]");
+                    $"[yellow]The read-only checkout at {worktreePath} could not be removed ({exception.Message}), and no run records it — delete that directory by hand to reclaim the space.[/]");
             }
         }
     }
@@ -1558,7 +1560,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// reviewer wants to re-scroll a terminal for.
     /// </summary>
     private static async Task<string> WriteLapSettingsAsync(
-        IQuerySession session, Guid runId, string prompt, CancellationToken cancellationToken)
+        IQuerySession session, Guid runId, string prompt, string gitHubRepository, CancellationToken cancellationToken)
     {
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainConflictException($"Run {runId} has no record — the lap cannot write its settings.");
@@ -1566,7 +1568,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         Directory.CreateDirectory(runDirectory);
         string settingsFile = RunPaths.SettingsFile(runDirectory);
         await File.WriteAllTextAsync(
-            settingsFile, ClaudeSettingsFile.BuildForReviewLap(ClaudeSettingsFile.DefaultCommandTimeout), cancellationToken);
+            settingsFile, ClaudeSettingsFile.BuildForReviewLap(ClaudeSettingsFile.DefaultCommandTimeout, gitHubRepository),
+            cancellationToken);
         await File.WriteAllTextAsync(RunPaths.PromptFile(runDirectory), prompt, cancellationToken);
         return settingsFile;
     }
@@ -1576,7 +1579,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     {
         if (worktreePath.IsNotBlank())
         {
-            AnsiConsole.MarkupLineInterpolated($"[dim]Read-only worktree: {worktreePath}[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]Read-only checkout (a standalone clone): {worktreePath}[/]");
         }
         else
         {

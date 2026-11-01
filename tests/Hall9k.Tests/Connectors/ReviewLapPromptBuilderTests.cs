@@ -413,6 +413,25 @@ public sealed class ReviewLapPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The lap's checkout is a standalone clone with no remote, so <c>gh pr view &lt;n&gt;</c> in it resolves the
+    /// number against nothing unless <c>GH_REPO</c> names the repository. Both vehicles that carry the lap's
+    /// settings (the run directory's file passed with <c>--settings</c>, and the guard file a session started
+    /// in the checkout picks up on its own) must set it.
+    /// </summary>
+    [Fact]
+    public void Both_lap_settings_vehicles_set_gh_repo_so_gh_reads_work_with_no_remote()
+    {
+        using JsonDocument settings = JsonDocument.Parse(
+            ClaudeSettingsFile.BuildForReviewLap(TimeSpan.FromMinutes(30), "owner/repo"));
+        using JsonDocument guard = JsonDocument.Parse(ReviewLapGuardFile.Content("owner/repo"));
+
+        settings.RootElement.GetProperty("env").GetProperty("GH_REPO").GetString().Should().Be("owner/repo");
+        guard.RootElement.GetProperty("env").GetProperty("GH_REPO").GetString().Should().Be("owner/repo");
+        guard.RootElement.GetProperty("permissions").GetProperty("deny").GetArrayLength().Should().Be(
+            ClaudeSettingsFile.ReviewLapDeniedTools.Count, "naming a repository must not cost the guard any of its denials");
+    }
+
+    /// <summary>
     /// Re-entering a lap — closing the terminal and re-running <c>h9k pr review</c> — finds the
     /// guard the first entry wrote, and that has to read as "still guarded" rather than as
     /// somebody else's settings file: the existence check alone warned every re-entering reviewer
@@ -427,8 +446,8 @@ public sealed class ReviewLapPromptBuilderTests : IDisposable
         Directory.CreateDirectory(worktree);
         try
         {
-            ReviewLapGuardOutcome first = await ReviewLapGuardFile.InstallAsync(worktree, cts.Token);
-            ReviewLapGuardOutcome again = await ReviewLapGuardFile.InstallAsync(worktree, cts.Token);
+            ReviewLapGuardOutcome first = await ReviewLapGuardFile.InstallAsync(worktree, null, cts.Token);
+            ReviewLapGuardOutcome again = await ReviewLapGuardFile.InstallAsync(worktree, null, cts.Token);
 
             first.Should().Be(ReviewLapGuardOutcome.Written);
             again.Should().Be(
@@ -438,7 +457,7 @@ public sealed class ReviewLapPromptBuilderTests : IDisposable
             await File.WriteAllTextAsync(
                 ReviewLapGuardFile.PathIn(worktree), """{"permissions": {"allow": ["Bash(git push:*)"]}}""",
                 cts.Token);
-            ReviewLapGuardOutcome foreign = await ReviewLapGuardFile.InstallAsync(worktree, cts.Token);
+            ReviewLapGuardOutcome foreign = await ReviewLapGuardFile.InstallAsync(worktree, null, cts.Token);
 
             foreign.Should().Be(
                 ReviewLapGuardOutcome.AlreadyPresent,
@@ -456,7 +475,7 @@ public sealed class ReviewLapPromptBuilderTests : IDisposable
     {
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         ReviewLapGuardOutcome outcome = await ReviewLapGuardFile.InstallAsync(
-            string.Empty, cts.Token);
+            string.Empty, null, cts.Token);
 
         outcome.Should().Be(ReviewLapGuardOutcome.NoWorktree, "an absence is not a write that failed");
     }

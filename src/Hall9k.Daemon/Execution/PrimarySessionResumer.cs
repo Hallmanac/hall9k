@@ -1,3 +1,4 @@
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -119,6 +120,7 @@ public sealed class PrimarySessionResumer(IExecutor executor, IOptions<DaemonOpt
             // session (ReviewPersonaPlan.Sessions' own doc), so this is QA's own earned exception
             // exactly when the session being resumed is QA's.
             UsesReviewPermissions = isPrReview,
+            GitHubRepository = isPrReview ? GitHubPullRequestReference.RepositoryOfTask(task.ExternalReference) : null,
             QaGateCommands = isPrReview && run.PrReviewPersonasRan.FirstOrDefault() == ReviewPersona.Qa
                 ? QaGateCommandsResolver.Resolve(project)
                 : null,

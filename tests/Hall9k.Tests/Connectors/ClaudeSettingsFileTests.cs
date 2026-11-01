@@ -146,6 +146,26 @@ public sealed class ClaudeSettingsFileTests
 /// </summary>
 public sealed class ClaudeSettingsFileBuildForPrReviewTests
 {
+    /// <summary>
+    /// A pr-review checkout is a standalone clone with no remote, so <c>gh pr view &lt;n&gt;</c> and the other
+    /// number-addressed reads have no repository to resolve the number in unless the session's environment
+    /// names it. This is the setting that makes those four <c>gh</c> reads work there.
+    /// </summary>
+    [Fact]
+    public void The_named_repository_is_set_as_gh_repo_so_gh_reads_work_in_a_checkout_with_no_remote()
+    {
+        using JsonDocument named = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run", gitHubRepository: "owner/repo"));
+        using JsonDocument unnamed = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));
+
+        named.RootElement.GetProperty("env").GetProperty("GH_REPO").GetString().Should().Be("owner/repo");
+        unnamed.RootElement.GetProperty("env").TryGetProperty("GH_REPO", out _).Should().BeFalse(
+            "a session with no named repository leaves the variable unset rather than setting it blank");
+        ClaudeSettingsFile.PrReviewAllowedTools.Should().Contain(
+            ["Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr checks:*)", "Bash(gh issue view:*)"]);
+    }
+
     [Fact]
     public void The_default_mode_is_dont_ask()
     {

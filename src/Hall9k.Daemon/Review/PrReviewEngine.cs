@@ -771,6 +771,7 @@ public sealed class PrReviewEngine(
             SessionName = sessionName,
             UsesReviewPermissions = true,
             QaGateCommands = qaGateCommands,
+            GitHubRepository = GitHubPullRequestReference.RepositoryOfTask(task.ExternalReference),
         },
             cancellationToken);
 

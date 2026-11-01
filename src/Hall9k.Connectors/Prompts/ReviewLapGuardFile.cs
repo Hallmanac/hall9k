@@ -1,3 +1,5 @@
+using Hall9k.Domain.Shared.ValueObjects;
+
 namespace Hall9k.Connectors.Prompts;
 
 /// <summary>
@@ -69,15 +71,24 @@ public static class ReviewLapGuardFile
     public static string PathIn(string worktreePath) =>
         Path.Combine(worktreePath, ".claude", "settings.local.json");
 
-    /// <summary>The guard's own content: the deny list and nothing else, so it adds a restriction to whatever else a session resolves rather than replacing a configuration.</summary>
-    public static string Content()
+    /// <summary>
+    /// The guard's own content: the deny list, plus <c>GH_REPO</c> when a repository is named, and nothing
+    /// else, so it adds a restriction to whatever else a session resolves rather than replacing a
+    /// configuration. <c>GH_REPO</c> is here because the checkout is a standalone clone with no remote, and
+    /// a session started in it without <c>--settings</c> would otherwise have no repository for
+    /// <c>gh pr view &lt;n&gt;</c> to resolve the number in.
+    /// </summary>
+    public static string Content(string? gitHubRepository = null)
     {
         string deny = string.Join(", ", ClaudeSettingsFile.ReviewLapDeniedTools.Select(tool => $"\"{tool}\""));
-        return $$$"""{"permissions": {"deny": [{{{deny}}}]}}""";
+        string env = gitHubRepository.IsBlank()
+            ? string.Empty
+            : $"\"env\": {{{ClaudeSettingsFile.GitHubRepositoryEnvJson(gitHubRepository)[2..]}}}, ";
+        return $$$"""{{{{env}}}"permissions": {"deny": [{{{deny}}}]}}""";
     }
 
     public static async Task<ReviewLapGuardOutcome> InstallAsync(
-        string worktreePath, CancellationToken cancellationToken)
+        string worktreePath, string? gitHubRepository, CancellationToken cancellationToken)
     {
         if (worktreePath.IsBlank())
         {
@@ -97,13 +108,13 @@ public static class ReviewLapGuardFile
                 // older version, with a shorter deny list, is honestly not the guard this run
                 // would write, and the AlreadyPresent branch's advice (start the session with
                 // --settings, which carries today's list) is the right advice for it.
-                return await IsOurOwnGuardAsync(path, cancellationToken)
+                return await IsOurOwnGuardAsync(path, gitHubRepository, cancellationToken)
                     ? ReviewLapGuardOutcome.AlreadyGuarded
                     : ReviewLapGuardOutcome.AlreadyPresent;
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await File.WriteAllTextAsync(path, Content(), cancellationToken);
+            await File.WriteAllTextAsync(path, Content(gitHubRepository), cancellationToken);
             return ReviewLapGuardOutcome.Written;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -117,12 +128,12 @@ public static class ReviewLapGuardFile
     /// read reads as not ours — the honest answer, since the whole question is whether the
     /// checkout is known to be covered, and an unreadable file cannot say it is.
     /// </summary>
-    private static async Task<bool> IsOurOwnGuardAsync(string path, CancellationToken cancellationToken)
+    private static async Task<bool> IsOurOwnGuardAsync(string path, string? gitHubRepository, CancellationToken cancellationToken)
     {
         try
         {
             string existing = await File.ReadAllTextAsync(path, cancellationToken);
-            return existing.Trim() == Content();
+            return existing.Trim() == Content(gitHubRepository);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

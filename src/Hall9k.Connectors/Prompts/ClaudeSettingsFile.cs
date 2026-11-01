@@ -186,13 +186,13 @@ public static class ClaudeSettingsFile
     /// before the tool runs.
     /// <para>
     /// <b>Why deny is the mechanism and a git hook is not.</b> The obvious guard is a
-    /// <c>pre-push</c> hook in the review worktree, and it cannot be installed there: git resolves
-    /// hooks from the clone's single shared hooks directory, so a hook written for this one
-    /// worktree fires for every other worktree of the same clone — including the build sessions
-    /// whose pushes the daemon legitimately makes. Making it per-worktree means enabling
-    /// <c>extensions.worktreeConfig</c>, which changes how <c>core.bare</c> is read on the bare
-    /// clone this platform's worktrees hang off, repository-wide, to serve one temporary checkout.
-    /// The session-level deny costs nothing and is scoped to exactly the session it is for.
+    /// <c>pre-push</c> hook in the review checkout, which was not installable while that checkout was a
+    /// linked worktree: git resolves hooks from the clone's single shared hooks directory, so a hook
+    /// written for it would have fired for every other worktree of the same clone, including the build
+    /// sessions whose pushes the daemon legitimately makes. A checkout cut now is a standalone clone
+    /// with no remote and no hooks, but the lap's checkout can predate that, and a push to a URL spelled
+    /// out on the command line needs no remote anyway. The session-level deny costs nothing, covers both
+    /// shapes, and is scoped to exactly the session it is for.
     /// </para>
     /// <para>
     /// <c>git commit</c> is deliberately NOT denied. The lap's checkout is detached with no local
@@ -206,12 +206,12 @@ public static class ClaudeSettingsFile
     /// only thing that makes it theirs.
     /// </para>
     /// </summary>
-    public static string BuildForReviewLap(TimeSpan commandTimeout)
+    public static string BuildForReviewLap(TimeSpan commandTimeout, string? gitHubRepository = null)
     {
         long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
         long maxMilliseconds = defaultMilliseconds * 2;
         string deny = string.Join(", ", ReviewLapDeniedTools.Select(tool => $"\"{tool}\""));
-        return $$$"""{"includeCoAuthoredBy": false, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}, "permissions": {"deny": [{{{deny}}}]}}""";
+        return $$$"""{"includeCoAuthoredBy": false, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"{{{GitHubRepositoryEnvJson(gitHubRepository)}}}}, "permissions": {"deny": [{{{deny}}}]}}""";
     }
 
     /// <summary>
@@ -407,13 +407,16 @@ public static class ClaudeSettingsFile
     /// </para>
     /// <para>
     /// <b>The two git prefix rules stay, and no other git prefix rule may be added.</b>
-    /// Claude Code's own built-in read-only git allowance does not apply in a dispatched worktree:
-    /// its bare-repository check treats the <c>.git</c> file's <c>gitdir</c> target
+    /// Claude Code's own built-in read-only git allowance does not apply in a dispatched linked
+    /// worktree: its bare-repository check treats the <c>.git</c> file's <c>gitdir</c> target
     /// (<c>repo/&lt;name&gt;.git/worktrees/wt-*</c>) as plantable, so a git command with no allow
     /// rule falls through to a prompt and <c>dontAsk</c> refuses it. Observed in production: a
     /// pr-review run had <c>git ls-files</c>, <c>git ls-tree</c> and <c>git show</c> denied while
-    /// <c>git diff</c> and <c>git log</c>, which had prefix rules, ran. Dropping the two rules
-    /// would leave every lens unable to read its own diff. Keeping them has a price, which is why
+    /// <c>git diff</c> and <c>git log</c>, which had prefix rules, ran. A pull-request review
+    /// checkout is cut as a standalone clone now, whose real <c>.git</c> directory passes that
+    /// check, so a review lens there no longer depends on these rules to read its diff. They stay
+    /// for a review run cut as a linked worktree before that change and then resumed, where
+    /// dropping them would leave a lens unable to read its own diff. Keeping them has a price, which is why
     /// nothing may be added beside them: a prefix rule matches the command as spelled and turns off
     /// Claude Code's own flag checks for it, so each rule needs something of ours standing in for
     /// those checks. For <c>git diff</c> and <c>git log</c> there are two such things, one for each
@@ -454,6 +457,11 @@ public static class ClaudeSettingsFile
     /// each scoped the way those two are. Set only for a draft challenge, which reads the idea's workspace and the
     /// draft's own directory; null for every other session.
     /// </param>
+    /// <param name="gitHubRepository">
+    /// The <c>owner/repo</c> set as <c>GH_REPO</c> in the session's environment (<see cref="GitHubRepositoryEnvJson"/>).
+    /// The review checkout has no remote, so this is the only thing that tells <c>gh</c> which repository
+    /// <c>gh pr view &lt;n&gt;</c> and the other number-addressed reads mean. Null leaves the variable unset.
+    /// </param>
     /// <param name="allowMentionAnswer">
     /// Whether to add the <c>Edit</c> rule for <c>mention-answer.md</c> in <paramref name="runDirectory"/>. True for
     /// every pr-review session; false for a draft challenge, whose report (<paramref name="assessmentFile"/>) is the only
@@ -462,7 +470,8 @@ public static class ClaudeSettingsFile
     public static string BuildForPrReview(
         TimeSpan commandTimeout, string worktreePath, string runDirectory,
         IReadOnlyList<VerifyCommand>? qaGateCommands = null, AgentEffort? effort = null,
-        string? assessmentFile = null, IReadOnlyList<string>? extraReadRoots = null, bool allowMentionAnswer = true)
+        string? assessmentFile = null, IReadOnlyList<string>? extraReadRoots = null, bool allowMentionAnswer = true,
+        string? gitHubRepository = null)
     {
         long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
         long maxMilliseconds = defaultMilliseconds * 2;
@@ -510,7 +519,7 @@ public static class ClaudeSettingsFile
 
         string allowJson = string.Join(", ", allow.Select(rule => $"\"{rule}\""));
         string denyJson = string.Join(", ", PrReviewDeniedTools.Select(tool => $"\"{tool}\""));
-        return $$$"""{"includeCoAuthoredBy": false{{{effortLevel}}}, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"{{{bareRepositoryEnv}}}}, "permissions": {"defaultMode": "dontAsk", "allow": [{{{allowJson}}}], "deny": [{{{denyJson}}}]}, {{{PrReviewHooksJson}}}}""";
+        return $$$"""{"includeCoAuthoredBy": false{{{effortLevel}}}, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"{{{bareRepositoryEnv}}}{{{GitHubRepositoryEnvJson(gitHubRepository)}}}}, "permissions": {"defaultMode": "dontAsk", "allow": [{{{allowJson}}}], "deny": [{{{denyJson}}}]}, {{{PrReviewHooksJson}}}}""";
     }
 
     /// <summary>
@@ -547,11 +556,23 @@ public static class ClaudeSettingsFile
     }
 
     /// <summary>
+    /// The <c>GH_REPO</c> <c>env</c> entry for <paramref name="gitHubRepository"/>, leading comma included,
+    /// or nothing when no repository is named. <c>gh</c> reads it before it looks at any git remote, which
+    /// is what lets it work in a review checkout that has none. Public so the review lap's own settings
+    /// and guard file splice the identical entry.
+    /// </summary>
+    public static string GitHubRepositoryEnvJson(string? gitHubRepository) =>
+        gitHubRepository.IsBlank()
+            ? string.Empty
+            : $", \"GH_REPO\": \"{EscapeJsonString(gitHubRepository)}\"";
+
+    /// <summary>
     /// The three <c>env</c> entries that give a session git's <c>safe.bareRepository=explicit</c>
     /// through the environment's own config variables, leading comma included so it splices after
     /// the last entry already in the block. Git then works only in a bare repository that is named
-    /// explicitly, which keeps it to the checkout's own repository. The checkout itself is an
-    /// ordinary linked worktree and is unaffected.
+    /// explicitly, which keeps it to the checkout's own repository. A review checkout is an
+    /// ordinary non-bare repository (a standalone clone, or for an older run a linked worktree) and
+    /// is unaffected.
     /// </summary>
     private const string PrReviewBareRepositoryEnvJson =
         ", \"GIT_CONFIG_COUNT\": \"1\", \"GIT_CONFIG_KEY_0\": \"safe.bareRepository\", "
@@ -565,8 +586,11 @@ public static class ClaudeSettingsFile
     /// and the QA rules' own never-post line for the four <c>gh</c> reads.
     /// <para>
     /// The two git rules cannot be dropped: Claude Code's built-in read-only git allowance does not
-    /// apply in a dispatched worktree (see <see cref="BuildForPrReview"/>), so without them
-    /// <c>dontAsk</c> refuses both commands. No other git rule may be added beside them: a prefix
+    /// apply in a dispatched linked worktree (see <see cref="BuildForPrReview"/>), so without them
+    /// <c>dontAsk</c> refuses both commands. A review checkout cut now is a standalone clone, where
+    /// that allowance does apply and also covers <c>git show</c>, <c>git grep</c>, <c>git blame</c> and
+    /// <c>git ls-files</c>, but a run cut as a linked worktree before that change can still be resumed,
+    /// and a session in one needs these two. No other git rule may be added beside them: a prefix
     /// rule turns off Claude Code's own flag checks for the command it names, and the stand-ins
     /// this project supplies (the git read-only guard hook and the <c>safe.bareRepository</c>
     /// setting, both described on <see cref="BuildForPrReview"/>) are written for <c>git diff</c>

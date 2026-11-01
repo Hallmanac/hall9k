@@ -311,7 +311,7 @@ public sealed class RunLauncher(
             // checkout has said which of the two happened — the resolver reads the PARENT's current
             // state, which is the right question only when a branch is being cut
             // (StackedBaseResolver.ResumedBaseAsync). A pr-review run is excluded: its checkout is
-            // a detached, branch-less read of a foreign pull request whose own base is already
+            // a detached, branch-less read (a standalone clone) of a foreign pull request whose own base is already
             // recorded separately as PrReviewBaseRefName.
             StackedBase stackedBase = isPrReview
                 ? new StackedBase(project.BaseBranch, null, "a pr-review run has no base of its own to stack")
@@ -1047,6 +1047,7 @@ public sealed class RunLauncher(
                     SessionName = sessionName,
                     UsesReviewPermissions = isPrReview,
                     QaGateCommands = primaryQaGateCommands,
+                    GitHubRepository = isPrReview ? GitHubPullRequestReference.RepositoryOfTask(task.ExternalReference) : null,
                 },
                 cancellationToken);
 
@@ -1317,6 +1318,7 @@ public sealed class RunLauncher(
                     TaskId = taskId,
                     SessionName = sessionName,
                     UsesReviewPermissions = true,
+                    GitHubRepository = facts.Repository,
                 },
                 cancellationToken);
 
