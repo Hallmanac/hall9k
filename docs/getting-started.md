@@ -118,6 +118,7 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
 
   ```bash
   h9k task challenge <id>          # a new project requires a challenge verdict before publish
+  h9k task show <id>               # wait here for the verdict, and apply any must with h9k task revise
   h9k task publish <id> --pre-approved
   ```
 
@@ -438,7 +439,8 @@ h9k task drive <id>
 
 ```bash
 h9k task add --project <name> --from-issue <n>
-h9k task challenge <id>
+h9k task challenge <id>            # returns at once; the daemon runs the session
+h9k task show <id>                 # repeat until the verdict is on the record; apply any must with h9k task revise
 h9k task publish <id> --pre-approved
 h9k task queue <id>
 h9k task show <id>
@@ -449,7 +451,7 @@ h9k task resolve <id> --reason "<why the objective is met anyway>" --pr <url>
 h9k status
 ```
 
-Adopt from an issue, publish it pre-approved, queue it, and `h9k status` is the one command worth
+Adopt from an issue, challenge it and wait for the verdict, publish it pre-approved, queue it, and `h9k status` is the one command worth
 running on a loop after that: it is the attention pane, bounded and glanceable, naming the cause
 underneath every row and the exact command that clears it, rather than a state to scan for.
 

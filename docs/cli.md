@@ -382,14 +382,14 @@ behavior is under [Closeout in concepts.md](concepts.md#closeout).
 without waiting; the daemon on the node where you ran it starts exactly one headless session that reads the
 project's reading checkout (`repo/dev`, brought up to the remote base branch first, with the commit it is at
 named in the prompt), tests each claim the draft makes, and writes a report in its own session directory. The
-report's closing block holds one verdict line, `publish as written`, `publish as revised`, or `do not publish`,
+report ends with a closing block (nothing may follow it) that opens with one verdict line, `publish as written`, `publish as revised`, or `do not publish`,
 and one line per change marked `must`, `should`, or `park`, each with non-blank text and evidence. The daemon
 reads that block and records one event with the verdict, the counts, the model, the effort, the session, and the
 node; the prose never leaves the file, because the ledger is public and a verdict can carry security detail. A
 session that cannot start, errors, ends with no result, runs past `ChallengeTimeout` (thirty minutes), writes no
 report, or writes one whose closing block is not readable records a failure from a closed list instead, and the
-draft can be challenged again by repeating the verb. A session still running when the daemon restarts is recorded
-as failed on the next start and never dispatched again, and a dispatch another node made and never recorded is
+draft can be challenged again by repeating the verb. A session still running when the daemon restarts is stopped (by the process identity written beside its report) and
+recorded as failed on the next start, and never dispatched again, and a dispatch another node made and never recorded is
 ended here once it has stood past the foreign-session ceiling. A challenge changes nothing about the draft: the session is
 refused `h9k task publish`, `revise`, `assign`, `queue`, and `challenge`, and nothing in the daemon applies a
 verdict. `h9k task show` prints the latest challenge (requested, running, failed with its reason, or the verdict
