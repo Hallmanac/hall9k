@@ -3019,6 +3019,70 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// The request for an independent challenge of a draft (<c>h9k task challenge</c>): one headless session the
+    /// daemon on this node starts, which tests the draft's claims against the code and reports a verdict. The
+    /// rules a person must be told by name: only a draft, with acceptance criteria, in a project that is not
+    /// archived, with a working checkout to read, and with no challenge already requested or running. A draft
+    /// with a recorded verdict or failure may be challenged again by repeating the verb; nothing repeats it.
+    /// <para>
+    /// Who may publish the task is the command's question (<c>TaskOwnerGuard</c>), because it needs the
+    /// roster. The checkout is the command's too, because it needs the disk: it passes
+    /// <paramref name="missingCheckout"/> as the path it looked for, or null when one exists.
+    /// </para>
+    /// </summary>
+    public static DraftChallengeRequested RequestChallenge(
+        TaskAggregate task,
+        DateTimeOffset requestedAt,
+        Guid requestedByOwnerId,
+        bool projectArchived,
+        string projectName,
+        string? missingCheckout)
+    {
+        if (task.State != TaskState.Draft)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value}, not Draft: a challenge tests a draft before it publishes. "
+                + (task.State == TaskState.Published
+                    ? "A published task is frozen, so there is nothing left to revise from a verdict."
+                    : "Work that has moved past the draft gets a review, not a challenge."));
+        }
+
+        if (task.AcceptanceCriteria.Count == 0)
+        {
+            throw new DomainValidationException(
+                $"Task {task.Id} has no acceptance criteria, and a challenge tests the draft's claims against them. "
+                + $"Add them with: h9k task revise {task.Id} --criteria <criterion> (repeat the option for more)");
+        }
+
+        if (projectArchived)
+        {
+            throw new DomainConflictException(
+                $"Project '{projectName}' is archived, so no challenge session is started for its drafts. "
+                + $"Reactivate it first: h9k project reactivate {projectName}");
+        }
+
+        if (missingCheckout is not null)
+        {
+            throw new DomainBusinessRuleException(
+                $"There is no working checkout of project '{projectName}' at {missingCheckout}, and the challenge "
+                + "session reads the code there to test the draft's claims. Create the home's repo/dev worktree "
+                + $"with h9k project init {projectName}, or point the project at an existing checkout with "
+                + $"h9k project set {projectName} --repo <path>, then run h9k task challenge {task.Id} again.");
+        }
+
+        if (task.ChallengeRequested || task.RunningChallengeSessionId is not null)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} already has a challenge "
+                + (task.RunningChallengeSessionId is not null ? "running" : "requested and waiting for the daemon")
+                + ". One session at a time tests a draft; read its verdict with "
+                + $"h9k task show {task.Id} when it lands, and repeat h9k task challenge then if you want another.");
+        }
+
+        return new DraftChallengeRequested(task.Id, requestedAt, requestedByOwnerId);
+    }
+
+    /// <summary>
     /// Whether the task already carries exactly this reference. Asked before
     /// <see cref="LinkWorkItem"/> so that repeating the link is quiet rather than an error: the
     /// caller most likely to repeat it is an agent that could not tell whether its first attempt

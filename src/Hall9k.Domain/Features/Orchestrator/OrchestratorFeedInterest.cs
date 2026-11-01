@@ -148,6 +148,10 @@ public static class OrchestratorFeedInterest
         // Published, Working, Delivered (the pull request pushed), Done (the merge observed, or a
         // human's own resolve), Failed, and Archived — which the card calls abandoned.
         [typeof(TaskPublished)] = OrchestratorFeedLevel.Transitions,
+        // A draft's challenge landed or failed (h9k task challenge): the window that asked learns the outcome
+        // without polling. An ordinary item, not an urgent one, carrying only the verdict and its counts or the
+        // failure reason, since the report's prose stays in a file on the node that ran the session.
+        [typeof(DraftChallengeRecorded)] = OrchestratorFeedLevel.Transitions,
         [typeof(TaskClaimed)] = OrchestratorFeedLevel.Transitions,
         [typeof(PullRequestOpened)] = OrchestratorFeedLevel.Transitions,
         [typeof(TaskCompleted)] = OrchestratorFeedLevel.Transitions,

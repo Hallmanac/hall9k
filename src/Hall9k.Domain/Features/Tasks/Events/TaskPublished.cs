@@ -74,7 +74,14 @@ public sealed record TaskPublished(
     /// <see cref="TaskRevised.ReviewStageComposition"/> already uses. Absent leaves whatever an
     /// earlier <see cref="TaskRevised"/> already recorded on this still-Draft task untouched.
     /// </summary>
-    Optional<CloseLinkedIssueRule?> CloseLinkedIssue = default)
+    Optional<CloseLinkedIssueRule?> CloseLinkedIssue = default,
+    /// <summary>
+    /// The publisher's stated reason for publishing past the challenge gate (<c>h9k task publish --skip-challenge</c>),
+    /// recorded only when the gate actually asked for a verdict and had none to accept, and null otherwise: a
+    /// reason passed where the gate asked for nothing is clamped to null rather than asserting an unobserved
+    /// fact, as <see cref="NoExistingItemAttested"/> is. <see cref="PublishedByOwnerId"/> is who gave it.
+    /// </summary>
+    string? ChallengeSkipReason = null)
 {
     /// <summary>
     /// What this event means, whichever build wrote it — the one home for the mode-from-boolean

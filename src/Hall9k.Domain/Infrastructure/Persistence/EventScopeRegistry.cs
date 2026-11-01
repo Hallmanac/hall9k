@@ -133,6 +133,16 @@ public static class EventScopeRegistry
         [typeof(WorkItemPublicationDispatched)] = EventScope.ProjectScoped,
         [typeof(WorkItemPublicationRequested)] = EventScope.ProjectScoped,
 
+        // The independent challenge of a draft (h9k task challenge). The request never leaves the node it was
+        // made on, so the daemon of no other node can start a session for it and one that arrived by
+        // replication would start nothing: node-scoped like the publication session marker below, and it
+        // names no node because there is no other node to name. The dispatch and the recorded outcome are
+        // team-visible facts about the task (a node can say where a challenge runs, and a verdict opens the
+        // publish gate everywhere); the report's prose stays in a file on the running node.
+        [typeof(DraftChallengeRequested)] = EventScope.NodeScoped,
+        [typeof(DraftChallengeDispatched)] = EventScope.ProjectScoped,
+        [typeof(DraftChallengeRecorded)] = EventScope.ProjectScoped,
+
         // Records this process's own pid and start time (session/mechanics bookkeeping, the
         // same shape as RunProcessStarted below), not a team-visible work fact, so it stays
         // node-scoped rather than following the rest of this stream's own "every task event
