@@ -431,13 +431,31 @@ public sealed class GitReadOnlyGuardTests
     public void A_hash_that_continues_a_word_across_a_line_continuation_does_not_hide_a_flag() =>
         GitReadOnlyGuardRoutes.EscapesTheCheckout("git diff a\\\n#  --output=/tmp/pwn").Should().BeTrue();
 
+    /// <summary>
+    /// A shell may expand an unquoted glob after a leading dot to the parent directory (macOS
+    /// <c>/bin/bash</c> 3.2 does for each of these), which makes two such paths a filesystem diff of
+    /// files above the checkout.
+    /// </summary>
+    [Theory]
+    [InlineData("git diff .[.]/.[.]/secret .[.]/.[.]/other")]
+    [InlineData("git diff .?/.?/secret .?/.?/other")]
+    [InlineData("git diff .*/.*/secret .*/.*/other")]
+    [InlineData("git diff .[\".\"]/x .[\".\"]/y")]
+    [InlineData("git log -1 -- .?")]
+    public void A_path_segment_a_glob_can_expand_to_the_parent_directory_is_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
     [Theory]
     [InlineData("git diff origin/main...HEAD # it's a note")]
     [InlineData("git diff origin/main...HEAD # --output=/tmp/pwn is only mentioned here")]
     [InlineData("git log --oneline origin/main..HEAD\n# first, 'quoted' note\ngit diff HEAD~1 # it's\n")]
     [InlineData("git log --grep='#123' --oneline")]
     [InlineData("git diff a#b")]
-    public void A_comment_and_a_quoted_hash_still_run(string command) =>
+    [InlineData("git diff -- src/*.cs")]
+    [InlineData("git diff -- .g*")]
+    [InlineData("git log --grep '.*bug' --oneline")]
+    [InlineData("git log -S'.[' --oneline")]
+    public void A_comment_a_quoted_hash_and_an_ordinary_pathspec_glob_still_run(string command) =>
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeFalse();
 
     private static string Payload(string tool, string command) => JsonSerializer.Serialize(new

@@ -125,10 +125,24 @@ public static class GitReadOnlyGuardRoutes
         @"(?:^|[\\/\s])\.\.(?:[\\/\s;&|()<>]|$)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
+    /// An unquoted glob character straight after a leading dot in a path segment (<c>.?</c>,
+    /// <c>.[.]</c>, <c>.*</c>). The shell expands such a segment to <c>..</c> before git sees it, so
+    /// <see cref="ParentDirectorySegment"/> reading the text as typed never meets the segment it
+    /// guards against (independent pre-PR review, cycle 7, conformance lens: macOS <c>/bin/bash</c>
+    /// 3.2 expands each of those three spellings to <c>..</c> and printed a file two levels above the
+    /// checkout; zsh and Homebrew bash do not, but the hook cannot know which shell runs the line).
+    /// A glob character that is not directly after a leading dot cannot produce <c>..</c>, so a
+    /// pathspec such as <c>src/*.cs</c> or <c>.g*</c> still runs.
+    /// </summary>
+    private static readonly Regex DotGlobSegment = new(
+        @"(?:^|[\\/\s;&|()<>])\.[?*\[]", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    /// <summary>
     /// Whether this command reaches <c>git diff</c> or <c>git log</c> in a way that escapes the
     /// checkout: an <c>--output</c> write, a <c>--no-index</c> or <c>-O</c> read triggered by an
     /// explicit flag or an absolute-path argument, or a flag that runs a configured program
-    /// (<c>--ext-diff</c>, <c>--show-signature</c>). A command holding a here-document is refused whatever it runs, because the guard
+    /// (<c>--ext-diff</c>, <c>--show-signature</c>), or a path segment the shell may expand to
+    /// <c>..</c>. A command holding a here-document is refused whatever it runs, because the guard
     /// cannot tell the body from command lines (see <see cref="RemoveComments"/>). False for
     /// everything else, including an ordinary <c>git diff</c>/<c>git log</c> with none of these, a
     /// shell comment after one, and a command that merely quotes one of these terms in a search
@@ -159,6 +173,7 @@ public static class GitReadOnlyGuardRoutes
                 || ProgramRunningFlag.IsMatch(unescaped)
                 || AbsolutePathArgument.IsMatch(unescaped)
                 || ParentDirectorySegment.IsMatch(unescaped)
+                || DotGlobSegment.IsMatch(unescaped)
                 || HasUnquotedExpansion(live));
     }
 
@@ -497,6 +512,7 @@ public static class GitReadOnlyGuardRoutes
             int wordStart = index;
             StringBuilder decodedWord = new();
             bool wordHasQuoting = false;
+            bool wordHasUnquotedGlob = false;
             while (index < command.Length
                 && !char.IsWhiteSpace(command[index])
                 && !IsUnquotedShellOperator(command[index]))
@@ -606,6 +622,7 @@ public static class GitReadOnlyGuardRoutes
                     continue;
                 }
 
+                wordHasUnquotedGlob |= current is '?' or '*' or '[';
                 decodedWord.Append(current);
                 index++;
             }
@@ -630,8 +647,12 @@ public static class GitReadOnlyGuardRoutes
                 continue;
             }
 
-            result.Append(
-                BeginsWithARefusedTerm(word) || IsGitLogOrDiffToken(word) ? word : new string('#', wordLength));
+            // A glob character that was itself quoted is literal and never expands, so only a word
+            // with an unquoted one is read for a segment the shell would expand to "..".
+            bool keepsWord = BeginsWithARefusedTerm(word)
+                || IsGitLogOrDiffToken(word)
+                || (wordHasUnquotedGlob && DotGlobSegment.IsMatch(word));
+            result.Append(keepsWord ? word : new string('#', wordLength));
         }
 
         return result.ToString();
@@ -888,8 +909,9 @@ public static class GitReadOnlyGuardRoutes
         + "to an arbitrary path outside this checkout, --no-index (explicit, or entered "
         + "implicitly by naming an absolute path) and -O read one instead of the checkout's own "
         + "history, and --ext-diff and --show-signature run a program this checkout does not "
-        + "choose, all refused regardless of the path named. A here-document, whose body this "
-        + "guard cannot tell from command lines, is refused for the same reason. Read the command's own "
+        + "choose, all refused regardless of the path named. A path segment that a glob can "
+        + "expand to the parent directory, and a here-document (whose body this guard cannot "
+        + "tell from command lines), are refused for the same reason. Read the command's own "
         + "stdout instead; nothing about a pr-review lens needs a file on disk, a path outside "
         + "the checkout, or an external program.";
 }
