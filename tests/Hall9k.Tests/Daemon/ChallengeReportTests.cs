@@ -105,6 +105,16 @@ public sealed class ChallengeReportTests
     }
 
     [Fact]
+    public void A_code_fence_around_the_closing_block_is_formatting_and_a_fence_inside_it_is_not()
+    {
+        ChallengeReport.TryRead("Prose.\n\n```\nVERDICT: publish as revised\nCHANGE: must - x - y\n```\n")!
+            .MustCount.Should().Be(1);
+        ChallengeReport.TryRead("Prose.\n\n```text\nVERDICT: publish as written\n```\n\n")!
+            .Verdict.Should().Be(ChallengeVerdict.PublishAsWritten);
+        ChallengeReport.TryRead("VERDICT: publish as revised\n```\nCHANGE: must - x - y\n").Should().BeNull();
+    }
+
+    [Fact]
     public void A_wrapped_change_is_unreadable_and_blank_lines_after_the_block_are_not_text()
     {
         ChallengeReport.TryRead(Report(

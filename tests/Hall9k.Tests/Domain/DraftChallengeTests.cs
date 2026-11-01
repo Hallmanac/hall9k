@@ -142,19 +142,37 @@ public sealed class DraftChallengeTests
     }
 
     [Fact]
-    public void A_revision_while_the_session_ran_makes_its_verdict_one_about_text_that_has_since_changed()
+    public void A_revision_while_the_session_ran_ages_its_verdict_but_does_not_apply_the_verdicts_must()
     {
         TaskAggregate task = Draft();
         task.Apply(new DraftChallengeDispatched(task.Id, DomainId.New(), Node, Now, AgentModel.ChallengeDefault, AgentEffort.High));
         Revise(task);
         task.Apply(Verdict(task, ChallengeVerdict.PublishAsRevised, must: 1));
 
-        task.RevisedSinceChallengeVerdict.Should().BeTrue("the session judged the text as it was at dispatch");
-        Publish(task).Should().NotThrow("the must was applied by the revision that landed while the session ran");
+        task.LatestChallengeVerdictJudgedOlderDraft.Should().BeTrue("the session judged the text as it was at dispatch");
+        task.RevisedSinceChallengeVerdict.Should().BeFalse("that revision was made before the verdict existed, so it cannot have applied the must");
+        Publish(task).Should().Throw<DomainException>("the must is still unapplied");
+
+        Revise(task);
+        task.RevisedSinceChallengeVerdict.Should().BeTrue();
+        Publish(task).Should().NotThrow("a revision after the verdict landed can have applied the must");
 
         task.Apply(new DraftChallengeDispatched(task.Id, DomainId.New(), Node, Now, AgentModel.ChallengeDefault, AgentEffort.High));
         task.Apply(Verdict(task, ChallengeVerdict.PublishAsRevised, must: 1));
-        task.RevisedSinceChallengeVerdict.Should().BeFalse("the next session started after the revision and read the revised text");
+        task.LatestChallengeVerdictJudgedOlderDraft.Should().BeFalse("the next session started after the revision and read the revised text");
+        task.RevisedSinceChallengeVerdict.Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_revision_of_a_recorded_fact_the_prompt_carries_counts_as_applying_a_must()
+    {
+        TaskAggregate task = Draft();
+        task.Apply(Verdict(task, ChallengeVerdict.PublishAsRevised, must: 1));
+
+        task.Apply(new TaskRevised(
+            task.Id, default, default, default, Optional<IReadOnlyList<Guid>>.Of([DomainId.New()]), default, default, Now, Owner));
+
+        task.RevisedSinceChallengeVerdict.Should().BeTrue("a must can be about a dependency, and revising one applies it");
     }
 
     [Fact]
@@ -165,7 +183,7 @@ public sealed class DraftChallengeTests
         task.Apply(EffortOnlyRevision(task));
         task.Apply(Verdict(task, ChallengeVerdict.PublishAsRevised, must: 1));
 
-        task.RevisedSinceChallengeVerdict.Should().BeFalse();
+        task.LatestChallengeVerdictJudgedOlderDraft.Should().BeFalse();
     }
 
     [Fact]

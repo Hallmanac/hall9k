@@ -86,6 +86,9 @@ public sealed class DraftChallengeSurfaceTests
             .And.Contain("high effort").And.Contain(RunPaths.ChallengeReportFile(verdict.SessionId!.Value))
             .And.Contain("the draft was not revised since");
 
+        details.LatestChallengeVerdictJudgedOlderDraft = true;
+        Rows(details, ThisNode).Should().Contain("revised while the session ran").And.Contain("not revised since");
+
         details.RevisedSinceChallengeVerdict = true;
         Rows(details, ThisNode).Should().Contain("the draft was revised since");
     }

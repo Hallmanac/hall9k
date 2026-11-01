@@ -1384,7 +1384,7 @@ public sealed class TaskAggregate
     // the criteria were retyped identically (Optional carries that distinction).
     public void Apply(TaskRevised @event)
     {
-        if (@event.ChangesDraftText())
+        if (@event.ChangesWhatChallengeReads())
         {
             RevisedSinceChallengeVerdict |= LatestChallengeVerdict is not null;
             RevisedWhileChallengeRan |= RunningChallengeSessionId is not null;
@@ -2614,16 +2614,22 @@ public sealed class TaskAggregate
 
     /// <summary>
     /// Whether the draft was revised after <see cref="LatestChallengeVerdict"/> landed, in stream order: the one
-    /// fact the gate and <c>h9k task show</c> share. Revising is how a verdict gets applied, so it is what
-    /// lets a <c>publish as revised</c> holding a must through.
+    /// fact the publish gate reads. Revising is how a verdict gets applied, so it is what lets a
+    /// <c>publish as revised</c> holding a must through, and only a revision made once the verdict exists can have
+    /// applied it: a revision made while the session ran never counts here.
     /// </summary>
     public bool RevisedSinceChallengeVerdict { get; private set; }
 
     /// <summary>
-    /// Whether the draft's text was revised after the running challenge was dispatched. The session's prompt was
-    /// built from the text at dispatch and the session runs for up to half an hour, so a verdict that lands after a
-    /// revision judged text that is no longer the draft's: it is recorded as already revised since, not as fresh.
+    /// Whether <see cref="LatestChallengeVerdict"/> judged an older draft than the one now on record, because the
+    /// draft was revised while its session ran. The session's prompt was built at dispatch and the session runs for
+    /// up to half an hour, so such a verdict is about text that has since changed. A display fact only
+    /// (<c>h9k task show</c> says so): the gate never reads it, because that revision could not have applied a
+    /// change the verdict had not yet made.
     /// </summary>
+    public bool LatestChallengeVerdictJudgedOlderDraft { get; private set; }
+
+    /// <summary>Whether the draft was revised after the running challenge was dispatched; see <see cref="LatestChallengeVerdictJudgedOlderDraft"/>.</summary>
     public bool RevisedWhileChallengeRan { get; private set; }
 
     public void Apply(DraftChallengeRequested @event) => ChallengeRequested = true;
@@ -2643,7 +2649,8 @@ public sealed class TaskAggregate
         if (@event.IsVerdict)
         {
             LatestChallengeVerdict = @event;
-            RevisedSinceChallengeVerdict = RevisedWhileChallengeRan;
+            RevisedSinceChallengeVerdict = false;
+            LatestChallengeVerdictJudgedOlderDraft = RevisedWhileChallengeRan;
         }
 
         RevisedWhileChallengeRan = false;

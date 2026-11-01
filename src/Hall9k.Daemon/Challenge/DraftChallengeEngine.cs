@@ -373,7 +373,7 @@ public sealed class DraftChallengeEngine(
             return Attempt.SessionFailed;
         }
 
-        await RecordProcessIdentityAsync(taskId, sessionId, agent, cancellationToken);
+        await RecordProcessIdentityAsync(taskId, sessionId, agent);
 
         logger.LogInformation(
             "Task {TaskId}: challenge session {SessionId} dispatched (pid {ProcessId}, model {Model}, artifacts in {Directory})",
@@ -585,15 +585,20 @@ public sealed class DraftChallengeEngine(
     /// Writes the session's pid and start time beside its report. The session is detached by design, so a daemon that
     /// dies while it runs leaves it running; this file is what lets the next start stop it. A write that fails is
     /// logged and the session carries on: the 30-minute bound still holds for every case but a hard daemon crash.
+    /// <para>
+    /// The write takes no cancellation token on purpose: the session is already running, so a stop signal landing
+    /// here must not throw before the guarded wait that terminates the session. The file is a few bytes, so there is
+    /// nothing worth cancelling.
+    /// </para>
     /// </summary>
-    private async Task RecordProcessIdentityAsync(Guid taskId, Guid sessionId, SpawnedAgent agent, CancellationToken cancellationToken)
+    private async Task RecordProcessIdentityAsync(Guid taskId, Guid sessionId, SpawnedAgent agent)
     {
         try
         {
             string file = RunPaths.ChallengeProcessFile(sessionId);
             Directory.CreateDirectory(Path.GetDirectoryName(file) ?? throw new InvalidOperationException($"No directory for {file}."));
             await File.WriteAllTextAsync(
-                file, $"{agent.ProcessId}\n{agent.StartedAt.UtcTicks}\n", cancellationToken);
+                file, $"{agent.ProcessId}\n{agent.StartedAt.UtcTicks}\n", CancellationToken.None);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

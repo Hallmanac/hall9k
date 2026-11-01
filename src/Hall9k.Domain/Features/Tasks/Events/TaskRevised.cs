@@ -101,10 +101,21 @@ public sealed record TaskRevised(
     Optional<AgentEffort> Effort = default)
 {
     /// <summary>
-    /// Whether this revision touched the text a draft challenge reads and judges: the objective, the acceptance
-    /// criteria, or the agent context. A revision of anything else (effort, model, epic, queue marker, type,
-    /// dependencies) leaves a verdict's changes exactly as unapplied as they were, so it does not count as having
-    /// revised the draft since a verdict. A method and not a property, so it is never serialized with the event.
+    /// Whether this revision touched something a draft challenge reads and judges: the objective, the acceptance
+    /// criteria, the agent context, or one of the recorded facts the prompt lists beside them (type, dependencies,
+    /// stacking, epic). A verdict can hold a must about any of those, and revising one is how that must gets
+    /// applied. A revision of anything the prompt does not carry (effort, model, queue marker, review stage
+    /// composition, and the like) leaves a verdict's changes exactly as unapplied as they were, so it does not
+    /// count as having revised the draft since a verdict. A method and not a property, so it is never serialized
+    /// with the event.
     /// </summary>
-    public bool ChangesDraftText() => Objective.HasValue || AcceptanceCriteria.HasValue || AgentContext.HasValue;
+    public bool ChangesWhatChallengeReads() =>
+        Objective.HasValue
+        || AcceptanceCriteria.HasValue
+        || AgentContext.HasValue
+        || Type.HasValue
+        || BlockedBy.HasValue
+        || EpicId.HasValue
+        || StackedOnTaskId.HasValue
+        || StackedOnPullRequestNumber.HasValue;
 }

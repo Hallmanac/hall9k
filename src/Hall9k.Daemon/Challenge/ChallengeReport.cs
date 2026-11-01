@@ -43,6 +43,9 @@ public static partial class ChallengeReport
     /// </summary>
     internal const int MaxReportChars = 200_000;
 
+    [GeneratedRegex(@"^`{3,}[\w+-]*$", RegexOptions.CultureInvariant)]
+    private static partial Regex FenceLine();
+
     [GeneratedRegex(@"^(?:(?:[-*+]|\d+[.)])\s+)?[*_`]*(VERDICT|CHANGE)[*_`]*\s*:[*_`]*\s*(.*)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MarkerLine();
 
@@ -110,7 +113,7 @@ public static partial class ChallengeReport
 
     /// <summary>
     /// The run of verdict and change lines that closes the file, or an empty list when there is none. The run has to be
-    /// the end of the report (only blank lines may follow it) and has to open with its verdict line, because the
+    /// the end of the report (only blank lines and a closing code fence may follow it) and has to open with its verdict line, because the
     /// prompt asks for the verdict first and for nothing after the block. Each of the three is a way a report could
     /// otherwise be read more kindly than it was written: prose after an indented example of the format would let
     /// the example stand as the verdict, a quoted line after the real block would replace it, and a verdict written
@@ -127,6 +130,13 @@ public static partial class ChallengeReport
         {
             string line = lines[index].Trim();
             if (line.Length == 0)
+            {
+                continue;
+            }
+
+            // A code fence that wraps the closing block is formatting, not prose, so one that ends the file is skipped
+            // like a blank line. Only a trailing one: a fence between the markers or before the verdict ends the run.
+            if (block.Count == 0 && FenceLine().IsMatch(line))
             {
                 continue;
             }
