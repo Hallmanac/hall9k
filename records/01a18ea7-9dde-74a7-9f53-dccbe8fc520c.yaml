@@ -1,0 +1,26 @@
+hall9k-task-record: 1
+task-id: 01a18ea7-9dde-74a7-9f53-dccbe8fc520c
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#819
+objective: A pr-review session's git commands stay inside its checkout, and the read-only commands a reviewer needs still work
+criteria:
+  - |-
+    A generated pr-review settings file holds no allow rule for any git command: nothing starting `Bash(git` remains in `PrReviewAllowedTools`, and a test pins that
+  - The git read-only guard refuses every spelling named in the private note exactly as it refuses the one-line spelling, and a test pins both
+  - The doc comments on `PrReviewAllowedTools`, `BuildForPrReview`, and `GitReadOnlyGuardRoutes` say a git prefix rule must not be added, and why
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/e8fc520c-a-pr-review-session-s-git-comm
+published: 2026-11-01 02:34:39Z
+context: |-
+  Second card of issue #788, walked with Brian 2026-10-30 and revised by a challenge; the first card is 679b569e and neither depends on the other.
+
+  This is a security change. The private note is /Users/brianhallmanac/.hall9k/projects/hall9k/notes/challenge-e8fc520c/journal.md. Read its "Findings" and "Exact proposed set" sections first; they name the exact spelling, the code lines, and the reason. Hall9k's repository and ledger are public, so commits, the PR title and body, and code comments state the behaviour only and never restate the note's probes or how anything was reached.
+
+  Remove the two allow rules and update the test that pins them. The guard stays as the second layer. Do not add allow rules, do not widen the guard to other commands, and do not add tests that create repositories.
+
+  Brian ruled on 2026-10-31 that this ships ahead of the Windows check in the note, which he will run from the release on his Windows node, so do not wait on it.
