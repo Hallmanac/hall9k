@@ -179,6 +179,70 @@ public sealed class HumanGateRunTests
         run.ReviewPhase.Should().Be(ReviewPhase.Reverify);
     }
 
+    /// <summary>
+    /// Interactive mode's own gates-to-pull-request park sent back from Settling (a merge-ready resolve that met
+    /// uncommitted work) is still that boundary, so the hand-fix lever its reason names stays open.
+    /// </summary>
+    [Fact]
+    public void Interactive_modes_pull_request_park_sent_back_from_settling_stays_the_boundary()
+    {
+        (RunAggregate run, Guid id) = Settled();
+        run.Apply(new ReviewParked(id, "Interactive mode is on.", Now, IsInteractiveGate: true, HumanGateTipSha: ReviewedTip));
+        run.Apply(new ReviewParkResolved(id, ReviewVerdict.MergeReady, "ship it", Now, DomainId.New()));
+        run.ReviewPhase.Should().Be(ReviewPhase.Settling);
+
+        run.Apply(new ReviewParked(id, "The pull request was not opened.", Now, IsInteractiveGate: true, HumanGateTipSha: ReviewedTip));
+
+        run.ParkedAtPullRequestBoundary.Should().BeTrue("the hand-fix lever the reason names must still be accepted");
+        run.ParkedFromReviewPhase.Should().Be(ReviewPhase.MergeReady);
+        run.HumanGateAnswer.Should().Be(HumanGateAnswer.None);
+        run.HumanEndedTheLoop.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A park raised later in Settling (the rebase recovery cap, say) after a merge-ready answer at the boundary,
+    /// then redirected: the answer and the human ending are withdrawn so the fix is reviewed, and a run with no
+    /// such answer keeps the earlier behaviour of settling on the human's merge-ready.
+    /// </summary>
+    [Fact]
+    public void A_redirect_at_a_later_settling_park_withdraws_a_gate_answer_but_leaves_an_ungated_human_ending_alone()
+    {
+        (RunAggregate gated, Guid gatedId) = Settled();
+        ParkAtTheGate(gated, gatedId);
+        gated.Apply(new ReviewParkResolved(gatedId, ReviewVerdict.MergeReady, "ship it", Now, DomainId.New()));
+        gated.HumanGateAnswer.Should().Be(HumanGateAnswer.ResolvedMergeReady);
+        gated.Apply(new ReviewParked(gatedId, "The rebase recovery cap is spent.", Now));
+
+        gated.Apply(new ReviewParkResolved(gatedId, ReviewVerdict.NeedsFixes, "fix the conflict", Now, DomainId.New()));
+
+        gated.HumanEndedTheLoop.Should().BeFalse("the fix must be reviewed, not settled on the earlier merge-ready");
+        gated.HumanGateAnswer.Should().Be(HumanGateAnswer.None);
+        gated.HumanGateTipSha.Should().BeNull();
+
+        (RunAggregate ungated, Guid ungatedId) = Settled();
+        ungated.Apply(new ReviewParked(ungatedId, "Cycle cap spent.", Now));
+        ungated.Apply(new ReviewParkResolved(ungatedId, ReviewVerdict.MergeReady, "fine", Now, DomainId.New()));
+        ungated.Apply(new ReviewParked(ungatedId, "The rebase recovery cap is spent.", Now));
+
+        ungated.Apply(new ReviewParkResolved(ungatedId, ReviewVerdict.NeedsFixes, "fix the conflict", Now, DomainId.New()));
+
+        ungated.HumanEndedTheLoop.Should().BeTrue("a task with no answer at the boundary moves through review as it always did");
+    }
+
+    /// <summary>Whether a run was ever held at the boundary survives the levers that clear the tip and the answer.</summary>
+    [Fact]
+    public void Having_been_held_at_the_boundary_is_remembered_after_a_hand_fix_clears_the_tip_and_the_answer()
+    {
+        (RunAggregate run, Guid id) = Settled();
+        run.HasParkedAtPullRequestBoundary.Should().BeFalse();
+        ParkAtTheGate(run, id);
+
+        run.Apply(new ReviewHumanFixApplied(id, run.ReviewCycle, "2222222222222222222222222222222222222222", null, false, Now, DomainId.New()));
+
+        run.HumanGateTipSha.Should().BeNull();
+        run.HasParkedAtPullRequestBoundary.Should().BeTrue("an owner may still have a product up in the worktree");
+    }
+
     [Fact]
     public void A_hand_fix_at_an_ordinary_park_leaves_the_verdict_exactly_as_the_reviewers_left_it()
     {

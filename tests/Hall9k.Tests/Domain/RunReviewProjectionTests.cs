@@ -117,6 +117,24 @@ public sealed class RunReviewProjectionTests
             "review pass can be told what a human already settled");
     }
 
+    [Fact]
+    public void Run_details_reopens_a_merge_ready_verdict_when_a_hand_fix_is_made_at_interactive_modes_pull_request_park()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+        projection.Apply(new FakeEvent<ReviewCompleted>(new ReviewCompleted(id, 1, ReviewVerdict.MergeReady, Now)), view);
+        projection.Apply(new FakeEvent<ReviewParked>(
+            new ReviewParked(id, "Interactive mode is on.", Now, IsInteractiveGate: true)), view);
+        view.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+
+        projection.Apply(new FakeEvent<ReviewHumanFixApplied>(
+            new ReviewHumanFixApplied(id, 1, "2222222222222222222222222222222222222222", null, false, Now, DomainId.New())), view);
+
+        view.LastReviewVerdict.Should().Be(
+            ReviewVerdict.NeedsFixes, "the aggregate reopens it here, and task show must not keep printing the settled outcome");
+    }
+
     /// <summary>
     /// The takeover lever's own source of truth (independent pre-PR review, cycle 5, adversarial
     /// finding): a cap-0 takeover park or the lifetime-budget park records that granting

@@ -268,7 +268,9 @@ public sealed class ReviewEngine(
         }
 
         RunAggregate run = await LoadRunAsync(context.RunId, cancellationToken);
-        bool gateOnTheRecord = context.Task.HumanGate || run.HumanGateTipSha is not null
+        // Read from facts no fix lever erases: a hand fix or a redirect clears the tip and the answer, and
+        // a task revise made at the park clears the flag, yet the person may still have a product up.
+        bool gateOnTheRecord = context.Task.HumanGate || run.HasParkedAtPullRequestBoundary
             || run.HumanGateAnswer != HumanGateAnswer.None;
         if (!gateOnTheRecord || run.ReviewPhase == ReviewPhase.Parked || run.State == RunState.ReviewParked)
         {
@@ -2733,8 +2735,11 @@ public sealed class ReviewEngine(
         ReviewContext context, RunAggregate run, CancellationToken cancellationToken) =>
         await EnsureGateCoversHeadRepairEligibleAsync(
             context, run,
-            "composition none waives the review guarantee, not the mandatory build/test gate: " +
-            "the pre-final-pass rebase moved HEAD past the last tip this run actually gated",
+            run.PreFinalPassRebaseAwaitingGate
+                ? "composition none waives the review guarantee, not the mandatory build/test gate: " +
+                  "the pre-final-pass rebase moved HEAD past the last tip this run actually gated"
+                : "composition none waives the review guarantee, not the mandatory build/test gate: " +
+                  "the owner answered merge-ready at the pull-request boundary over a tip this run never gated",
             cancellationToken);
 
     /// <summary>
@@ -2749,7 +2754,14 @@ public sealed class ReviewEngine(
     private async Task<GateCoverageOutcome> EnsureGateCoversHeadRepairEligibleAsync(
         ReviewContext context, RunAggregate run, string reason, CancellationToken cancellationToken)
     {
-        if (!run.PreFinalPassRebaseAwaitingGate)
+        // A merge-ready answer at the pull-request boundary is the other way this composition's tip can
+        // be ungated: the owner may have committed by hand, and no review follows to make anyone read
+        // those commits, so the gate over the tip is the only check they get. It is skipped only when a
+        // full-scope gate already ran over exactly this tip.
+        bool ownerAnsweredOverUngatedTip = !run.PreFinalPassRebaseAwaitingGate
+            && run.HumanGateAnswer == HumanGateAnswer.ResolvedMergeReady
+            && !await GateAlreadyRanFullOverCurrentHeadAsync(context, run, cancellationToken);
+        if (!run.PreFinalPassRebaseAwaitingGate && !ownerAnsweredOverUngatedTip)
         {
             return GateCoverageOutcome.Proceed;
         }
@@ -7503,8 +7515,8 @@ public sealed class ReviewEngine(
 
     /// <summary>The reason recorded when the gate holds a settled run: what is waiting, then the shared choices.</summary>
     private static string HumanGateParkReason(Guid taskId, string settlement, string? tip) =>
-        $"This task has a human gate: automated review has settled ({settlement}) and the pull request has not "
-        + "been opened, pushed, or created anywhere. "
+        $"This task has a human gate: automated review has settled ({settlement}) and the GitHub pull request has "
+        + "not been opened yet. "
         + (tip is null ? string.Empty : $"The branch stands at {tip[..Math.Min(12, tip.Length)]}. ")
         + InteractiveBoundaryChoices.ParkText(InteractiveBoundaryLevers.HumanGate, taskId);
 
