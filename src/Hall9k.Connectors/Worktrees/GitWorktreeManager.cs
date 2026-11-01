@@ -268,10 +268,15 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         string objectsDirectory = Path.Combine(
             await ResolveCommonDirectoryAsync(repositoryPath, cancellationToken) ?? repositoryPath, "objects");
 
+        string pinRef = PrReviewCheckoutPlan.PinRef(checkoutPath);
         try
         {
+            // Pinned first, while the tracking ref still names the head, so the commit is never
+            // reachable only through a ref the next `fetch --prune origin` can remove.
+            await RunGitAsync(repositoryPath, $"update-ref {pinRef} {trackingRef}", cancellationToken);
+
             IReadOnlyList<PrReviewCheckoutStep> steps = PrReviewCheckoutPlan.Steps(checkoutPath, repositoryPath, trackingRef);
-            await RunGitAsync(steps[0].WorkingDirectory, steps[0].Arguments, cancellationToken);
+            await RunGitAsync(steps[0].WorkingDirectory, steps[0].Arguments, cancellationToken, endGitOnCancel: true);
 
             string alternatesFile = PrReviewCheckoutPlan.AlternatesFile(checkoutPath);
             Directory.CreateDirectory(Path.GetDirectoryName(alternatesFile)
@@ -280,13 +285,33 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
 
             foreach (PrReviewCheckoutStep step in steps.Skip(1))
             {
-                await RunGitAsync(step.WorkingDirectory, step.Arguments, cancellationToken);
+                await RunGitAsync(step.WorkingDirectory, step.Arguments, cancellationToken, endGitOnCancel: true);
             }
         }
         catch
         {
+            // Cleanup never takes the caller's token: a cancelled cut is exactly when it has to run.
+            // By here a cancelled cut step's git has been killed (endGitOnCancel), so nothing is
+            // still writing into the directory.
             DeleteDirectoryBestEffort(checkoutPath);
+            await DeletePinRefBestEffortAsync(repositoryPath, pinRef);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Deletes the pin <see cref="PrReviewCheckoutPlan.PinRef"/> names. <c>update-ref -d</c> of a
+    /// ref that is not there succeeds, so this is safe to call whether or not the cut got as far as
+    /// making one. A failure is logged, not thrown: a stray pin costs a few bytes and a held object,
+    /// and <see cref="PruneAsync"/> sweeps any whose checkout is gone.
+    /// </summary>
+    private async Task DeletePinRefBestEffortAsync(string repositoryPath, string pinRef)
+    {
+        (int exitCode, _, string error) = await TryRunGitAsync(
+            repositoryPath, $"update-ref -d {pinRef}", CancellationToken.None);
+        if (exitCode != 0)
+        {
+            logger.LogWarning("Review checkout pin {PinRef} could not be deleted: {Error}", pinRef, error.Trim());
         }
     }
 
@@ -303,6 +328,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             if (await IsOwnStandaloneCheckoutAsync(repositoryPath, worktreePath, cancellationToken))
             {
                 DeleteDirectory(Path.GetFullPath(worktreePath));
+                await DeletePinRefBestEffortAsync(repositoryPath, PrReviewCheckoutPlan.PinRef(worktreePath));
                 logger.LogInformation("Standalone review checkout {Path} removed", worktreePath);
                 return;
             }
@@ -382,9 +408,17 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     {
         if (OperatingSystem.IsWindows())
         {
-            foreach (FileInfo file in new DirectoryInfo(path).EnumerateFiles("*", SearchOption.AllDirectories))
+            // Reparse points are skipped, files and directories alike: a junction inside the
+            // checkout is never walked (the walk would clear read-only flags on files outside it),
+            // and a link's own attributes are never set, which would change its target's.
+            EnumerationOptions options = new()
             {
-                if (file.LinkTarget is null && file.Attributes.HasFlag(FileAttributes.ReadOnly))
+                RecurseSubdirectories = true,
+                AttributesToSkip = FileAttributes.ReparsePoint,
+            };
+            foreach (FileInfo file in new DirectoryInfo(path).EnumerateFiles("*", options))
+            {
+                if (file.Attributes.HasFlag(FileAttributes.ReadOnly))
                 {
                     file.Attributes &= ~FileAttributes.ReadOnly;
                 }
@@ -417,6 +451,33 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
             await RunGitAsync(repositoryPath, "worktree prune", cancellationToken);
+            await SweepOrphanedPinRefsAsync(repositoryPath, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Deletes the review-checkout pins whose checkout directory no longer exists, which is what a
+    /// directory removed by hand, or a process killed between the cut and its cleanup, leaves
+    /// behind. Runs under the repository lock the cut also holds, so a pin is never seen in the
+    /// instant between its creation and the directory it belongs to.
+    /// </summary>
+    private async Task SweepOrphanedPinRefsAsync(string repositoryPath, CancellationToken cancellationToken)
+    {
+        (int exitCode, string refs, _) = await TryRunGitAsync(
+            repositoryPath, $"for-each-ref --format=%(refname) {PrReviewCheckoutPlan.PinRefPrefix}", cancellationToken);
+        if (exitCode != 0)
+        {
+            return;
+        }
+
+        string? parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(repositoryPath));
+        foreach (string pinRef in refs.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string name = pinRef[PrReviewCheckoutPlan.PinRefPrefix.Length..];
+            if (parent is not null && !Directory.Exists(Path.Combine(parent, name)))
+            {
+                await DeletePinRefBestEffortAsync(repositoryPath, pinRef);
+            }
         }
     }
 
@@ -1141,9 +1202,18 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             $"'{printable}' is not a legal branch name for {role}: {refusalReason}");
     }
 
-    private async Task RunGitAsync(string repositoryPath, string arguments, CancellationToken cancellationToken)
+    /// <param name="endGitOnCancel">
+    /// Whether a cancellation ends the git process rather than abandoning it. Only the review
+    /// checkout's cut steps ask for it: they write a throwaway directory nothing else reads, and the
+    /// cleanup that follows a cancellation must not race them. Every other call keeps the old
+    /// behaviour, because a killed git skips its own lock cleanup and would leave an
+    /// <c>index.lock</c> or a ref lock behind in a repository or worktree that outlives the call.
+    /// </param>
+    private async Task RunGitAsync(
+        string repositoryPath, string arguments, CancellationToken cancellationToken, bool endGitOnCancel = false)
     {
-        (int exitCode, _, string standardError) = await TryRunGitAsync(repositoryPath, arguments, cancellationToken);
+        (int exitCode, _, string standardError) = await TryRunGitAsync(
+            repositoryPath, arguments, cancellationToken, endGitOnCancel);
         if (exitCode != 0)
         {
             throw new WorktreeException($"git {arguments} failed in {repositoryPath}: {standardError.Trim()}");
@@ -1151,7 +1221,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     }
 
     private static async Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunGitAsync(
-        string repositoryPath, string arguments, CancellationToken cancellationToken)
+        string repositoryPath, string arguments, CancellationToken cancellationToken, bool endGitOnCancel = false)
     {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
@@ -1167,8 +1237,34 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
 
         Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
         Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (endGitOnCancel)
+        {
+            // Abandoning the wait does not end git: it keeps writing, and a caller cleaning up after
+            // the cancellation would race it. Ended, with its helpers (index-pack, upload-pack),
+            // and waited on, so the caller's cleanup runs against a directory nothing is writing.
+            await TerminateAsync(process);
+            throw;
+        }
 
         return (process.ExitCode, await standardOutput, await standardError);
+    }
+
+    private static async Task TerminateAsync(Process process)
+    {
+        try
+        {
+            process.Kill(entireProcessTree: true);
+            using CancellationTokenSource grace = new(TimeSpan.FromSeconds(10));
+            await process.WaitForExitAsync(grace.Token);
+        }
+        catch (Exception)
+        {
+            // The process exited on its own between the cancellation and the kill, or the system
+            // refused; the cancellation already in flight is the exception worth propagating.
+        }
     }
 }

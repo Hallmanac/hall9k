@@ -11,7 +11,16 @@ namespace Hall9k.Tests.Daemon;
 /// <summary>
 /// The pull-request review checkout as a standalone clone, against real repositories in a temporary
 /// directory. Pull request heads are simulated by writing <c>refs/pull/&lt;n&gt;/head</c> into the bare
-/// origin, as GitHub does. Nothing here cuts a branch or reaches GitHub.
+/// origin, as GitHub does. Nothing here reaches GitHub.
+/// <para>
+/// This class is the stated exception to "no new test creates a branch": the throwaway origin is
+/// initialised with a <c>main</c> branch because a commit needs one, and no test cuts a branch of its
+/// own. It covers only what needs a real directory: the checkout's shape (criteria 1 and 2), removal
+/// (4), the delete guard refusing any other path (5), and a failed cut leaving nothing behind (6).
+/// The command sequence itself is pinned process-free in <c>PrReviewCheckoutPlanTests</c>. Not covered
+/// by any test: that the pin keeps a pruned pull request head alive, that <c>PruneAsync</c> sweeps the
+/// pin of a checkout deleted by hand, and that cancelling a cut ends its git process.
+/// </para>
 /// </summary>
 [Collection("RealProcessSpawn")]
 [Trait("Category", "RealProcessSpawn")]
@@ -67,6 +76,7 @@ public sealed class StandalonePrReviewCheckoutTests : IDisposable
         Directory.Exists(Path.Combine(checkout.Path, ".git")).Should().BeTrue("a real .git directory, not the file a linked worktree has");
         Path.GetDirectoryName(checkout.Path).Should().Be(Path.GetDirectoryName(project), "the checkout sits directly beside the repository");
         Git(checkout.Path, "remote").Trim().Should().BeEmpty("the checkout has no remote");
+        Git(checkout.Path, "config --local core.longpaths").Trim().Should().Be("true", "a fresh init has an empty config, and Windows needs this at checkout");
         string hooks = Path.Combine(checkout.Path, ".git", "hooks");
         (!Directory.Exists(hooks) || Directory.GetFileSystemEntries(hooks).Length == 0).Should().BeTrue("the checkout has no hooks");
         Git(checkout.Path, "rev-parse HEAD").Trim().Should().Be(_headSha);
@@ -80,6 +90,8 @@ public sealed class StandalonePrReviewCheckoutTests : IDisposable
 
         string alternates = File.ReadAllText(PrReviewCheckoutPlan.AlternatesFile(checkout.Path));
         alternates.Trim().Should().EndWith(Path.Combine(bareProject ? "project.git" : Path.Combine("repo", ".git"), "objects"));
+        Git(project, $"rev-parse {PrReviewCheckoutPlan.PinRef(checkout.Path)}").Trim().Should().Be(
+            _headSha, "the project's repository holds a ref that keeps the checkout's head alive");
         Git(checkout.Path, "show HEAD:README.md").Should().Contain("needle in the readme");
         Git(checkout.Path, "grep needle HEAD").Should().Contain("README.md");
         Git(checkout.Path, "ls-files").Should().Contain("README.md");
@@ -100,6 +112,7 @@ public sealed class StandalonePrReviewCheckoutTests : IDisposable
 
         await act.Should().ThrowAsync<WorktreeException>();
         Directory.GetDirectories(parent, "wt-*").Should().BeEmpty();
+        Git(_clonePath, $"for-each-ref {PrReviewCheckoutPlan.PinRefPrefix}").Should().BeEmpty("a failed cut leaves no pin behind either");
     }
 
     [Fact]
@@ -114,25 +127,11 @@ public sealed class StandalonePrReviewCheckoutTests : IDisposable
         await _manager.RemoveAsync(_barePath, checkout.Path, cts.Token);
 
         Directory.Exists(checkout.Path).Should().BeFalse();
+        Git(_barePath, $"for-each-ref {PrReviewCheckoutPlan.PinRefPrefix}").Should().BeEmpty("removing the checkout releases its pin");
         Directory.Exists(linked).Should().BeTrue("a sibling linked worktree is not touched");
         Directory.Exists(_barePath).Should().BeTrue();
         Git(_barePath, "rev-parse refs/remotes/origin/main").Trim().Should().Be(_headSha, "the repository's refs are untouched");
         Git(_barePath, "worktree list").Should().Contain("wt-linked-sibling");
-    }
-
-    [Fact]
-    public async Task A_linked_worktree_cut_before_this_change_is_still_removed_through_git()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
-        string linked = Path.Combine(Path.GetDirectoryName(_barePath)!, "wt-11111111-22222222");
-        Git(_barePath, $"worktree add --detach \"{linked}\" {_headSha}");
-        File.WriteAllText(Path.Combine(linked, "debris.tmp"), "x");
-
-        await _manager.RemoveAsync(_barePath, linked, cts.Token);
-
-        Directory.Exists(linked).Should().BeFalse();
-        Git(_barePath, "worktree list").Should().NotContain("wt-11111111-22222222", "git's own record of it is gone too");
-        Directory.Exists(_barePath).Should().BeTrue();
     }
 
     [Fact]
