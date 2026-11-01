@@ -378,10 +378,52 @@ stores no reviewer setting and requests no reviews, so you add the reviewers in 
 existing human waypoint still stops the pipeline as it would for an unflagged task. The full
 behavior is under [Closeout in concepts.md](concepts.md#closeout).
 
+**A challenge tests a draft before it publishes.** `h9k task challenge <id>` records a request and returns
+without waiting; the daemon on the node where you ran it starts exactly one headless session that reads the
+project's reading checkout (`repo/dev`, brought up to the remote base branch first, with the commit it is at
+named in the prompt), tests each claim the draft makes, and writes a report in its own session directory. The
+report's closing block holds one verdict line, `publish as written`, `publish as revised`, or `do not publish`,
+and one line per change marked `must`, `should`, or `park`, each with non-blank text and evidence. The daemon
+reads that block and records one event with the verdict, the counts, the model, the effort, the session, and the
+node; the prose never leaves the file, because the ledger is public and a verdict can carry security detail. A
+session that cannot start, errors, ends with no result, runs past `ChallengeTimeout` (thirty minutes), writes no
+report, or writes one whose closing block is not readable records a failure from a closed list instead, and the
+draft can be challenged again by repeating the verb. A session still running when the daemon restarts is recorded
+as failed on the next start and never dispatched again, and a dispatch another node made and never recorded is
+ended here once it has stood past the foreign-session ceiling. A challenge changes nothing about the draft: the session is
+refused `h9k task publish`, `revise`, `assign`, `queue`, and `challenge`, and nothing in the daemon applies a
+verdict. `h9k task show` prints the latest challenge (requested, running, failed with its reason, or the verdict
+with its counts, its model and effort, the report's path on the node that holds it, and whether the draft was
+revised since), and a recorded verdict or failure reaches the project's orchestrator feed as an ordinary item
+carrying only the verdict and counts or the failure reason. The verb is refused for anyone who may not publish the
+task, and for a task that is not a Draft, has no acceptance criteria, belongs to an archived project, has no
+working checkout, or already has a challenge requested or running. A node runs one challenge at a time, and a
+challenge holds no run slot, so a node carries one such session above its run ceiling, as `h9k task start` does.
+On a project that runs agents with skip-permissions the session has the shell a build session has and may run up to
+five one-turn probe sessions on the model the policy resolves for the cheap tier; on a project without it the
+session may read the checkout, the idea's workspace, the draft's directory, and its own session directory, may
+write its report and nothing else, and its verdict must mark any claim it could not test. With nothing configured
+it runs on Opus 5.5 at high effort on any node, whatever the node's default model, node-wide effort, or role
+settings for other sessions say.
+
+**The publish gate asks for a verdict.** With the requirement on (`h9k project set <name> --require-challenge
+on|off`, which reads on for every project that recorded no value, and which `h9k project show` prints with whether
+it is the default), `h9k task publish` refuses a Draft whose latest verdict is missing, is `do not publish`, or is
+`publish as revised` holding a `must` with no revision of the draft since that verdict landed. Any other latest
+verdict passes, including after later revisions, because revising is how a verdict gets applied; a newer verdict
+replaces an older one and a failure replaces nothing. The refusal names the verb, `--skip-challenge`, and the
+setting. `h9k task publish <id> --skip-challenge "<reason>"` publishes past the gate: a blank reason is refused,
+the reason and who gave it are recorded on the publish and shown by `h9k task show`, and a reason passed where the
+gate asked for nothing is not recorded. The requirement never applies to a pr-review task or a spike, and the
+daemon's own publishes behave as they always did. Wherever `h9k task add`, `draft`, `revise`, or `show` prints a
+Draft's `Next:` line, it points at `h9k task challenge` while the gate would refuse the draft.
+
 Smaller flags on the same commands:
 
 | Command | What it is for |
 |---|---|
+| `h9k task challenge <id>` | Asks the daemon on this node for one independent challenge of a Draft, as above, and returns without waiting. |
+| `h9k task publish --skip-challenge "<reason>"` | Publishes past the challenge gate by stating why, recorded with who gave it; a blank reason is refused. |
 | `h9k task add --context "<text>"` | Sets the agent-facing context, meaning the pointers, constraints, and boundaries the session reads, and `h9k task revise --context` replaces it. |
 | `h9k task revise --effort <low\|medium\|high\|xhigh>` | Sets this Draft's own reasoning effort, the most specific level of the chain (task, then project, then the node's value for the session's role, then the node-wide value, then the model's own default), with `default` clearing it. It is stored on the task like its model, so it travels with the task and wins on every node. `h9k task show` prints it when set. |
 | `h9k task add --model <model>` | Sets this task's own model, which outranks every other level of the model chain, and `h9k task revise --model` changes it, with `default` clearing the override. |
@@ -1558,6 +1600,7 @@ this one.
 | `h9k project set --verify-gate-filter <name=filter\|none>` | Marks one `dotnet test` gate host-coupled, so it runs only at a run's first verification and its final full pass and is serialized against other runs' copies on the node. |
 | `h9k project set --verify-gate-paths <name=glob[,glob...]\|name=none>` | Scopes one gate to a path set, repeatable, one per gate. The gate runs only when a path the run's whole branch changed against its base (minus the non-executable set) matches the set, and is otherwise recorded as skipped (path scope); every gate runs when the changed paths cannot be read. Globs follow `--non-executable-path`'s rules, and a leading `!` exclusion wins over any positive glob; a set needs at least one positive glob, and a glob that misses a path skips its gate, so a directory prefix ending in `/` or the exclusion form (`**,!web/`) is the safe shape (`a/**/b` needs a directory between `a` and `b`). A changed set holds runs on a node until it accepts it, and a node on an older binary drops the field and runs every gate. |
 | `h9k project set --accept-broken-gate` | Records a `--verify` gate that fails on a clean base anyway, with a loud warning, instead of refusing the whole command. |
+| `h9k project set --require-challenge on\|off` | Chooses whether `h9k task publish` refuses a draft with no usable challenge verdict, `on` for any project that recorded no value, with no clearing word because `off` is the way back from `on`. `h9k project show` prints the value and whether it is the default. |
 | `h9k project set --model <model>` | Sets the model this project's sessions run on unless a task says otherwise, outranking the node's per-role defaults, with `default` clearing it. |
 | `h9k project set --effort <low\|medium\|high\|xhigh>` | Sets the reasoning effort this project's sessions run at, which beats the node's per-role and node-wide values and is beaten only by a task's own, with `default` clearing it. It is stored beside the project's model in the node-scoped settings, so it stays on the node that set it and never replicates. `h9k project show` prints it when set. |
 | `h9k project set --orchestrator-model <model>` | Sets the model this project's orchestrator window runs on, independent of `--model`, with `default` clearing it back to the node's own resolution. |
@@ -2188,7 +2231,7 @@ environment variable that outranks it, and the default for every one of them.
 | `h9k config set --orchestrator-model <model>` | Sets the model the node's orchestrator window runs on, independent of `--default-model`, with `default` clearing it. |
 | `h9k config set --orchestrator-effort <low\|medium\|high\|xhigh>` | Sets the reasoning effort the node's orchestrator window runs at, independent of `--effort` and every dispatch effort, with `default` clearing it. |
 | `h9k config set --effort <low\|medium\|high\|xhigh>` | Sets the node-wide reasoning effort level every headless agent session runs at (the daemon's dispatches, `h9k task start` and `h9k task delegate`), with `default` clearing it. It is the level beneath every other one. It exists because a headless session ignores the owner's user-level `effortLevel` and honors the `--settings` file the daemon hands it, and Claude Opus 5.5 defaults to medium where earlier Opus models defaulted to high. |
-| `h9k config set --effort-build`, `--effort-fix`, `--effort-review`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier`, `--effort-security-preflight` `<low\|medium\|high\|xhigh>` | Set this node's effort for one session role (`--effort-courier` also moves the lesson picker), in the same named shape as the per-role model options, with `default` clearing one. A role's value sits above `--effort` and below a project's or a task's own. |
+| `h9k config set --effort-build`, `--effort-fix`, `--effort-review`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier`, `--effort-security-preflight`, `--effort-challenge` `<low\|medium\|high\|xhigh>` | Set this node's effort for one session role (`--effort-courier` also moves the lesson picker), in the same named shape as the per-role model options, with `default` clearing one. A role's value sits above `--effort` and below a project's or a task's own. |
 | `h9k config set --effort-review-verify`, `--effort-review-finalpass` `<low\|medium\|high\|xhigh>` | Set a narrower effort for the Verify-shape review pass and the mandatory final full pass, each falling through to `--effort-review` when unset, the way the matching model options do. |
 | `h9k config set --model-build <model>` | Sets this node's model for the Build role, the session that writes the feature. |
 | `h9k config set --model-review <model>` | Sets this node's model for the Review role, the independent reviewer over a run's diff. |
@@ -2199,6 +2242,7 @@ environment variable that outranks it, and the default for every one of them.
 | `h9k config set --model-refinement <model>` | Sets this node's model for the future draft-refinement role, which is configurable before it exists. |
 | `h9k config set --model-publication <model>` | Sets this node's model for writing a task up as an external tracker card. |
 | `h9k config set --model-courier <model>` | Sets this node's model for the feed courier, where `default` does not clear to the platform default because the courier's own floor is `claude-sonnet-5-5`. It also sets the model the lesson picker runs on, which resolves as the courier does. |
+| `h9k config set --model-challenge <model>` | Sets this node's model for the Challenge role, the session `h9k task challenge` runs on a draft. `default` does not clear to the platform default: the role's own floor is `claude-opus-5-5[1m]`, whatever `--default-model` says, and a draft's own model does not move it. `--effort-challenge` has a floor of `high` the same way, skipping the node-wide `--effort`. `h9k config show` prints the value in force and where it came from. |
 | `h9k config set --lesson-picker <off\|shadow\|on>` | Sets what this node does with the lesson picker, a one-turn session with no tools that picks, once per task before its first build, which recorded lessons the task's prompts carry. `off` runs no picker and records nothing; `shadow`, the default, picks and records it on the task while every prompt stays as it was; `on` also puts the picked set into the build, follow-up, fix, rebase and gate-repair prompts and the conformance review pass (the adversarial and Verify passes keep newest-first). Anything else is refused, naming the three words. Read fresh at every prompt composition, so it is in force at the next one with no daemon restart. |
 | `h9k config set --model-security-preflight <model>` | Sets this node's model for the pull-request review pre-flight (idea 6be68ee2, finding 1, phase one), the short, no-checkout security lap every pr-review dispatch now runs first, reading the pull request's own changed-file list and diff hunks through `gh` before any worktree is cut. `default` does not clear to the platform default here either: the pre-flight's own floor is `claude-opus-5-5`, since it reads attacker-written text before any worktree or permission scoping to a real checkout exists. |
 | `h9k config set --max-compliance-review-cycles <N>` | Sets this node's cycle cap for the conformance review track, with no clearing word, so the way back is the compiled default's own number. |

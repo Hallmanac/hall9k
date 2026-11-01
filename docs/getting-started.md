@@ -103,11 +103,21 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   h9k project set <name> --max-parallel-tasks 1
   ```
 
+- **A challenge before publish, `--require-challenge on|off`.** `h9k task challenge <id>` has the daemon
+  start one independent session that tests a draft against the code and reports a verdict, and a project
+  that has recorded no value requires one: `h9k task publish` refuses a draft with no usable verdict unless
+  the publisher states why with `--skip-challenge "<reason>"`. A pr-review task and a spike are never gated.
+
+  ```bash
+  h9k project set <name> --require-challenge off
+  ```
+
 - **Pre-approval is a per-task choice, not a project setting, `--pre-approved [on|after-human-review]`.**
   It removes the owner as a synchronous gate at the merge; every other human waypoint (a failure,
   a review park, a cap trip) still stops the pipeline exactly as it would otherwise.
 
   ```bash
+  h9k task challenge <id>          # a new project requires a challenge verdict before publish
   h9k task publish <id> --pre-approved
   ```
 
@@ -242,9 +252,9 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
 
 ## Models by role and what it costs
 
-- **Build, fix, review, synthesis, refinement, publication, and the feed courier are the seven
-  model roles, each independently settable** (`--model-build`, `--model-fix`, `--model-review`,
-  `--model-synthesis`, `--model-refinement`, `--model-publication`, `--model-courier`). The
+- **Build, fix, review, synthesis, refinement, publication, the feed courier, and the draft challenge
+  are the eight model roles, each independently settable** (`--model-build`, `--model-fix`, `--model-review`,
+  `--model-synthesis`, `--model-refinement`, `--model-publication`, `--model-courier`, `--model-challenge`). The
   shipped default puts the same exact model id on every role but one, deliberately: an exact id
   (`claude-opus-5-5[1m]`), not a tier alias (`opus`), because an alias is re-pointed as new models
   ship and drifting silently is the whole problem this setting exists to close (Decisions Log
@@ -428,6 +438,7 @@ h9k task drive <id>
 
 ```bash
 h9k task add --project <name> --from-issue <n>
+h9k task challenge <id>
 h9k task publish <id> --pre-approved
 h9k task queue <id>
 h9k task show <id>

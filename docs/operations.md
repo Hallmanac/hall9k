@@ -1040,10 +1040,13 @@ Which model runs what is explained in [Which model runs what](#which-model-runs-
 |---|---|---|
 | `Hall9k__DefaultModel` | `claude-opus-5-5[1m]` | The bottom of the agent-model chain: the model every agent session runs on unless something more specific says otherwise (`h9k config set --default-model`). |
 | `Hall9k__Effort` | unset | The node-wide reasoning effort level every headless agent session runs at (`low`, `medium`, `high` or `xhigh`; `max` is session-only in Claude Code and is refused), written into each session's settings file as `effortLevel` (`h9k config set --effort`). It is the level beneath every other one. Unset leaves the key out, so each model's own default decides; that matters because a headless session ignores your user-level `effortLevel` and honors only that file, and Claude Opus 5.5 defaults to medium where earlier Opus models defaulted to high. |
-| `Hall9k__EffortByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication`, `__Courier`, `__SecurityPreflight` | blank | The node's effort for each role, or blank for no opinion (`--effort-build`, `--effort-review`, `--effort-fix`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier`, `--effort-security-preflight`; `--effort-courier` also moves the lesson picker). A role's value sits above `Hall9k__Effort` and below a project's or a task's own, except `SecurityPreflight`: the pre-flight runs before any task-level context is read, so its own effort sits above `Hall9k__Effort` and below only a project's. |
+| `Hall9k__EffortByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication`, `__Courier`, `__SecurityPreflight`, `__Challenge` | blank | The node's effort for each role, or blank for no opinion (`--effort-build`, `--effort-review`, `--effort-fix`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier`, `--effort-security-preflight`, `--effort-challenge`; `--effort-courier` also moves the lesson picker). A role's value sits above `Hall9k__Effort` and below a project's or a task's own, except `SecurityPreflight`: the pre-flight runs before any task-level context is read, so its own effort sits above `Hall9k__Effort` and below only a project's. `Challenge` is the other exception: its chain is the project's value, then this one, then a floor of `high`, and it skips both `Hall9k__Effort` and a draft's own effort. |
 | `Hall9k__EffortByRole__ReviewVerify`, `Hall9k__EffortByRole__ReviewFinalFullPass` | blank | Narrower overrides for a Verify-shape review pass and the mandatory FinalFullPass, each blank falling through to the review role's effort before the node-wide one (`--effort-review-verify`, `--effort-review-finalpass`). |
 | `Hall9k__ModelByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication` | blank | The node's model for each role, or blank for no opinion (`--model-build`, `--model-review`, `--model-fix`, `--model-synthesis`, `--model-refinement`, `--model-publication`). |
 | `Hall9k__ModelByRole__ReviewVerify`, `Hall9k__ModelByRole__ReviewFinalFullPass` | blank | Not extra roles, but narrower overrides for a Verify-shape review pass and the mandatory FinalFullPass respectively, each blank falling through to whatever review resolves (`--model-review-verify`, `--model-review-finalpass`). |
+| `Hall9k__ModelByRole__Challenge` | blank | The node's model for the draft challenge (`--model-challenge`). Blank does not mean the platform default: a challenge's own floor is `claude-opus-5-5[1m]`, whatever `Hall9k__DefaultModel` says, so it runs on the same model on any node. |
+| `Hall9k__ChallengeTimeout` | `00:30:00` | How long a challenge session gets before the daemon terminates it and records the challenge as failed. |
+| `Hall9k__ChallengePollInterval` | `00:00:30` | How often the daemon looks for challenge requests; the doorbell usually gets there first. |
 | `Hall9k__ModelByRole__Courier` | blank | The node's model for the feed courier (`--model-courier`), which is also the model the lesson picker runs on. Blank does not mean the platform default: a courier's own floor is `claude-sonnet-5-5`. |
 | `Hall9k__ModelByRole__SecurityPreflight` | blank | The node's model for the pull-request review pre-flight (idea 6be68ee2, finding 1, phase one), the short, no-checkout security lap every pr-review dispatch now runs first, before any worktree is cut, over the pull request's own changed-file list and diff hunks read through `gh` (`--model-security-preflight`). Blank does not mean the platform default: the pre-flight's own floor is `claude-opus-5-5`, since it reads attacker-written text ahead of any worktree or permission scoping to a real checkout. |
 
@@ -1156,6 +1159,7 @@ h9k config set --model-build sonnet --model-synthesis haiku # the build session,
 h9k config set --model-refinement haiku --model-publication haiku   # the draft-refinement and tracker-card sessions
 h9k config set --model-review-verify sonnet                 # Verify-shape passes only; defaults to --model-review
 h9k config set --model-review-finalpass sonnet              # the mandatory FinalFullPass only; defaults to --model-review
+h9k config set --model-challenge claude-opus-5-5          # the draft challenge; 'default' returns it to its claude-opus-5-5[1m] floor
 h9k config set --model-courier haiku                        # the feed courier; 'default' returns it to its claude-sonnet-5-5 floor
 h9k config set --interactive-claim-stale-after-days 5       # the interactive-claim nudge threshold
 h9k config set --max-compliance-review-cycles 5 --lifetime-review-cycle-budget 40   # the node's review-cycle caps
@@ -1267,12 +1271,13 @@ the file alone.
 | `orchestratorModel` | `--orchestrator-model` | none | falls back to `defaultModel`, then `claude-opus-5-5[1m]` |
 | `orchestratorEffort` | `--orchestrator-effort` (`default` clears it) | none | unset, so the model's own default decides (no fallback to `effort` or any dispatch effort) |
 | `effort` | `--effort` (`default` clears it) | `Hall9k__Effort` | unset, so each model's own default decides |
-| `effortByRole.build`, `.review`, `.fix`, `.synthesis`, `.refinement`, `.publication`, `.courier`, `.securityPreflight` | `--effort-build`, `--effort-review`, `--effort-fix`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier`, `--effort-security-preflight` (`default` clears one) | `Hall9k__EffortByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication`, `__Courier`, `__SecurityPreflight` | blank |
+| `effortByRole.build`, `.review`, `.fix`, `.synthesis`, `.refinement`, `.publication`, `.courier`, `.securityPreflight`, `.challenge` | `--effort-build`, `--effort-review`, `--effort-fix`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier`, `--effort-security-preflight`, `--effort-challenge` (`default` clears one) | `Hall9k__EffortByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication`, `__Courier`, `__SecurityPreflight`, `__Challenge` | blank, and `challenge` has a floor of `high` |
 | `effortByRole.reviewVerify`, `.reviewFinalFullPass` | `--effort-review-verify`, `--effort-review-finalpass` | `Hall9k__EffortByRole__ReviewVerify`, `__ReviewFinalFullPass` | blank, falling through to `effortByRole.review` |
 | `modelByRole.build`, `.review`, `.fix` | `--model-build`, `--model-review`, `--model-fix` | `Hall9k__ModelByRole__Build`, `__Review`, `__Fix` | blank |
 | `modelByRole.synthesis`, `.refinement`, `.publication` | `--model-synthesis`, `--model-refinement`, `--model-publication` | `Hall9k__ModelByRole__Synthesis`, `__Refinement`, `__Publication` | blank |
 | `modelByRole.reviewVerify`, `.reviewFinalFullPass` | `--model-review-verify`, `--model-review-finalpass` | `Hall9k__ModelByRole__ReviewVerify`, `__ReviewFinalFullPass` | blank |
 | `modelByRole.courier` | `--model-courier` | `Hall9k__ModelByRole__Courier` | blank, with a floor of `claude-sonnet-5-5` |
+| `modelByRole.challenge` | `--model-challenge` | `Hall9k__ModelByRole__Challenge` | blank, with a floor of `claude-opus-5-5[1m]` |
 | `modelByRole.securityPreflight` | `--model-security-preflight` | `Hall9k__ModelByRole__SecurityPreflight` | blank, with a floor of `claude-opus-5-5` |
 | `maxComplianceReviewCycles` | `--max-compliance-review-cycles` | `Hall9k__MaxComplianceReviewCycles` | 3 |
 | `maxAdversarialReviewCycles` | `--max-adversarial-review-cycles` | `Hall9k__MaxAdversarialReviewCycles` | 4 |
@@ -1334,6 +1339,16 @@ The feed courier is the one role with a floor of its own. Its chain is the proje
 cheap `claude-sonnet-5-5`, unless the project sets a `--model` of its own. Because the project's model
 outranks the node's, a project `--model` chosen for builds also lifts the courier above a cheaper
 `--model-courier`.
+
+The draft challenge (`h9k task challenge`) has the same floor-not-default shape. Its model chain is the
+project's `--model`, then the node's `--model-challenge`, then `claude-opus-5-5[1m]`; it never reaches
+`--default-model`, and a draft's own model does not move it. Its effort chain is the project's `--effort`, then the
+node's `--effort-challenge`, then `high`; it skips the node-wide `--effort` and a draft's own effort. So with
+nothing configured a challenge runs on Opus 5.5 at high effort on any node, whatever that node's default model,
+node-wide effort, or other roles' settings say. The Refinement role is deliberately not reused for it, because
+refinement falls through to the node default and the rule would not hold on a node with a cheaper one.
+`--model-challenge default` leaves the role on that floor. A challenge holds no run slot: the node runs one at a
+time above its run ceiling, and `ChallengeTimeout` bounds each.
 
 The lesson picker has no role of its own. It resolves its model and effort exactly as the courier
 does for the same project and node, so `--model-courier` and `--effort-courier` move it too, and a

@@ -334,7 +334,7 @@ other or from what this skill says next time it runs.
 > | Tier | Agent CLI | Model | Effort |
 > | --- | --- | --- | --- |
 > | Mechanical: probes, scripted checks, sweep grooming, lookups | claude-code | `claude-sonnet-5-5` | high |
-> | Deep-reading: idea discovery, refinement, design walks, challenges, deep-reading dispute preparation | claude-code | `claude-opus-5-5[1m]` | high |
+> | Deep-reading: idea discovery, refinement, design walks, deep-reading dispute preparation | claude-code | `claude-opus-5-5[1m]` | high |
 > | Hardest-reasoning: cross-product architecture, a second opinion on a doubted answer | claude-code | `claude-fable-5-1[1m]` | high (Fable's own default) |
 >
 > A rendered launch line always carries these exact model ids, never a tier name used as an alias.
@@ -541,6 +541,17 @@ lets go of the holder as well. Nothing dispatches without a queue, `--node` plac
 dispatched session is refused all four verbs. The window states in its own recipe that it never assigns,
 queues, or dequeues on another owner's behalf without the operator saying so.
 
+**The challenge is a platform verb, not a session the window launches.** Before it publishes a draft, the window
+runs `h9k task challenge <id>`, which returns at once while the daemon on this node starts one independent headless
+session that tests the draft against the code. The verdict (publish as written, publish as revised, or do not
+publish, with its must, should, and park counts) lands on `h9k task show <id>` and reaches the project's feed as an
+ordinary item; the window reads it, applies what it accepts with `h9k task revise`, and then publishes. A project
+requires a usable verdict by default, so `h9k task publish` refuses a draft without one, and
+`h9k task publish <id> --skip-challenge "<reason>"` is the stated-reason exit the window uses only when the operator
+says so. The model and effort live in the model policy (`h9k config set --model-challenge`, `--effort-challenge`),
+never in a recipe, so a generated recipe carries no launch line, no model, and no tier for a challenge, and its
+spawned-session lists name none. A dispatched session is refused this verb too.
+
 **The journal (`journal.md`, at the project home's own root).** A rewritten state document, never
 an append-only log: rewrite it whenever a ruling is made, a walk finishes, a pull request merges,
 a session spawns or ends, or the operator leaves the terminal — not on a timer. State a token
@@ -555,7 +566,7 @@ over a class of decision. Do not create that section pre-emptively in a fresh se
 it is actually needed.
 
 **The registry (`sessions.md`, at the project home's own root).** One row per session this window
-has spawned outside the task lifecycle (design walks, idea discovery, task refinement, challenges):
+has spawned outside the task lifecycle (design walks, idea discovery, task refinement):
 when it started, its kind, its subject, its status, the model and effort it ran at, its session id,
 the step-in line that resumes it, and the fresh-start fallback line that opens a fresh session on
 the same subject instead. Liveness comes from `ListAgents`, never from this file. It never holds
