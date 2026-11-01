@@ -82,6 +82,9 @@ public static class SessionRoleName
     /// </summary>
     public const string SecurityPreflight = "security-preflight";
 
+    /// <summary>The independent challenge of a draft (<c>h9k task challenge</c>).</summary>
+    public const string Challenge = "challenge";
+
     /// <summary>
     /// The bounded follow-up lap auto-pr-review's own mention trigger dispatches on an
     /// already-reviewed pull request (idea 2f079bcd): a single, narrowly-scoped session answering

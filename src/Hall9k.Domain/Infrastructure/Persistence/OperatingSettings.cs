@@ -468,6 +468,14 @@ public sealed class RoleModelSettings
     [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? SecurityPreflight { get; set; }
 
+    /// <summary>
+    /// The independent draft challenge's own model: blank falls through to its own floor,
+    /// <c>AgentModel.ChallengeDefault</c>, read by <c>DaemonOptions.ResolveChallengeModel</c>. Its own
+    /// <see cref="AgentRole"/>, so the node's default model and the Refinement role do not move it.
+    /// </summary>
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
+    public string? Challenge { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 
@@ -485,6 +493,7 @@ public sealed class RoleModelSettings
         yield return (nameof(Refinement), Refinement);
         yield return (nameof(Publication), Publication);
         yield return (nameof(Courier), Courier);
+        yield return (nameof(Challenge), Challenge);
     }
 }
 
@@ -526,6 +535,9 @@ public sealed class RoleEffortSettings
     /// <summary>The pull-request review pre-flight's own effort (idea 6be68ee2, finding 1); its own <see cref="AgentRole"/>, so this is read the ordinary way rather than as a narrower knob under another role, the same shape <see cref="RoleModelSettings.SecurityPreflight"/> is for the model.</summary>
     public string? SecurityPreflight { get; set; }
 
+    /// <summary>The independent draft challenge's own effort; null falls through to its own floor (high), skipping the node-wide effort, read by <c>DaemonOptions.ResolveChallengeEffort</c>.</summary>
+    public string? Challenge { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 
@@ -543,6 +555,7 @@ public sealed class RoleEffortSettings
         yield return (nameof(Refinement), Refinement);
         yield return (nameof(Publication), Publication);
         yield return (nameof(Courier), Courier);
+        yield return (nameof(Challenge), Challenge);
     }
 }
 

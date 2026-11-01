@@ -525,7 +525,7 @@ public sealed class OperatingSettingsResolverTests : IDisposable
 
         report.EffortByRole.Select(role => role.Role).Should().Equal(
             "Build", "Review", "ReviewVerify", "ReviewFinalFullPass", "SecurityReview", "SecurityPreflight", "Fix",
-            "Synthesis", "Refinement", "Publication", "Courier");
+            "Synthesis", "Refinement", "Publication", "Courier", "Challenge");
         report.EffortByRole.Should().OnlyContain(
             role => role.Effort.Origin == SettingOrigin.Default && role.Effort.Value == null);
     }

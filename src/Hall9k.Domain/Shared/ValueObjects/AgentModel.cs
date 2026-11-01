@@ -68,6 +68,15 @@ public sealed record AgentModel
     /// </summary>
     public const string SecurityPreflightDefault = "claude-opus-5-5";
 
+    /// <summary>
+    /// The draft challenge's own bottom-of-chain floor: an exact model id for the identical drift reason
+    /// <see cref="PlatformFallback"/> is one, and its own constant rather than a reuse of the platform
+    /// default or the Refinement role because the rule it carries is that a challenge runs on Opus 5.5
+    /// whatever a node's default model says. Read by <c>DaemonOptions.ResolveChallengeModel</c> and named in
+    /// <c>h9k config set --model-challenge</c>'s own description.
+    /// </summary>
+    public const string ChallengeDefault = "claude-opus-5-5[1m]";
+
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly AgentModel Unknown = new("");
 

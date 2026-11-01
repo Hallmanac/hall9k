@@ -830,6 +830,20 @@ public sealed class DaemonOptions
     public TimeSpan CardPublicationPollInterval { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// How long a draft challenge session (<c>h9k task challenge</c>) gets before the daemon terminates it and
+    /// records the challenge as failed. Thirty minutes clears the longest challenge sessions recorded so far
+    /// (the longest ran about twenty-one minutes, with probes) by a wide margin, and a session past it is
+    /// burning tokens for nobody: a draft whose challenge timed out can be challenged again.
+    /// </summary>
+    public TimeSpan ChallengeTimeout { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// How often the daemon looks for challenge requests. The doorbell usually gets there first (<c>h9k task
+    /// challenge</c> rings it); this is the sweep that covers a request made while the daemon was down.
+    /// </summary>
+    public TimeSpan ChallengePollInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// How often the daemon sweeps every project home and re-renders task.md/idea.md for whatever
     /// changed (backlog 48). The doorbell usually gets there first — most task and idea commands
     /// ring it — so this is the backstop for the ones that do not (a draft revise, since nothing
@@ -1042,6 +1056,29 @@ public sealed class DaemonOptions
             platformDefault: AgentModel.CourierDefault);
 
     /// <summary>
+    /// The effective model for a draft challenge: the project's own <c>--model</c>, then the node's
+    /// <see cref="RoleModelDefaults.Challenge"/>, then <see cref="AgentModel.ChallengeDefault"/>, the courier's
+    /// chain with a floor of its own. There is no task link, because a draft's own model is the model its
+    /// build will run on and says nothing about what should test the draft, and no
+    /// <see cref="DefaultModel"/>, because the rule is that a challenge runs on the same model on any node,
+    /// whatever that node's default says. The Refinement role is deliberately not reused: it falls through to
+    /// the node default, so the rule would not hold on a node with a cheaper one.
+    /// </summary>
+    public AgentModel ResolveChallengeModel(AgentModel? projectModel) =>
+        AgentModel.Resolve(
+            taskOverride: null, projectDefault: projectModel, roleDefault: ModelByRole.For(AgentRole.Challenge),
+            platformDefault: AgentModel.ChallengeDefault);
+
+    /// <summary>
+    /// The effective effort for a draft challenge: the project's value, then this node's
+    /// <see cref="RoleEffortDefaults.Challenge"/>, then a floor of high. The node-wide <see cref="Effort"/> is
+    /// skipped on purpose, for the reason <see cref="ResolveChallengeModel"/> skips the default model, and so is
+    /// the draft's own effort.
+    /// </summary>
+    public AgentEffort ResolveChallengeEffort(AgentEffort? projectEffort) =>
+        AgentEffort.Resolve(null, projectEffort, EffortByRole.For(AgentRole.Challenge), AgentEffort.High);
+
+    /// <summary>
     /// The effective model for the pull-request review pre-flight (idea 6be68ee2, finding 1, phase
     /// one): the project's own <c>--model</c>, then the node's own
     /// <see cref="RoleModelDefaults.SecurityPreflight"/>, the same project-over-node shape
@@ -1159,6 +1196,9 @@ public sealed class RoleEffortDefaults
 
     public string Courier { get; set; } = string.Empty;
 
+    /// <summary>The draft challenge's own effort; blank falls through to its own floor (high) rather than the node-wide effort, read by <see cref="DaemonOptions.ResolveChallengeEffort"/>.</summary>
+    public string Challenge { get; set; } = string.Empty;
+
     /// <summary>The Review role's effort for a Verify-shape pass; blank falls through to <see cref="Review"/>, read by <see cref="DaemonOptions.ResolveVerifyReviewEffort"/> rather than <see cref="For"/>.</summary>
     public string ReviewVerify { get; set; } = string.Empty;
 
@@ -1181,6 +1221,7 @@ public sealed class RoleEffortDefaults
         _ when role == AgentRole.Publication => AgentEffort.FromInput(Publication),
         _ when role == AgentRole.Courier => AgentEffort.FromInput(Courier),
         _ when role == AgentRole.SecurityPreflight => AgentEffort.FromInput(SecurityPreflight),
+        _ when role == AgentRole.Challenge => AgentEffort.FromInput(Challenge),
         _ => AgentEffort.Unknown,
     };
 }
@@ -1259,6 +1300,13 @@ public sealed class RoleModelDefaults
     /// </summary>
     public string SecurityPreflight { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The independent draft challenge's own model, blank like every sibling above ("no role opinion, ask
+    /// the next level down"): its own non-blank floor is <see cref="DaemonOptions.ResolveChallengeModel"/>'s,
+    /// not this field's shipped default, for the reason <see cref="Courier"/> stays empty.
+    /// </summary>
+    public string Challenge { get; set; } = string.Empty;
+
     public AgentModel For(AgentRole role) => role switch
     {
         _ when role == AgentRole.Build => AgentModel.FromInput(Build),
@@ -1269,6 +1317,7 @@ public sealed class RoleModelDefaults
         _ when role == AgentRole.Publication => AgentModel.FromInput(Publication),
         _ when role == AgentRole.Courier => AgentModel.FromInput(Courier),
         _ when role == AgentRole.SecurityPreflight => AgentModel.FromInput(SecurityPreflight),
+        _ when role == AgentRole.Challenge => AgentModel.FromInput(Challenge),
         _ => AgentModel.Unknown,
     };
 }
