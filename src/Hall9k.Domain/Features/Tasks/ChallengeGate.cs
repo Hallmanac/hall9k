@@ -80,21 +80,4 @@ public static class ChallengeGate
               + $"change{(verdict.MustCount == 1 ? string.Empty : "s")} and the draft has not been revised since it landed"
             : null;
     }
-
-    /// <summary>
-    /// Whether a Draft's <c>Next:</c> line should point at the challenge verb rather than at publish: while the publish
-    /// gate would refuse it. A challenge already requested or running is waited for, and the line says so elsewhere.
-    /// </summary>
-    public static bool NextStepIsChallenge(TaskAggregate task, bool required) =>
-        task.State == TaskState.Draft
-        && !task.ChallengeRequested
-        && task.RunningChallengeSessionId is null
-        && Shortfall(task, required) is not null;
-
-    /// <summary>The read-model twin of <see cref="NextStepIsChallenge(TaskAggregate, bool)"/>.</summary>
-    public static bool NextStepIsChallenge(TaskDetails task, bool required) =>
-        task.State == TaskState.Draft
-        && !task.ChallengeRequested
-        && task.RunningChallengeSessionId is null
-        && Shortfall(task, required) is not null;
 }

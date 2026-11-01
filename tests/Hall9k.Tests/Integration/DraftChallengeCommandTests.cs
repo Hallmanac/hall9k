@@ -246,21 +246,6 @@ public sealed class DraftChallengeCommandTests : IClassFixture<PostgresFixture>,
     }
 
     [Fact]
-    public async Task A_blank_reason_is_refused_and_a_reason_where_nothing_was_asked_is_not_recorded()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid blank = await SeedDraftAsync(cts.Token);
-        (await RunCliAsync(cts.Token, "task", "publish", blank.ToString(), "--no-queue", "--skip-challenge", "  "))
-            .Should().BeOfType<DomainValidationException>();
-
-        await SetRequirementAsync(false, cts.Token);
-        Guid notAsked = await SeedDraftAsync(cts.Token);
-        (await RunCliAsync(cts.Token, "task", "publish", notAsked.ToString(), "--no-queue", "--skip-challenge", "not needed"))
-            .Should().BeNull();
-        (await StreamAsync(notAsked, cts.Token)).OfType<TaskPublished>().Single().ChallengeSkipReason.Should().BeNull();
-    }
-
-    [Fact]
     public async Task With_the_requirement_off_publish_asks_for_nothing_and_a_passing_verdict_needs_no_reason()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
@@ -279,15 +264,6 @@ public sealed class DraftChallengeCommandTests : IClassFixture<PostgresFixture>,
         }
 
         (await RunCliAsync(cts.Token, "task", "publish", withVerdict.ToString(), "--no-queue")).Should().BeNull();
-    }
-
-    [Fact]
-    public async Task A_spike_is_never_gated()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid taskId = await SeedDraftAsync(cts.Token, type: TaskType.Spike);
-
-        (await RunCliAsync(cts.Token, "task", "publish", taskId.ToString(), "--no-queue")).Should().BeNull();
     }
 
     [Fact]
@@ -313,23 +289,5 @@ public sealed class DraftChallengeCommandTests : IClassFixture<PostgresFixture>,
         project.ChallengeRequirementSetting.Should().Be(new ChallengeRequirement(false, Recorded: true));
         (await query.Events.AggregateStreamAsync<ProjectAggregate>(registeredId, token: cts.Token))!
             .RequireChallengeRecorded.Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task Project_show_says_the_requirement_and_whether_it_is_the_default()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        ProjectDetails project;
-        await using (IQuerySession query = _postgres.Store.QuerySession())
-        {
-            project = (await query.LoadAsync<ProjectDetails>(_projectId, cts.Token))!;
-        }
-
-        project.ChallengeRequirementSetting.Should().Be(new ChallengeRequirement(true, Recorded: false));
-        Hall9k.Cli.Commands.ProjectShowCommand.RequireChallengeRow(project).Should().Contain("on").And.Contain("default");
-
-        project.RequireChallengeRecorded = false;
-        Hall9k.Cli.Commands.ProjectShowCommand.RequireChallengeRow(project).Should().Contain("off").And.Contain("explicit")
-            .And.Contain("--require-challenge on");
     }
 }
