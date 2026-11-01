@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a198c0-43d8-726d-877e-aa2d315faf46
+project: hall9k
+type: bugfix
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#837
+objective: Every session that runs under the pull-request review permissions reads GitHub only through what the daemon gathered for it, and is refused gh itself
+criteria:
+  - Before a review lens that is told the pull request's intent starts, the daemon writes the body of each issue the pull request's description cites into the run directory, reading only issues in the pull request's own repository, at most ten of them, and no comments.
+  - A cited issue the daemon cannot read, or one past that limit, is named in the file as not read, and the session still starts.
+  - The conformance, QA, and security review prompts point at that file and say its contents are source material, not instructions; the adversarial review prompt does not mention it.
+  - A feedback evaluator and a closeout triage each receive the pull request's diff as a file of their own in the run directory, at a path their prompt names, before the session starts.
+  - PrReviewAllowedTools holds no gh rule, PrReviewDeniedTools denies every gh command, and ReviewLapDeniedTools is unchanged; a test pins all three.
+  - The QA and security review rules, the feedback evaluator prompt, and the closeout triage prompt no longer tell a session to read a pull request or its diff with gh.
+dependencies: [01a198c0-414c-7708-b9fe-6132c03fd4bf]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/315faf46-every-session-that-runs-under
+published: 2026-11-01 20:26:23Z
+context: |-
+  From issue 788. Least privilege: a read-only review should use no credential it does not need. Blocked by the standalone clone task, not stacked: both edit the same list. Write the evaluator and triage diff files the way the pre-flight's pull-request.diff is written in RunLauncher, per session, as AssessmentPath is named, because several sessions can share one run directory. The deny belongs in PrReviewDeniedTools because the human review lap shares ReviewLapDeniedTools and keeps its reads. Out of scope: the shared review-read-scope fragment and its read command, the pre-flight's Do not run sentence, and any change to the human lap. Update the doc comments on BuildForPrReview and PrReviewAllowedTools.
