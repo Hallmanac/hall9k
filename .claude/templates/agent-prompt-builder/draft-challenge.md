@@ -59,7 +59,7 @@ The daemon has just brought the checkout up to date with the project's remote ba
 ===refresh-failed===
 The daemon could not bring the checkout up to date with the project's remote base branch (its refresh reported: {{Detail}}), so what you read may be behind it. Say in the report where that could matter. Do not try to fetch.
 ===refresh-not-attempted===
-Do not fetch. The daemon decides when a checkout moves.
+The daemon did not bring this checkout up to date and could not tell whether it matches the project's remote base branch, so it may be behind it, or on a branch of its own. Say in the report where that could matter, and mark any claim you could only check here as checked against this commit. Do not try to fetch; the daemon decides when a checkout moves.
 ===idea-workspace===
 The idea this draft came from has a workspace at {{IdeaWorkspace}}. The brief and the notes behind the draft are there.
 ===journal===

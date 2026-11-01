@@ -37,8 +37,13 @@ do the work.
 ```bash
 h9k idea add "The attention pane should teach the next command"     # not sure yet what it is
 h9k task add --project hall9k --objective "…" --criteria "…"        # a Draft: identity, not readiness
+h9k task challenge <id>                                             # an independent session tests the draft; returns at once
+h9k task show <id>                                                  # wait for the verdict, then apply any must with h9k task revise
 h9k task publish <id> --queue                                       # the gate, and the go signal
 ```
+
+Publishing is refused for a draft with no usable challenge verdict (a project can turn the requirement off with
+`h9k project set <name> --require-challenge off`, and a publisher can state a reason with `--skip-challenge "<why>"`).
 
 Three things are outside the law, because they are not platform features:
 
@@ -56,7 +61,7 @@ Three things are outside the law, because they are not platform features:
   the real fix.
 
 Everything else is a task. When the human says "just quickly add X", the answer is a draft, and
-`h9k task publish --queue` is how fast looks around here.
+`h9k task challenge`, then `h9k task publish --queue` once its verdict is in, is how fast looks around here.
 
 Two verbs are easy to confuse here. `h9k task assign <id> <member>` records who holds a task (at any stage, a draft
 included) and queues nothing; `h9k task queue <id>` is the go signal, and `h9k task dequeue <id>` takes a

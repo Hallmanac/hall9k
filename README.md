@@ -561,7 +561,7 @@ in it and its `AGENTS.md` tells it the rest. For a project this database already
 `h9k project init <name>` creates or repairs the same shape. Both are idempotent, both are
 platform code with no agent in them, and `--home <path>` puts the directory wherever you want it.
 
-Then the loop from the section above: `h9k task add`, `h9k task challenge`, `h9k task publish --queue`, `h9k status`.
+Then the loop from the section above: `h9k task add`, `h9k task challenge` (wait for the verdict in `h9k task show`), `h9k task publish --queue`, `h9k status`.
 
 Start-at-login is a separate opt-in that is never implied by anything else:
 
