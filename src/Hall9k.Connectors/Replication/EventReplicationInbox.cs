@@ -10,7 +10,6 @@ using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
-using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Infrastructure.Persistence;
