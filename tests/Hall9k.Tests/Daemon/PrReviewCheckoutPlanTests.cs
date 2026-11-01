@@ -32,6 +32,16 @@ public sealed class PrReviewCheckoutPlanTests
     }
 
     [Fact]
+    public void A_project_with_no_tracking_refs_of_its_own_has_its_local_branches_mapped_onto_origin()
+    {
+        IReadOnlyList<PrReviewCheckoutStep> steps = PrReviewCheckoutPlan.Steps(Checkout, Repository, TrackingRef, mapLocalBranches: true);
+
+        steps[2].Arguments.Should().EndWith("\"+refs/tags/*:refs/tags/*\" \"+refs/heads/*:refs/remotes/origin/*\"");
+        steps.Select(step => step.Arguments).Where((_, index) => index != 2).Should().Equal(
+            PrReviewCheckoutPlan.Steps(Checkout, Repository, TrackingRef).Select(step => step.Arguments).Where((_, index) => index != 2));
+    }
+
+    [Fact]
     public void The_alternates_file_lives_in_the_checkouts_own_git_directory()
     {
         PrReviewCheckoutPlan.AlternatesFile(Checkout).Should().Be(
@@ -39,10 +49,11 @@ public sealed class PrReviewCheckoutPlanTests
     }
 
     [Fact]
-    public void The_pin_ref_is_named_for_the_checkout_directory_outside_the_remote_tracking_namespace()
+    public void The_pin_refs_are_named_for_the_checkout_directory_outside_the_remote_tracking_namespace()
     {
-        PrReviewCheckoutPlan.PinRef(Checkout).Should().Be("refs/hall9k/pr-review-checkouts/wt-aaaaaaaa-bbbbbbbb");
-        PrReviewCheckoutPlan.PinRef(Checkout + "/").Should().Be(PrReviewCheckoutPlan.PinRef(Checkout));
-        PrReviewCheckoutPlan.PinRef(Checkout).Should().NotStartWith("refs/remotes/", "fetch --prune origin removes refs under it");
+        PrReviewCheckoutPlan.HeadPinRef(Checkout).Should().Be("refs/hall9k/pr-review-checkouts/wt-aaaaaaaa-bbbbbbbb/head");
+        PrReviewCheckoutPlan.BasePinRef(Checkout).Should().Be("refs/hall9k/pr-review-checkouts/wt-aaaaaaaa-bbbbbbbb/base");
+        PrReviewCheckoutPlan.HeadPinRef(Checkout + "/").Should().Be(PrReviewCheckoutPlan.HeadPinRef(Checkout));
+        PrReviewCheckoutPlan.HeadPinRef(Checkout).Should().NotStartWith("refs/remotes/", "fetch --prune origin removes refs under it");
     }
 }
