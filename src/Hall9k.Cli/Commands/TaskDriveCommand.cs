@@ -28,7 +28,6 @@ using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
-using Marten.Events;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using OperatingSettingsReport = Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsReport;
