@@ -15,7 +15,7 @@ public sealed record ChallengeReading(ChallengeVerdict Verdict, int MustCount, i
 /// CHANGE: must|should|park - &lt;what&gt; - &lt;evidence&gt;
 /// </code>
 /// <para>
-/// A report is readable only when the block names exactly one verdict, every change line is marked must, should, or
+/// A report is readable only when the block closes the file, opens with its verdict line, names exactly one verdict, every change line is marked must, should, or
 /// park and has non-blank text for both the change and its evidence, and the counts agree with the verdict:
 /// <em>publish as written</em> holds no must or should, <em>publish as revised</em> holds at least one of the two, and
 /// <em>do not publish</em> holds at least one must. Nothing is inferred from a report that fails any of it, because a
@@ -23,7 +23,7 @@ public sealed record ChallengeReading(ChallengeVerdict Verdict, int MustCount, i
 /// </para>
 /// <para>
 /// Lines are normalised before they are matched, because the verdicts this contract was drawn from were written by
-/// models that bold the verdict line and end sentences with a period: leading list and quote markers, emphasis
+/// models that bold the verdict line and end sentences with a period: a leading list marker, emphasis
 /// and backticks around the marker, and a trailing period on the verdict line do not make a line unreadable.
 /// Other text on the verdict line does, so a condition or a question only a person can settle belongs on a must
 /// change line and never after the verdict.
@@ -43,7 +43,7 @@ public static partial class ChallengeReport
     /// </summary>
     internal const int MaxReportChars = 200_000;
 
-    [GeneratedRegex(@"^(?>(?:>\s*)*)(?:(?:[-*+]|\d+[.)])\s+)?[*_`]*(VERDICT|CHANGE)[*_`]*\s*:[*_`]*\s*(.*)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^(?:(?:[-*+]|\d+[.)])\s+)?[*_`]*(VERDICT|CHANGE)[*_`]*\s*:[*_`]*\s*(.*)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MarkerLine();
 
     /// <summary>The reading of a report file, or the closed reason it has none. The file is read from its end.</summary>
@@ -109,16 +109,20 @@ public static partial class ChallengeReport
     }
 
     /// <summary>
-    /// The trailing run of verdict and change lines. Prose after the run is skipped (a session's sign-off should not
-    /// cost a whole report), and once the run has begun a line that is neither a marker line nor blank ends it, so a
-    /// change wrapped over two lines leaves its tail outside the block and the contract's one-line-per-change rule is
-    /// what refuses it. A quoted example of the format earlier in the prose is outside the run for the same reason.
+    /// The run of verdict and change lines that closes the file, or an empty list when there is none. The run has to be
+    /// the end of the report (only blank lines may follow it) and has to open with its verdict line, because the
+    /// prompt asks for the verdict first and for nothing after the block. Each of the three is a way a report could
+    /// otherwise be read more kindly than it was written: prose after an indented example of the format would let
+    /// the example stand as the verdict, a quoted line after the real block would replace it, and a verdict written
+    /// last would let a wrapped change line fall outside the run and drop a must. Inside the run, a line that is neither
+    /// a marker line nor blank ends it, so a change wrapped over two lines leaves its tail outside the block and the
+    /// contract's one-line-per-change rule is what refuses it. A quoted example of the format earlier in the prose is
+    /// outside the run for the same reason.
     /// </summary>
     private static List<(string Marker, string Text)> ClosingBlock(string report)
     {
         string[] lines = report.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
         List<(string Marker, string Text)> block = [];
-        bool inside = false;
         for (int index = lines.Length - 1; index >= 0; index--)
         {
             string line = lines[index].Trim();
@@ -128,19 +132,18 @@ public static partial class ChallengeReport
             }
 
             Match match = MarkerLine().Match(line);
-            if (match.Success)
-            {
-                inside = true;
-                block.Add((match.Groups[1].Value, match.Groups[2].Value));
-            }
-            else if (inside)
+            if (!match.Success)
             {
                 break;
             }
+
+            block.Add((match.Groups[1].Value, match.Groups[2].Value));
         }
 
         block.Reverse();
-        return block;
+        return block.Count > 0 && IsMarker(block[0].Marker, "VERDICT")
+            ? block
+            : [];
     }
 
     private static bool IsMarker(string marker, string expected) =>

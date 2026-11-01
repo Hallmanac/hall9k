@@ -105,13 +105,37 @@ public sealed class ChallengeReportTests
     }
 
     [Fact]
-    public void A_sign_off_after_the_block_does_not_cost_the_report_but_a_wrapped_change_does()
+    public void A_wrapped_change_is_unreadable_and_blank_lines_after_the_block_are_not_text()
     {
         ChallengeReport.TryRead(Report(
-            "VERDICT: publish as revised", "CHANGE: must - x - y", "", "Done.")).Should().NotBeNull();
+            "VERDICT: publish as revised", "CHANGE: must - x - y", "", "")).Should().NotBeNull();
         ChallengeReport.TryRead(Report(
             "VERDICT: publish as revised", "CHANGE: must - x - y", "CHANGE: should - wrapped",
             "- the evidence on the next line")).Should().BeNull("a change is one line, and the tail ends the block before the verdict");
+    }
+
+    [Fact]
+    public void Prose_after_the_block_makes_the_report_unreadable_so_an_example_of_the_format_cannot_stand_as_the_verdict()
+    {
+        ChallengeReport.TryRead("The format is:\n\n    VERDICT: publish as written\n\nI could not finish checking the rest.\n")
+            .Should().BeNull();
+        ChallengeReport.TryRead(Report("VERDICT: publish as revised", "CHANGE: must - x - y", "", "Done.")).Should().BeNull();
+    }
+
+    [Fact]
+    public void A_quoted_verdict_line_after_the_real_block_does_not_replace_it()
+    {
+        ChallengeReport.TryRead(Report(
+            "VERDICT: do not publish", "CHANGE: must - x - y", "", "Appendix, the prompt I ran:", "> VERDICT: publish as written"))
+            .Should().BeNull();
+    }
+
+    [Fact]
+    public void A_verdict_written_after_its_changes_is_unreadable_so_a_wrapped_change_cannot_drop_a_must()
+    {
+        ChallengeReport.TryRead(Report(
+            "CHANGE: must - a - b", "the evidence, wrapped", "CHANGE: should - c - d", "VERDICT: publish as revised"))
+            .Should().BeNull();
     }
 
     [Fact]
