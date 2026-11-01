@@ -633,7 +633,10 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
             return new HeadlessResult(null, null);
         }
 
-        return new HeadlessResult(HandoffParser.Parse(summary), usage);
+        // The closing notes block is stripped and recorded nowhere: this reads a delegated contractor's
+        // or a start-it-mine session's transcript, and nothing records either session's final message
+        // as notes, so the block must simply not ride into the handoff this recovers.
+        return new HeadlessResult(HandoffParser.Parse(TaskNotesBlock.Extract(summary).Clean), usage);
     }
 
     private static long ReadTokenCount(JsonElement usage, string property) =>
