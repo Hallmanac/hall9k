@@ -13,7 +13,9 @@ public static class NotePromotionLimits
 
     /// <summary>
     /// The most lessons one task promotes. One, because a promoted lesson reaches every later prompt
-    /// and about six lessons fit one; a note not kept stays recoverable on the task.
+    /// and about six lessons fit one; a note not kept stays recoverable on the task. It is what the
+    /// prompt tells the session, but the ceiling itself is the shape of <see cref="NotePromotionVerdict"/>,
+    /// which carries one kept note: raising this means widening the verdict to carry a list.
     /// </summary>
     public const int MaxKept = 1;
 

@@ -44,9 +44,13 @@ namespace Hall9k.Daemon.Closeout;
 /// not retried. Across nodes the lesson is the fence: its stream id is derived from the task alone
 /// (<see cref="LearningDecider.PromotedLessonId"/>), so two nodes of one owner that each promote the
 /// same task start the same stream and the inbox discards the second genesis, and a node that already
-/// holds the stream, written here or replicated, stands down. Two nodes working at the same moment
-/// can still each write their own claim locally; only one lesson id exists for the task, and the
-/// first record to replicate is the one the task keeps. A task whose scope is narrower than the team's
+/// holds the stream, written here or replicated, stands down. That fence is not atomic across nodes,
+/// and nothing here makes it so: two nodes that run the step inside the same window (a session lasts
+/// up to <see cref="DaemonOptions.NotePromotionTimeout"/>) each write their own claim and their own
+/// record locally before either sees the other's. Each node's task projection keeps the first record in
+/// its own stream, which is its own, and each node's inbox keeps the first lesson genesis to arrive,
+/// which is also its own; so the two nodes can hold different statements under the one lesson id, and
+/// the task's stream holds two records. Both are visible and a person can retire the lesson. A task whose scope is narrower than the team's
 /// promotes nothing, because the lesson would replicate to every member.
 /// </para>
 /// <para>
@@ -376,7 +380,8 @@ public sealed class NotePromotionSessions(
     /// <summary>
     /// The one transaction: the lesson (when <paramref name="verdict"/> keeps a note) and the record.
     /// A task keeps at most one record, so when one is already there nothing is changed and the one
-    /// that stands is returned; the same holds when the task's lesson stream already exists, which is how
+    /// that stands is returned, and a task that has moved on to a newer run than <paramref name="runId"/>
+    /// is left alone (null); the same holds when the task's lesson stream already exists, which is how
     /// a second node of the same owner finds the first one's lesson (null, as a stand-down is). Appended unfenced, like the lesson pick: a note landing on the task
     /// during the step must not cost the lesson.
     /// </summary>
@@ -398,6 +403,13 @@ public sealed class NotePromotionSessions(
         if (current?.NotePromotion is { } existing)
         {
             return existing;
+        }
+
+        if (current is { } latest && latest.CurrentRunId != runId)
+        {
+            // The task was reopened and claimed during the session, so the run this step ran for is no
+            // longer its current one; neither the lesson nor a record naming the old run is written.
+            return null;
         }
 
         Guid? lessonId = null;

@@ -25,7 +25,7 @@ public sealed class NotePromotionPromptTests
         prompt.Should().Contain($"{multiLine.ShortId}: first line second line third line");
         prompt.Should().Contain($"{control.ShortId}: bell and escape");
         prompt.Should().NotContain("\u0007").And.NotContain("\u001b");
-        prompt.Should().Contain("There are 2 notes on offer");
+        prompt.Should().Contain("Notes on offer: 2.");
     }
 
     [Fact]
@@ -65,6 +65,5 @@ public sealed class NotePromotionPromptTests
         int open = Array.FindIndex(lines, line => line.Contains(hostile.ShortId, StringComparison.Ordinal));
         open.Should().BeGreaterThan(0);
         lines[open - 1].Trim().Should().MatchRegex("^`{4,}$", "the fence is longer than any run of backticks the note carries");
-        lines[open].Should().NotContain("\n", "the note is a single line inside the fence");
     }
 }

@@ -1211,7 +1211,7 @@ after the step, or the daemon stopped or was killed during it). The step itself 
 the daemon observes the merge that closes a task out and the task holds a note this node may offer, a
 small background session reads the objective and up to 30 of the task's own notes and may keep one.
 The default for every note is drop, at most one lesson comes out of a task, and a kept note becomes
-one self-contained claim of at most 800 characters, in printable text. Only a task whose scope reaches the team runs the step. The lesson is live at once and a person retires
+one self-contained claim of at most 800 characters, made only of words the note holds. Only a task whose scope reaches the team runs the step. The lesson is live at once and a person retires
 it with `h9k learn retire`; `h9k learn show` prints the id of the note it was promoted from and of
 that note's task, and no note text. `h9k task show` prints the step's outcome and counts. If the
 daemon stops or is killed during the step it records nothing, and the task's notes read as

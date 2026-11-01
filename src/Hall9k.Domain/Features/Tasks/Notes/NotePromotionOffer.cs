@@ -22,9 +22,6 @@ public sealed record OfferedNote(Guid NoteId, string Text)
 /// <param name="HeldCount">How many of the task's own notes the trust rule held out of every prompt; counted and never shown.</param>
 public sealed record NotePromotionOffer(IReadOnlyList<OfferedNote> Offered, IReadOnlyList<Guid> NotOffered, int HeldCount)
 {
-    /// <summary>The offer for a task that has nothing the closing node may show.</summary>
-    public static readonly NotePromotionOffer Empty = new([], [], 0);
-
     /// <summary>
     /// Whether the step runs at all: only a task with at least one note the closing node may offer
     /// does. A task whose notes are all held runs nothing and records nothing.

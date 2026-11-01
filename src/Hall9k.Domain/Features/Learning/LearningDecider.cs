@@ -123,7 +123,7 @@ public static class LearningDecider
     /// <summary>
     /// A lesson promoted from one task note at closeout, which must cite that note. The citation is
     /// what separates a promotion from an agent typing a claim of its own: the lesson names the one
-    /// note it was rewritten from and the run and task that note belonged to, so a reader can check
+    /// note it was cut from and the run and task that note belonged to, so a reader can check
     /// the claim against the note it came from. A promotion copies one note and merges and replaces
     /// nothing, which is why this is a sibling of <see cref="RecordDistilled"/> and not a use of it.
     /// Every rule <see cref="Record"/> holds still holds, and this adds three:
@@ -147,7 +147,7 @@ public static class LearningDecider
         if (sourceNoteId == Guid.Empty)
         {
             throw new DomainValidationException(
-                "A promoted lesson has to cite the task note it was rewritten from; an empty id cites nothing "
+                "A promoted lesson has to cite the task note it was cut from; an empty id cites nothing "
                 + "anybody can read back.");
         }
 

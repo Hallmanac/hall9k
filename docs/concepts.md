@@ -172,7 +172,7 @@ project, whatever the task itself overrides. It is shown the task's objective an
 task's own notes, newest first, as quoted data, and it answers `NONE` or one line saying which note
 to keep and what claim to keep it as. **The default for every note is drop.** At most one note per
 task becomes a lesson, and a note that is kept becomes one self-contained claim of at most
-800 characters, phrased as an instruction to the next agent. The daemon holds the claim to the note
+800 characters, phrased as an instruction to the next agent wherever the note's own words allow it. The daemon holds the claim to the note
 it cites: every word of the claim has to appear in the note, so a claim can cut and reorder what the
 note says but cannot add a command, a name or a path of its own, and a claim holding a control,
 invisible or otherwise unprintable character is refused. A claim that fails either check, or is
@@ -183,8 +183,11 @@ rule holds, so a note replicated from outside the fleet is never offered, and a 
 all held runs no step at all. A lesson replicates to every project member, so only a task whose scope
 already reaches the team runs the step: a private or fleet-scoped task promotes nothing, and its
 notes stay undecided. The task's lesson has a single stream id derived from the task, so two of the
-owner's nodes that both close the task out cannot make two lessons: a node that already holds the
-stream stands down, and a second genesis for it is discarded on arrival.
+owner's nodes that both close the task out make one lesson id: a node that already holds the
+stream stands down, and a second genesis for it is discarded on arrival. That is a guard and not a
+lock. Two nodes that run the step inside the same minute each write their own claim and record before
+seeing the other's, so each can keep its own statement under the shared lesson id and the task's
+stream can hold two records; the two nodes are not reconciled, and a person can retire the lesson.
 
 Each step that reaches a decision or a failure records one `NotePromotionRecorded` event on the
 task's stream. It holds the run, the outcome, each offered note's id with either the lesson it

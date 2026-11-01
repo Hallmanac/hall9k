@@ -16,6 +16,13 @@ public sealed record NoteDropReason
     /// <summary>The session chose the note and its claim was longer than <see cref="NotePromotionLimits.MaxClaimLength"/>.</summary>
     public static readonly NoteDropReason ClaimTooLong = new("claim-too-long");
 
+    /// <summary>
+    /// The session chose the note and its claim used a word the note does not contain. A claim may cut and
+    /// reorder what the note says; it may not say anything the note did not, because the claim goes live as an
+    /// instruction and nothing else compares it with the note it cites.
+    /// </summary>
+    public static readonly NoteDropReason ClaimNotFromNote = new("claim-not-from-note");
+
     /// <summary>The session chose the note and its claim held a control, format, private-use or unassigned character, which a person reading the lesson could not see.</summary>
     public static readonly NoteDropReason ClaimUnprintable = new("claim-unprintable");
 
@@ -32,7 +39,7 @@ public sealed record NoteDropReason
 
     /// <summary>The whole vocabulary, in the order a reader meets the reasons above.</summary>
     public static readonly IReadOnlyList<NoteDropReason> All =
-        [NotKept, ClaimBlank, ClaimTooLong, ClaimUnprintable, OverCeiling, StepFailed, NotOffered];
+        [NotKept, ClaimBlank, ClaimTooLong, ClaimNotFromNote, ClaimUnprintable, OverCeiling, StepFailed, NotOffered];
 
     public string Value { get; }
 

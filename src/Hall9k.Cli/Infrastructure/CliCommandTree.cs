@@ -1989,7 +1989,9 @@ public static class CliCommandTree
                     "Print a task's notes for a person, newest first with each note's id, time, author, session, "
                     + "source and provenance mark, then the notes of the other tasks in its epic in this project. "
                     + "Notes the trust rule keeps out of every prompt (a note replicated from outside your fleet, "
-                    + "or from a node nobody observed) are shown here, marked as held. Refused inside a dispatched "
+                    + "or from a node nobody observed) are shown here, marked as held. Each of your task's own notes also "
+                    + "shows what closeout decided about it once the task merged: kept (with the lesson it became), "
+                    + "dropped (with the reason), held, or undecided when no promotion step decided it. Refused inside a dispatched "
                     + "session: a session receives its notes through its prompt.")
                 .WithExample("task", "notes", "28b19893");
             task.AddCommand<TaskRunLocalCommand>("run-local")
