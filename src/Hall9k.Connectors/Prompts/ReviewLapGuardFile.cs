@@ -1,5 +1,3 @@
-using Hall9k.Domain.Shared.ValueObjects;
-
 namespace Hall9k.Connectors.Prompts;
 
 /// <summary>
