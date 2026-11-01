@@ -866,9 +866,17 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 + "invent them from it.[/]");
         }
 
+        // While the project's publish gate would refuse this draft for want of a challenge verdict, the next step
+        // is the challenge, so a newcomer is not sent straight into the refusal.
+        string publishStep = TaskNextStep.PublishStep(
+            shortId,
+            ChallengeGate.Shortfall(
+                added.Type, latestVerdict: null, latestOutcome: null, revisedSinceVerdict: false,
+                projectDetails.ChallengeRequirementSetting.IsOn) is not null,
+            challengePending: false);
         AnsiConsole.MarkupLine(added.AcceptanceCriteria.Count == 0
-            ? $"[dim]Next:[/] h9k task revise {shortId} --criteria \"…\" [dim]then[/] h9k task publish {shortId}"
-            : $"[dim]Next:[/] h9k task publish {shortId} [dim](a draft never dispatches; publishing then queueing is what starts it)[/]");
+            ? $"[dim]Next:[/] h9k task revise {shortId} --criteria \"…\" [dim]then[/] {publishStep}"
+            : $"[dim]Next:[/] {publishStep} [dim](a draft never dispatches; publishing then queueing is what starts it)[/]");
         return ExitCodes.Ok;
     }
 

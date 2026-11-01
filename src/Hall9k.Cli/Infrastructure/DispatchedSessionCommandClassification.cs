@@ -89,6 +89,7 @@ internal static class DispatchedSessionCommandClassification
             [typeof(TaskReviseCommand.Settings)] = (DispatchedSessionAccess.Refused, "task revise"),
             [typeof(TaskSetReviewCapsCommand.Settings)] = (DispatchedSessionAccess.Refused, "task set-review-caps"),
             [typeof(TaskPublishCommand.Settings)] = (DispatchedSessionAccess.Refused, "task publish"),
+            [typeof(TaskChallengeCommand.Settings)] = (DispatchedSessionAccess.Refused, "task challenge"),
             [typeof(TaskAssignCommand.Settings)] = (DispatchedSessionAccess.Refused, "task assign"),
             [typeof(TaskQueueCommand.Settings)] = (DispatchedSessionAccess.Refused, "task queue"),
             [typeof(TaskSetSessionCapCommand.Settings)] = (DispatchedSessionAccess.Refused, "task set-session-cap"),
