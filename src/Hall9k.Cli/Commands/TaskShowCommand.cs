@@ -593,6 +593,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             AnsiConsole.MarkupLine(ReassignmentMarkup(reassigned));
         }
 
+        if (details.LessonPick is { } lessonPick)
+        {
+            AnsiConsole.MarkupLine($"\n[bold]Lesson pick[/] [dim](the small session that chooses which lessons this task's prompts carry)[/]");
+            foreach (string line in LessonPickLines(lessonPick))
+            {
+                AnsiConsole.MarkupLine(line.EscapeMarkup());
+            }
+        }
+
         if (details.PendingTakeRequestedAt is { } pendingAt)
         {
             // idea 202383dc, item 5: a cooperative take request nothing has answered yet — either
@@ -2967,6 +2976,28 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 + $"{TaskListCommand.ShortId(details.Id)} on[/]",
             null => "[dim]not observed — no closeout sweep has read this pull request's reviewers yet[/]",
         };
+    }
+
+    /// <summary>
+    /// The lines <c>h9k task show</c> prints for a task's lesson pick: the mode and outcome, the lessons
+    /// picked and the ones newest-first would have carried at that moment (by the eight-character id
+    /// <c>h9k learn show</c> accepts), how many lessons were eligible, how many ids the answer named that
+    /// stood for nothing, the model and how long the session took. Everything printed is a count, an id
+    /// or a closed-vocabulary word: the record holds nothing the session wrote.
+    /// </summary>
+    internal static IReadOnlyList<string> LessonPickLines(LessonPickRecorded pick)
+    {
+        static string Ids(IReadOnlyList<Guid> ids) =>
+            ids.Count == 0 ? "none" : string.Join(", ", ids.Select(DomainId.Short));
+
+        return
+        [
+            $"  Mode {pick.Mode.Value}, outcome {pick.Outcome.Value}, recorded {pick.RecordedAt.ToLocalTime():g}",
+            $"  Eligible lessons {pick.EligibleCount}, ids dropped from the answer {pick.DroppedIdCount}",
+            $"  Picked ({pick.PickedLessonIds.Count}): {Ids(pick.PickedLessonIds)}",
+            $"  Newest-first would have carried ({pick.NewestFirstLessonIds.Count}): {Ids(pick.NewestFirstLessonIds)}",
+            $"  Model {pick.Model.Value}, took {pick.Duration.TotalSeconds.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)}s",
+        ];
     }
 
     /// <summary>
