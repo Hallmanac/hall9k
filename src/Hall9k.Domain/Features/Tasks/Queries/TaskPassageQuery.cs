@@ -47,9 +47,10 @@ public static partial class TaskPassageQuery
     /// no session id — <c>PeriodSpend</c>'s own doc). <see cref="RunUncommittedWorkRecoveryAttempted"/>
     /// (<c>VerificationRunner</c>'s bounded commit-only agent for meaningful uncommitted files),
     /// <see cref="ReviewVerdictReprompted"/> (<c>claude -p --resume</c> for an unparseable
-    /// verdict), and <see cref="ContextSynthesisDispatched"/> (<c>BlockerContextAssembler</c>'s
-    /// synthesis over the blocker-review threshold) each spawn a real process too and are counted
-    /// alongside the rest (independent pre-PR review, cycle 6, conformance finding — the
+    /// verdict), <see cref="ContextSynthesisDispatched"/> (<c>BlockerContextAssembler</c>'s
+    /// synthesis over the blocker-review threshold), and a <see cref="LessonPickRecorded"/> whose
+    /// session started (the one entry that sits on the task's own stream rather than a run's) each
+    /// spawn a real process too and are counted alongside the rest (independent pre-PR review, cycle 6, conformance finding — the
     /// enumeration above omitted all three). <see cref="InteractiveSessionStarted"/> is excluded
     /// here on its own, and folded into the loop below instead, because it does not always name a
     /// distinct process: <c>h9k task drive</c>/<c>h9k task start</c>'s own interactive claim
@@ -67,7 +68,8 @@ public static partial class TaskPassageQuery
         or RunSessionErrorRetried
         or RunUncommittedWorkRecoveryAttempted
         or ReviewVerdictReprompted
-        or ContextSynthesisDispatched;
+        or ContextSynthesisDispatched
+        or LessonPickRecorded { Outcome.SpawnedSession: true };
 
     public static async Task<TaskPassage> ReadAsync(
         IQuerySession session, Guid taskId, TaskType taskType, bool taskConcluded, DateTimeOffset now,
@@ -165,7 +167,10 @@ public static partial class TaskPassageQuery
         }
 
         List<LapKindCount> laps = [.. FoldLaps(taskEvents)];
-        int sessions = folds.Aggregate(0, (total, fold) => total + fold.SessionCount);
+        // The lesson picker's session lives on the task's stream, not a run's, so the run folds above
+        // never see it: counted here, once per pick that actually started a process.
+        int sessions = folds.Aggregate(0, (total, fold) => total + fold.SessionCount)
+            + taskEvents.Count(recorded => IsSessionDispatch(recorded.Data));
         PhaseClassification? classification = ClassifyPhases(taskEvents, runs, taskType);
 
         return new TaskPassage(

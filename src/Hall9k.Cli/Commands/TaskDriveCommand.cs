@@ -335,8 +335,9 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         // the same Domain read: an interactive claim cuts its own worktree outside dispatch, so it
         // gets no rendered lessons.md there, which makes the injected section the only route this
         // session's own lessons take.
+        // A recorded pick rides in under the daemon's own rules; the CLI never spawns the picker.
         InjectedLessons lessons = await LessonPromptFeed.LoadAsync(
-            session, project.Id, fleet.LessonReader, cancellationToken);
+            session, project.Id, fleet.LessonReader, taskDetails.LessonPick, cancellationToken);
         return WorkPromptBuilder.Build(
             taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
             isInteractive: true, requiresSelfRegistration: requiresSelfRegistration, lessons: lessons,

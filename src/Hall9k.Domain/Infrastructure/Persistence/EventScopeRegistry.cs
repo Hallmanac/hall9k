@@ -52,6 +52,9 @@ public static class EventScopeRegistry
         [typeof(JiraWriteFailed)] = EventScope.ProjectScoped,
         [typeof(JiraWriteRequested)] = EventScope.ProjectScoped,
         [typeof(JiraWriteSucceeded)] = EventScope.ProjectScoped,
+        // The task's one lesson pick: lesson ids and counts, no session text. It travels so a node that
+        // picks up the task's later laps composes with the same set, and an older peer skips the type.
+        [typeof(LessonPickRecorded)] = EventScope.ProjectScoped,
         // The closeout triage of a driven task's unresolved threads (task: analysis-only closeout): the
         // dispatch and the counts of its outcome are team-visible facts about the task, like the
         // evaluator's; the report's prose stays in a file on the running node.

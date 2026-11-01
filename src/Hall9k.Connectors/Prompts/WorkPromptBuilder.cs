@@ -1927,7 +1927,9 @@ public static class WorkPromptBuilder
         prompt.AppendLine();
         if (lessons.Any)
         {
-            AppendFragment(prompt, file, "lead");
+            // A picked set says it was chosen for this task, because "newest first" would be false of
+            // it; the newest-first path keeps the wording it always had, byte for byte.
+            AppendFragment(prompt, file, lessons.ChosenForTask ? "picked-lead" : "lead");
             prompt.AppendLine();
             foreach (InjectedLesson lesson in lessons.Lessons)
             {
@@ -1942,7 +1944,27 @@ public static class WorkPromptBuilder
             AppendFragment(prompt, file, "nothing-injected");
         }
 
-        if (lessons.TruncatedByCap)
+        if (lessons.ChosenForTask)
+        {
+            // Always, even when the pick happens to carry every eligible lesson: the section has to say
+            // how many eligible lessons it does not carry, and zero is an answer.
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "picked-truncation",
+                ("Shown", lessons.Lessons.Count.ToString(CultureInfo.InvariantCulture)),
+                ("Eligible", lessons.EligibleForPrompt.ToString(CultureInfo.InvariantCulture)),
+                ("NotCarried", lessons.HeldForCap.ToString(CultureInfo.InvariantCulture)),
+                ("MaxLessons", lessons.Caps.MaxLessons.ToString(CultureInfo.InvariantCulture)),
+                ("MaxCharacters", lessons.Caps.MaxCharacters.ToString(CultureInfo.InvariantCulture)));
+            if (lessons.HeldForProvenance > 0)
+            {
+                AppendFragment(prompt, file, "truncation-provenance-reconciliation",
+                    ("Eligible", lessons.EligibleForPrompt.ToString(CultureInfo.InvariantCulture)),
+                    ("Active", lessons.ActiveInScope.ToString(CultureInfo.InvariantCulture)));
+            }
+
+            AppendFragment(prompt, file, "truncation-pointer");
+        }
+        else if (lessons.TruncatedByCap)
         {
             prompt.AppendLine();
             AppendFragment(prompt, file, "truncation",

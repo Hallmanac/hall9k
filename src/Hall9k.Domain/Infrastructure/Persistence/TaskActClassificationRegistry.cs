@@ -86,6 +86,10 @@ public static class TaskActClassificationRegistry
         [typeof(NonMemberFeedbackEvaluatorDispatched)] = TaskActClassification.Conditional,
         [typeof(NonMemberFeedbackWithdrawn)] = TaskActClassification.MemberSafe,
 
+        // The lesson pick is the running node's record of its own session and it decides which lessons
+        // a later prompt carries, so a sender that holds nothing must not be able to forge one.
+        [typeof(LessonPickRecorded)] = TaskActClassification.Conditional,
+
         // Closeout's triage of a driven task's threads: the running node's record of its own session,
         // and its outcome names a file on that node's disk, so a sender that holds nothing must not
         // be able to forge either (the same reasoning the evaluator's two events carry).

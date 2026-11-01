@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -42,6 +43,14 @@ public static class LessonPromptFeed
     /// The section for <paramref name="projectId"/>, or <see cref="InjectedLessons.None"/> when
     /// there is nothing to carry.
     /// <para>
+    /// <paramref name="recordedPick"/> is the task's recorded lesson pick, or null for a task with
+    /// none or a caller whose prompt must stay newest-first (the adversarial and Verify review
+    /// passes). It is honoured only when the setting is on and the pick was made under on
+    /// (<see cref="LessonPickRecorded.CarriesIntoPrompts"/>), so a caller never decides that
+    /// itself, and a prompt composed under shadow or off is byte-identical to one composed with no
+    /// pick at all.
+    /// </para>
+    /// <para>
     /// Never throws for a missing node row or an unreadable config file: this runs on the dispatch
     /// path, and a run whose prompt is missing its lessons section is a worse run, not a failed
     /// one. An install whose <see cref="NodeDetails"/> row is not there yet resolves no node id
@@ -51,6 +60,17 @@ public static class LessonPromptFeed
     /// </para>
     /// </summary>
     public static async Task<InjectedLessons> LoadAsync(
+        IQuerySession query, Guid projectId, LocalFleetReader? localFleet, LessonPickRecorded? recordedPick,
+        CancellationToken cancellationToken) =>
+        (await LoadCandidatesAsync(query, projectId, localFleet, cancellationToken)).For(recordedPick);
+
+    /// <summary>
+    /// Every lesson this node may put in a prompt, uncapped, with the caps and the picker setting
+    /// in force at this moment. What the daemon offers the lesson picker, and what
+    /// <see cref="LoadAsync"/> selects from, so the two can never disagree about which lessons
+    /// are eligible.
+    /// </summary>
+    public static async Task<LessonCandidates> LoadCandidatesAsync(
         IQuerySession query, Guid projectId, LocalFleetReader? localFleet, CancellationToken cancellationToken)
     {
         string machineName = Environment.MachineName;
@@ -63,8 +83,9 @@ public static class LessonPromptFeed
         LessonInjectionCaps caps = LessonInjectionCaps.Resolve(
             configured.LessonPromptMaxLessons, configured.LessonPromptMaxCharacters);
 
-        return await ComposeAsync(
-            query, projectId, node?.OwnerId ?? Guid.Empty, node?.Id ?? Guid.Empty, caps, localFleet, cancellationToken);
+        return await ComposeCandidatesAsync(
+            query, projectId, node?.OwnerId ?? Guid.Empty, node?.Id ?? Guid.Empty, caps, localFleet,
+            LessonPickerMode.Resolve(configured.LessonPicker), cancellationToken);
     }
 
     /// <summary>
@@ -102,6 +123,23 @@ public static class LessonPromptFeed
         Guid thisNodeId,
         LessonInjectionCaps caps,
         LocalFleetReader? localFleet,
+        CancellationToken cancellationToken) =>
+        (await ComposeCandidatesAsync(
+            query, projectId, ownerId, thisNodeId, caps, localFleet, LessonPickerMode.Shadow, cancellationToken))
+        .NewestFirst;
+
+    /// <summary>
+    /// The uncapped eligible list behind every selection: the same store read and the same
+    /// provenance filter, handed the picker setting instead of reading it off the host.
+    /// </summary>
+    public static async Task<LessonCandidates> ComposeCandidatesAsync(
+        IQuerySession query,
+        Guid projectId,
+        Guid ownerId,
+        Guid thisNodeId,
+        LessonInjectionCaps caps,
+        LocalFleetReader? localFleet,
+        LessonPickerMode pickerMode,
         CancellationToken cancellationToken)
     {
         string projectScope = KnowledgeScope.Project;
@@ -128,8 +166,25 @@ public static class LessonPromptFeed
             ? await localFleet(cancellationToken)
             : null;
 
-        return LessonInjection.Compose(projectLessons, ownerLessons, thisNodeId, caps, fleet);
+        return LessonInjection.Eligible(projectLessons, ownerLessons, thisNodeId, caps, fleet, pickerMode);
     }
+
+    /// <summary>
+    /// The section a test composes with a recorded pick and the setting handed in.
+    /// </summary>
+    public static async Task<InjectedLessons> ComposeAsync(
+        IQuerySession query,
+        Guid projectId,
+        Guid ownerId,
+        Guid thisNodeId,
+        LessonInjectionCaps caps,
+        LessonPickerMode pickerMode,
+        LocalFleetReader? localFleet,
+        LessonPickRecorded? recordedPick,
+        CancellationToken cancellationToken) =>
+        (await ComposeCandidatesAsync(
+            query, projectId, ownerId, thisNodeId, caps, localFleet, pickerMode, cancellationToken))
+        .For(recordedPick);
 
     /// <summary>
     /// How many of a project's own lessons are live, whatever their provenance: the number
