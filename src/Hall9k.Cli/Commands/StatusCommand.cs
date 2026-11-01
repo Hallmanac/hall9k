@@ -12,6 +12,8 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Plan;
+using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
@@ -235,6 +237,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         await WriteNonMemberFeedbackAsync(session, everyoneRows, cancellationToken);
         await WriteCooperativeTakeAsync(session, now, cancellationToken);
         await WriteOwnerActAsync(session, now, cancellationToken);
+        await WriteParkedPlansAsync(session, cancellationToken);
 
         int listed = 0;
         listed += Section(rows, AttentionBucket.NeedsYou, "needs-you", "[red bold]Needs you[/]", now);
@@ -1333,6 +1336,29 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeStatusLine(
                 id, task.Objective.EscapeMarkup(), counterpart, ask.Reason.EscapeMarkup(), isHolder: false, overdue,
                 timeoutMinutes));
+        }
+    }
+
+
+    /// <summary>
+    /// A plan on this node that is parked for a person (<c>h9k plan start</c>), one line each under Needs you, with its
+    /// reason from the closed list and the verb that answers it. Plans never leave their node, so these are this node's only.
+    /// Reads the plan projection alone; a node that has never started a plan has none.
+    /// </summary>
+    private static async Task WriteParkedPlansAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<PlanDetails> plans = [.. (await session.Query<PlanDetails>().ToListAsync(cancellationToken))
+            .Where(plan => plan.IsLive && plan.IsParked)
+            .OrderBy(plan => plan.StartedAt)];
+        foreach (PlanDetails plan in plans)
+        {
+            string shortId = TaskListCommand.ShortId(plan.Id);
+            foreach (PlanDraftState draft in plan.Drafts.Where(draft => draft.IsParked))
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red bold]Needs you[/] plan {shortId} parked on draft {TaskListCommand.ShortId(draft.DraftId)}: "
+                    + $"{draft.ParkReason.Description.EscapeMarkup()} — h9k plan show {shortId}, then h9k plan resume {shortId}");
+            }
         }
     }
 

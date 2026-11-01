@@ -7,6 +7,8 @@ using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Plan;
+using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -469,8 +471,24 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         OwnerDetails? challengeSkipper = details.ChallengeSkippedByOwnerId is { } skipperId
             ? await session.LoadAsync<OwnerDetails>(skipperId, cancellationToken)
             : null;
+        // A plan on this node carrying the draft, and a plan's refinement sessions: the history of both is the task's own
+        // record, so it prints on any node, while the plan itself exists only on the node it was started on.
+        PlanDetails? livePlan = await TaskNextStep.LivePlanOfAsync(session, details.Id, cancellationToken);
         foreach ((string label, string markup) in ChallengeRows(
-            details, project, thisNodeId, labels, challengeSkipper?.Name))
+            details, project, thisNodeId, labels, challengeSkipper?.Name, carriedByLivePlan: livePlan is not null))
+        {
+            header.AddRow(label, markup);
+        }
+
+        if (livePlan is not null)
+        {
+            header.AddRow("Plan", PlanRowMarkup(livePlan, details.Id));
+        }
+
+        Guid? refinementNodeId = details.LatestRefinementOutcome is not null || details.RunningRefinementSessionId is not null
+            ? thisNodeId ?? await OrchestratorStatusCommand.ThisNodeIdAsync(session, cancellationToken)
+            : null;
+        foreach ((string label, string markup) in RefinementRows(details, refinementNodeId, labels))
         {
             header.AddRow(label, markup);
         }
@@ -877,7 +895,9 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         await WriteHandoffAsync(session, details, runs, cancellationToken);
 
-        foreach (string line in TaskNextStep.Lines(details, hasOpenDependency, (project?.ChallengeRequirementSetting ?? ChallengeRequirement.Unrecorded).IsOn))
+        foreach (string line in TaskNextStep.Lines(
+            details, hasOpenDependency, (project?.ChallengeRequirementSetting ?? ChallengeRequirement.Unrecorded).IsOn,
+            livePlan?.Id))
         {
             AnsiConsole.MarkupLine(line);
         }
@@ -2964,7 +2984,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// </para>
     /// </summary>
     internal static IReadOnlyList<(string Label, string Markup)> ChallengeRows(
-        TaskDetails details, ProjectDetails? project, Guid? thisNodeId, MemberLabelLookup labels, string? skippedBy)
+        TaskDetails details, ProjectDetails? project, Guid? thisNodeId, MemberLabelLookup labels, string? skippedBy,
+        bool carriedByLivePlan = false)
     {
         List<(string Label, string Markup)> rows = [];
         string shortId = TaskListCommand.ShortId(details.Id);
@@ -3007,7 +3028,10 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 $"[dim]the publish gate still reads the earlier verdict:[/] {ChallengeOutcomeMarkup(details, earlier, thisNodeId, labels)}"));
         }
 
+        // A draft a live plan carries is challenged and published by the plan, so the row that sends a person to do
+        // either by hand is left out; the Plan row and the Next line say what is happening.
         if (details.State == TaskState.Draft
+            && !carriedByLivePlan
             && ChallengeGate.Shortfall(details, (project?.ChallengeRequirementSetting ?? ChallengeRequirement.Unrecorded).IsOn)
                 is { } shortfall)
         {
@@ -3029,6 +3053,71 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 "Challenge skipped",
                 $"[yellow]published without a usable verdict[/]: [dim]{who} said, at {when}:[/] "
                 + ExternalText.OneLineMarkup(details.ChallengeSkipReason)));
+        }
+
+        return rows;
+    }
+
+    /// <summary>The row naming the live plan that carries a draft and the phase the plan has it in.</summary>
+    private static string PlanRowMarkup(PlanDetails plan, Guid draftId)
+    {
+        PlanDraftState? draft = plan.Draft(draftId);
+        string phase = draft is null
+            ? "unknown"
+            : draft.Phase.Word + (draft.Ready ? ", ready to publish" : string.Empty);
+        string parked = draft is { IsParked: true }
+            ? $"; [red]parked[/]: {draft.ParkReason.Description.EscapeMarkup()}"
+            : string.Empty;
+        return $"{TaskListCommand.ShortId(plan.Id)} [dim]is carrying this draft; phase: {phase}{parked}. "
+            + $"h9k plan show {TaskListCommand.ShortId(plan.Id)}[/]";
+    }
+
+    /// <summary>
+    /// The rows that tell a draft's refinement by a plan: the session running (where, when, on what model), or the latest
+    /// outcome with the session's model and effort and where its report is. Derived from the task's own record, so it prints on
+    /// any node; the report path is printed only on the node that ran the session. Pure over its arguments.
+    /// </summary>
+    internal static IReadOnlyList<(string Label, string Markup)> RefinementRows(
+        TaskDetails details, Guid? thisNodeId, MemberLabelLookup labels)
+    {
+        List<(string Label, string Markup)> rows = [];
+        if (details.RunningRefinementSessionId is not null)
+        {
+            string where = details.RunningRefinementNodeId switch
+            {
+                { } runningNode when runningNode == thisNodeId => "on this node",
+                { } runningNode => $"on {MemberLabelling.NodeMarkup(runningNode, labels)}",
+                _ => "on a node that is not recorded",
+            };
+            string when = details.RunningRefinementDispatchedAt is { } dispatchedAt
+                ? $", dispatched {dispatchedAt.ToLocalTime():g}"
+                : string.Empty;
+            string tier = details.RunningRefinementModel is { } model
+                ? $", {ModelEffortMarkup(model, details.RunningRefinementEffort)}"
+                : string.Empty;
+            rows.Add((
+                "Refinement",
+                $"[yellow]running[/]: [dim]one headless session {where}{when}{tier}; a plan applies what it writes only if nobody "
+                + "else changes the draft meanwhile[/]"));
+        }
+        else if (details.LatestRefinementOutcome is { } outcome)
+        {
+            string landed = outcome.RecordedAt.ToLocalTime().ToString("g");
+            string tier = ModelEffortMarkup(outcome.Model, outcome.Effort);
+            string report = outcome.SessionId is not { } sessionId
+                ? "no session ran, so there is no report"
+                : outcome.NodeId == thisNodeId
+                    ? $"report: {RunPaths.RefinementReportFile(sessionId).EscapeMarkup()}"
+                    : $"the report is on {MemberLabelling.NodeMarkup(outcome.NodeId, labels)}, which ran the session";
+            string result = outcome.Failure.IsFailure
+                ? $"[red]not applied[/]: {outcome.Failure.Description.EscapeMarkup()}"
+                : $"[green]{outcome.Outcome.Word}[/]";
+            string purpose = outcome.Purpose == RefinementPurpose.Unknown
+                ? string.Empty
+                : $"{outcome.Purpose.Description}; ";
+            rows.Add((
+                "Refinement",
+                $"{result} [dim]({purpose}recorded {landed}; {tier}; {report})[/]"));
         }
 
         return rows;

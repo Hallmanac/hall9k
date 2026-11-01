@@ -1,5 +1,7 @@
+using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Marten;
 
 namespace Hall9k.Cli.Commands;
 
@@ -26,10 +28,11 @@ internal static class TaskNextStep
     /// order. A blank string is a blank line. Empty when the state has no pre-dispatch step and is
     /// not Failed, which is every state where the phase and attention lines already say what moves.
     /// </summary>
-    public static IReadOnlyList<string> Lines(TaskDetails details, bool hasOpenDependency, bool challengeRequired = false)
+    public static IReadOnlyList<string> Lines(
+        TaskDetails details, bool hasOpenDependency, bool challengeRequired = false, Guid? livePlanId = null)
     {
         List<string> lines = [];
-        if (Next(details, hasOpenDependency, challengeRequired) is { } next)
+        if (Next(details, hasOpenDependency, challengeRequired, livePlanId) is { } next)
         {
             lines.Add(string.Empty);
             lines.Add(next);
@@ -63,7 +66,20 @@ internal static class TaskNextStep
                 ? $"[dim]the challenge you asked for (h9k task show {shortId} says when its verdict lands), then[/] h9k task publish {shortId}"
                 : $"h9k task challenge {shortId} [dim]then, with its verdict read and applied,[/] h9k task publish {shortId}";
 
-    private static string? Next(TaskDetails details, bool hasOpenDependency, bool challengeRequired)
+    /// <summary>
+    /// The live plan on this node that carries a draft, or null. Plans never leave the node they were started on, so another
+    /// node's draft is never in one as far as this node can tell. Asked by the commands that print a draft's <c>Next:</c> line,
+    /// so none of them sends a person to publish or challenge a draft a plan is already carrying.
+    /// </summary>
+    public static async Task<PlanDetails?> LivePlanOfAsync(IQuerySession session, Guid draftId, CancellationToken cancellationToken) =>
+        (await session.Query<PlanDetails>().ToListAsync(cancellationToken)).FirstOrDefault(plan => plan.IsLive && plan.Includes(draftId));
+
+    /// <summary>The <c>Next:</c> text for a draft a live plan is carrying: read the plan, which publishes the draft itself.</summary>
+    internal static string PlanStep(string planShortId) =>
+        $"h9k plan show {planShortId} [dim]— a plan is carrying this draft and publishes it when every draft in it is ready; "
+        + $"h9k plan cancel {planShortId} --reason \"<why>\" frees it[/]";
+
+    private static string? Next(TaskDetails details, bool hasOpenDependency, bool challengeRequired, Guid? livePlanId)
     {
         string shortId = TaskListCommand.ShortId(details.Id);
         // h9k task drive is refused outright for a pr-review task (TaskDriveCommand.ClaimAndCutAsync:
@@ -79,6 +95,7 @@ internal static class TaskNextStep
                 : $" (or h9k task drive {shortId} to claim and work it yourself)";
         return details.State.Value switch
         {
+            "Draft" when livePlanId is { } plan => $"[dim]Next:[/] {PlanStep(TaskListCommand.ShortId(plan))}",
             "Draft" => details.AcceptanceCriteria.Count == 0
                 ? $"[dim]Next:[/] h9k task revise {shortId} --criteria \"…\" [dim]— publishing needs at least one[/]"
                 : $"[dim]Next:[/] {PublishStep(shortId, ChallengeGate.Shortfall(details, challengeRequired) is not null, details.ChallengeRequested || details.RunningChallengeSessionId is not null)} [dim]then[/] h9k task queue {shortId}",

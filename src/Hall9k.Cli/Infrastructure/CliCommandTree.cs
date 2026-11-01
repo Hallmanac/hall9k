@@ -2359,6 +2359,62 @@ public static class CliCommandTree
                     "\"Drafted the migration; untested past the happy path. Latitude: rewrite the rollback stub freely.\"");
         });
 
+        config.AddBranch("plan", plan =>
+        {
+            plan.SetDescription(
+                "Hand drafts to the daemon to carry through refinement and challenge to Published. A plan is a record of its own "
+                + "on the node where it was started: the daemon on that node refines each draft in a headless session, has it "
+                + "independently challenged (the same request, session, verdict, and failure list as h9k task challenge), applies "
+                + "what the verdict accepts, and publishes the drafts with the same behaviour as h9k task publish --no-queue when "
+                + "every one is ready. It parks for a person, for a reason from a closed list, when it cannot finish; h9k plan "
+                + "show says why and h9k plan resume answers. A plan creates no run, lease, branch, or worktree, its sessions "
+                + "hold no slot against the node's or the project's run ceiling, and nothing about it leaves the node.");
+            plan.AddCommand<PlanStartCommand>("start")
+                .WithDescription(
+                    "Start a plan on one or more drafts of one project. It records the plan and returns without waiting; the daemon "
+                    + "on this node drives it, and a plan started while the daemon is stopped waits for it. Every draft starts at "
+                    + "refinement, or at challenge with --at challenge. Refused, with the reason and before any session starts, for "
+                    + "anyone who may not publish every draft, and for a draft that is not a Draft, is a pr-review task or a spike, "
+                    + "is already in a live plan on this node, has a refinement or challenge requested or running, or belongs to a "
+                    + "different project from the others; for a project that is archived, has no working checkout, or does not run "
+                    + "agents with skip-permissions; for a draft whose context still carries an adopted item's quoted description or "
+                    + "the notice that its idea's workspace holds a tracker item (replace it in your own words with h9k task revise "
+                    + "--context, and read the objective as well); and, on a project whose publish asks for a tracker attestation, "
+                    + "unless --no-existing-item or --untracked is given or every draft is already linked. A plan runs at most two "
+                    + "challenge rounds per draft; only h9k plan resume grants another. Refused inside a dispatched session.")
+                .WithExample("plan", "start", "28b19893")
+                .WithExample("plan", "start", "28b19893", "7c41e0aa", "--no-existing-item")
+                .WithExample("plan", "start", "28b19893", "--at", "challenge", "--untracked");
+            plan.AddCommand<PlanShowCommand>("show")
+                .WithDescription(
+                    "One plan: its state and, for each draft, its phase (refinement, challenge, or published), its round, its latest "
+                    + "outcome, and where its latest report is. A parked plan prints the draft, the reason from the closed list "
+                    + "(rounds exhausted, question, verdict not applied, draft changed, revision refused, session failed, challenge "
+                    + "failed, or publish refused), the way forward, and where to read the rest, because the record holds nothing a "
+                    + "session wrote. While the plan is live it also says whether the daemon is running and why no session or "
+                    + "challenge is starting (this node's launch hold, a spent spend budget, or a project at max parallel tasks 0), "
+                    + "and after publishing it names any draft that got no tracker item.")
+                .WithExample("plan", "show", "5e9a13c2");
+            plan.AddCommand<PlanListCommand>("list")
+                .WithDescription(
+                    "The plans on this node, live ones by default, newest first, with the project, whether each is parked, and how many "
+                    + "of its drafts have closed. Plans never leave the node they were started on.")
+                .WithExample("plan", "list")
+                .WithExample("plan", "list", "--project", "hall9k", "--all");
+            plan.AddCommand<PlanResumeCommand>("resume")
+                .WithDescription(
+                    "Answer a parked plan: the step that parked runs again (a session, a challenge, or a publish), and a draft that "
+                    + "parked on rounds exhausted is granted one more round. Publishing or abandoning a parked draft by hand answers "
+                    + "its park too, and the plan then carries on with no resume. Refused inside a dispatched session.")
+                .WithExample("plan", "resume", "5e9a13c2");
+            plan.AddCommand<PlanCancelCommand>("cancel")
+                .WithDescription(
+                    "End a live plan. The daemon stops its refinement session without applying anything, and the drafts stay Drafts, "
+                    + "free for another plan; drafts already published stay published. A plan whose drafts have all been abandoned "
+                    + "ends cancelled on its own. Refused inside a dispatched session.")
+                .WithExample("plan", "cancel", "5e9a13c2", "--reason", "\"the idea changed; starting over\"");
+        });
+
         config.AddBranch("run", run =>
         {
             run.SetDescription(
