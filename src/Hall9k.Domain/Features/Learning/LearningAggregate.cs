@@ -18,6 +18,9 @@ public sealed class LearningAggregate
     /// <summary>The lessons this one was merged out of, or null when it was recorded on its own; see <see cref="LearningRecorded.DistilledFrom"/>.</summary>
     public IReadOnlyList<Guid>? DistilledFrom { get; private set; }
 
+    /// <summary>The task note this lesson was promoted from at closeout, or null; see <see cref="LearningRecorded.PromotedFromNote"/>.</summary>
+    public Guid? PromotedFromNote { get; private set; }
+
     public RecordedProvenance? Provenance { get; private set; }
     public DateTimeOffset RecordedAt { get; private set; }
     public LearningStatus Status { get; private set; } = LearningStatus.Unknown;
@@ -31,6 +34,7 @@ public sealed class LearningAggregate
         ScopeId = @event.ScopeId;
         Statement = @event.Statement;
         DistilledFrom = @event.DistilledFrom;
+        PromotedFromNote = @event.PromotedFromNote;
         Provenance = @event.Provenance;
         RecordedAt = @event.RecordedAt;
         Status = LearningStatus.Active;

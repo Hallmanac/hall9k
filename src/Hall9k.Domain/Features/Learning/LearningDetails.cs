@@ -36,6 +36,12 @@ public sealed class LearningDetails
     /// </summary>
     public IReadOnlyList<Guid>? DistilledFrom { get; set; }
 
+    /// <summary>
+    /// The task note this lesson was promoted from at closeout (<see cref="LearningDecider.RecordPromoted"/>),
+    /// or null for a lesson recorded any other way. The note's task is <c>Provenance.TaskId</c>.
+    /// </summary>
+    public Guid? PromotedFromNote { get; set; }
+
     public RecordedProvenance? Provenance { get; set; }
     public DateTimeOffset RecordedAt { get; set; }
 
@@ -96,6 +102,7 @@ public sealed partial class LearningDetailsProjection : SingleStreamProjection<L
         ScopeId = @event.Data.ScopeId,
         Statement = @event.Data.Statement,
         DistilledFrom = @event.Data.DistilledFrom,
+        PromotedFromNote = @event.Data.PromotedFromNote,
         Provenance = @event.Data.Provenance,
         RecordedAt = @event.Data.RecordedAt,
         RecordedOnNodeId = EventRecordingNode.Of(@event),
@@ -115,6 +122,7 @@ public sealed partial class LearningDetailsProjection : SingleStreamProjection<L
         view.ScopeId = @event.Data.ScopeId;
         view.Statement = @event.Data.Statement;
         view.DistilledFrom = @event.Data.DistilledFrom;
+        view.PromotedFromNote = @event.Data.PromotedFromNote;
         view.Provenance = @event.Data.Provenance;
         view.RecordedAt = @event.Data.RecordedAt;
         view.RecordedOnNodeId = EventRecordingNode.Of(@event);

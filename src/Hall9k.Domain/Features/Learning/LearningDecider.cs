@@ -1,6 +1,7 @@
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
+using UUIDNext;
 
 namespace Hall9k.Domain.Features.Learning;
 
@@ -104,6 +105,67 @@ public static class LearningDecider
 
         LearningRecorded recorded = Record(id, scope, scopeId, statement, provenance, recordedAt);
         return recorded with { DistilledFrom = [.. distilledFrom] };
+    }
+
+    /// <summary>The name-based id space promoted lessons draw their stream ids from; see <see cref="PromotedLessonId"/>.</summary>
+    private static readonly Guid PromotedLessonNamespace = new("5d0b0c1e-7a41-4f0e-9b6a-3c2f8e1d4a97");
+
+    /// <summary>
+    /// The one stream id a task's promoted lesson can ever have. It is derived from the task alone, so
+    /// two nodes of one owner that each close the same task out and each keep a note start the same
+    /// stream: the inbox discards a second genesis for a stream it already holds, so the lesson stays
+    /// one across nodes, and a node that already holds the stream (its own or a replicated one) knows
+    /// the task has been promoted without asking anyone.
+    /// </summary>
+    public static Guid PromotedLessonId(Guid taskId) =>
+        Uuid.NewNameBased(PromotedLessonNamespace, taskId.ToString("N"));
+
+    /// <summary>
+    /// A lesson promoted from one task note at closeout, which must cite that note. The citation is
+    /// what separates a promotion from an agent typing a claim of its own: the lesson names the one
+    /// note it was rewritten from and the run and task that note belonged to, so a reader can check
+    /// the claim against the note it came from. A promotion copies one note and merges and replaces
+    /// nothing, which is why this is a sibling of <see cref="RecordDistilled"/> and not a use of it.
+    /// Every rule <see cref="Record"/> holds still holds, and this adds three:
+    /// <list type="bullet">
+    /// <item>a note id that is not empty;</item>
+    /// <item>a provenance that names both the run and the task, since a promoted lesson always comes
+    /// out of a run and the task is where the cited note lives;</item>
+    /// <item>a claim that is not blank, refused here with a message about promotion rather than
+    /// the one <see cref="Record"/> gives a person at a shell.</item>
+    /// </list>
+    /// A promoted lesson is always project-scoped: the note it came from was project-scoped.
+    /// </summary>
+    public static LearningRecorded RecordPromoted(
+        Guid id,
+        Guid projectId,
+        string claim,
+        Guid sourceNoteId,
+        RecordedProvenance provenance,
+        DateTimeOffset recordedAt)
+    {
+        if (sourceNoteId == Guid.Empty)
+        {
+            throw new DomainValidationException(
+                "A promoted lesson has to cite the task note it was rewritten from; an empty id cites nothing "
+                + "anybody can read back.");
+        }
+
+        if (provenance.RunId is null || provenance.TaskId is null)
+        {
+            throw new DomainValidationException(
+                "A promoted lesson comes out of a run and cites a note on a task, so its provenance has to name "
+                + "both the run and the task; without them the cited note cannot be found.");
+        }
+
+        if (claim.IsBlank())
+        {
+            throw new DomainValidationException(
+                "A promoted lesson is the claim itself, so there has to be one: a blank claim records nothing.");
+        }
+
+        LearningRecorded recorded = Record(id, KnowledgeScope.Project, projectId, claim, provenance, recordedAt);
+        return recorded with { PromotedFromNote = sourceNoteId };
     }
 
     /// <summary>

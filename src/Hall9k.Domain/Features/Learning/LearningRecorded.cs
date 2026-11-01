@@ -28,6 +28,16 @@ namespace Hall9k.Domain.Features.Learning;
 /// trail in the other direction: from the survivor back to what it claims to speak for.
 /// </para>
 /// </param>
+/// <param name="PromotedFromNote">
+/// The one task note this lesson was promoted from at closeout
+/// (<see cref="LearningDecider.RecordPromoted"/>), and null for a lesson recorded any other way,
+/// which includes every lesson on a stream written before promotion existed. A sibling of
+/// <see cref="DistilledFrom"/> rather than a reuse of it, because that field holds lesson ids and a
+/// note is not a lesson; and a single id rather than a list, because one kept note makes one lesson
+/// and the type states that nothing is merged. The note's task is the provenance's own
+/// <see cref="RecordedProvenance.TaskId"/>, which the promotion entry point requires, so the
+/// citation always resolves to a task's stream.
+/// </param>
 public sealed record LearningRecorded(
     Guid Id,
     KnowledgeScope Scope,
@@ -35,4 +45,5 @@ public sealed record LearningRecorded(
     string Statement,
     RecordedProvenance Provenance,
     DateTimeOffset RecordedAt,
-    IReadOnlyList<Guid>? DistilledFrom = null);
+    IReadOnlyList<Guid>? DistilledFrom = null,
+    Guid? PromotedFromNote = null);
