@@ -70,6 +70,13 @@ public sealed class HumanGateBriefingTests
     }
 
     [Fact]
+    public void A_line_that_starts_with_a_hash_but_is_not_a_heading_is_prose_and_opens_the_paragraph()
+    {
+        HumanGateBriefing.FirstParagraph("Title: T\n\n#412 now lists parked runs first.\n\nSecond.")
+            .Should().Be("#412 now lists parked runs first.");
+    }
+
+    [Fact]
     public void A_summary_with_only_a_title_or_headings_has_no_paragraph()
     {
         HumanGateBriefing.FirstParagraph("Title: T").Should().BeNull();

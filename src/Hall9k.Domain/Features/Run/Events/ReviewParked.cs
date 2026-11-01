@@ -42,7 +42,8 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// <c>h9k review proceed</c> and <c>h9k review fixed</c> compare the branch against so that commits made
 /// during the park reach a pull request only after something has read them. A re-park for a tip that moved
 /// repeats the original tip rather than the moved one. Null when it could not be read, which is then
-/// treated as moved, never as unchanged; also null on every park that is not the human gate.
+/// treated as moved, never as unchanged. Interactive mode's own gates-to-pull-request park records the tip too,
+/// so it is also set on a park that is not the human gate; it is null on every other park.
 /// </param>
 public sealed record ReviewParked(
     Guid Id,

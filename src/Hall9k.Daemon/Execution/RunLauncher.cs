@@ -1627,6 +1627,19 @@ public sealed class RunLauncher(
     }
 
     /// <summary>
+    /// Whether a task's human gate is on and the run being resumed gives no sign it was answered. A run that
+    /// is itself a resume at pull-request-open records neither an answer nor a skip of its own: it was
+    /// dispatched only after this same check passed against the run before it, so a second consecutive
+    /// failure to open is still an approved branch, and reading it as unanswered would send an approved task
+    /// through a whole build and review to stop at the gate a second time.
+    /// </summary>
+    internal static bool HumanGateStandsUnanswered(bool humanGate, RunDetails failedRun) =>
+        humanGate
+        && failedRun.HumanGateAnsweredAt is null
+        && failedRun.ReviewSkip is null
+        && !failedRun.ResumedAtPullRequestOpen;
+
+    /// <summary>
     /// True means "do not dispatch a build or review session": the failed run this task's own
     /// retry resumes never reached the tree itself, only the pull-request open at the very end of
     /// it (task: a run that failed only at pull-request opening resumes at that step on retry) —
@@ -1716,9 +1729,7 @@ public sealed class RunLauncher(
         // an owner's skip to the pull request. Anything else means the gate was turned on after this run
         // pushed (h9k task revise --human-gate takes any live task with no pull request), so the retry
         // falls through to the ordinary dispatch, whose review settles and stops at the gate.
-        if (task.HumanGate
-            && failedRun.HumanGateAnsweredAt is null
-            && failedRun.ReviewSkip is null)
+        if (HumanGateStandsUnanswered(task.HumanGate, failedRun))
         {
             logger.LogInformation(
                 "Task {TaskId}: the human gate is on and the failed run {FailedRunId} recorded no answer at it "

@@ -25,7 +25,7 @@ namespace Hall9k.Cli.Commands;
 /// what was asked for, how automated review ended, the commits with a total, and then the levers (compare,
 /// run, step in, and the outcomes).
 /// <para>
-/// Read-only. It needs no GitHub pull request (none exists at this stop), makes no GitHub call, starts no
+/// Read-only. It needs no GitHub pull request (the human gate stops before one opens, and a follow-up on an open one can still stop at interactive mode's boundary), makes no GitHub call, starts no
 /// session, and appends nothing. It reads the run's worktree, so it answers only on the machine that holds
 /// it, and names the node that does when run anywhere else. Anywhere but this stop it refuses and names
 /// <c>h9k task next</c>, which says where the task actually is.

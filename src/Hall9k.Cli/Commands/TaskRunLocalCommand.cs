@@ -345,6 +345,10 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
         }
 
         string worktree = RequireWorktree(task, run);
+        // Resuming a walk starts the product in the worktree just as a fresh start does, so it is held to the
+        // same gate: a launch paused at a human step during the owner's build is still Live after the build is
+        // delivered, and the gates and review sessions own the worktree again from that moment.
+        RefuseWhileGatedRunIsWorking(task, run);
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         int from = pausedAt + 1;

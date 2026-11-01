@@ -181,6 +181,20 @@ public sealed class ReviewFixedCommand : Hall9kAsyncCommand<ReviewFixedCommand.S
                 $"confirm your fix on. h9k task show {taskId} to see where this run stands.");
         }
 
+        // At the boundary before the pull request opens the daemon that wakes next re-enters Reverify on the
+        // machine that holds the worktree, and the two refusals below (uncommitted work, an unmoved tip) are the
+        // only look anyone takes at that worktree before it does. From a machine that does not hold it every git
+        // read fails and both would be skipped, recording a hand fix nothing observed, so the command refuses
+        // there and names where to run it, the way h9k review brief does.
+        if (run.ParkedAtPullRequestBoundary && !Directory.Exists(runDetails.WorktreePath))
+        {
+            throw new DomainConflictException(
+                $"Task {taskId}'s worktree is not on this machine: it lives at {runDetails.WorktreePath} on "
+                + $"{await ReviewBriefCommand.DescribeNodeAsync(session, runDetails.NodeId, cancellationToken)}. "
+                + "Run h9k review fixed there; it checks the worktree for uncommitted work and the branch for a "
+                + "moved tip before it records anything, so it can only answer where they are.");
+        }
+
         await EnsureOnTheClaimBranchAsync(taskId, runDetails, cancellationToken);
         await EnsureWorktreeCommittedAsync(taskId, runDetails.WorktreePath, cancellationToken);
         (string? headSha, TipObservation tip) =
