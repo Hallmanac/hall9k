@@ -82,8 +82,8 @@ public sealed class DraftChallengeLoop(
 
     /// <summary>
     /// Its own listener on the shared channel. NOTIFY carries no payload by design (log #8), so
-    /// every doorbell wakes every listener and each one decides for itself whether it has work ,
-    /// which here costs one indexed query against a projection.
+    /// every doorbell wakes every listener and each one decides for itself whether it has work,
+    /// which here costs two queries against the task projection (the sweep's recovery query and its pending query).
     /// </summary>
     private async Task ListenAsync(CancellationToken cancellationToken)
     {

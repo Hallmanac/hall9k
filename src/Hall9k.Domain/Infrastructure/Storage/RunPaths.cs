@@ -327,6 +327,13 @@ public static class RunPaths
     public static string ChallengeReportFile(Guid sessionId) => Path.Combine(GlobalDirectory(sessionId), "challenge-report.md");
 
     /// <summary>
+    /// Where the daemon writes a challenge session's process identity (pid and start time, one per line) as soon as it
+    /// is spawned. The dispatch is recorded before the spawn, so the stream cannot hold the pid; this file is how a
+    /// daemon that crashed while the detached session ran can find and stop it on the next start.
+    /// </summary>
+    public static string ChallengeProcessFile(Guid sessionId) => Path.Combine(GlobalDirectory(sessionId), "challenge-process.txt");
+
+    /// <summary>
     /// One review cycle's merged findings: every lens's verified findings under its own
     /// heading (log #59), written by the daemon when the cycle's last pass lands. This is the
     /// document the fix session is handed and the one a park points a human at, so the name

@@ -447,17 +447,22 @@ public static class ClaudeSettingsFile
     /// <param name="assessmentFile">
     /// The one file a non-member-feedback evaluator is asked to write, its own assessment of that
     /// feedback, inside <paramref name="runDirectory"/>. Set only for an evaluator session, and adds
-    /// exactly one <c>Write</c> rule for exactly that path; null for every other session.
+    /// exactly one <c>Edit</c> rule for exactly that path; null for every other session.
     /// </param>
     /// <param name="extraReadRoots">
     /// Further directories the session may <c>Read</c> and <c>Grep</c> beside the checkout and the run directory,
     /// each scoped the way those two are. Set only for a draft challenge, which reads the idea's workspace and the
     /// draft's own directory; null for every other session.
     /// </param>
+    /// <param name="allowMentionAnswer">
+    /// Whether to add the <c>Edit</c> rule for <c>mention-answer.md</c> in <paramref name="runDirectory"/>. True for
+    /// every pr-review session; false for a draft challenge, whose report (<paramref name="assessmentFile"/>) is the only
+    /// file it may write.
+    /// </param>
     public static string BuildForPrReview(
         TimeSpan commandTimeout, string worktreePath, string runDirectory,
         IReadOnlyList<VerifyCommand>? qaGateCommands = null, AgentEffort? effort = null,
-        string? assessmentFile = null, IReadOnlyList<string>? extraReadRoots = null)
+        string? assessmentFile = null, IReadOnlyList<string>? extraReadRoots = null, bool allowMentionAnswer = true)
     {
         long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
         long maxMilliseconds = defaultMilliseconds * 2;
@@ -476,25 +481,30 @@ public static class ClaudeSettingsFile
             AbsolutePathRule("Grep", worktreePath),
             AbsolutePathRule("Grep", runDirectory),
             .. (extraReadRoots ?? []).SelectMany(root => new[] { AbsolutePathRule("Read", root), AbsolutePathRule("Grep", root) }),
-            // The one write this session's own prompt can ask for (RunLauncher's mint addendum,
-            // MentionFollowUpPromptBuilder.BuildMintAddendum): a mention-minted primary session
-            // drafts its answer to `<runDirectory>/mention-answer.md`, which
-            // PrReviewEngine.ComposeReportAndParkAsync reads back into the findings report. With
-            // no allow rule for it the write is refused under dontAsk and the whole "You were
-            // asked" section silently disappears from every mention-minted review (independent
-            // pre-PR review, cycle 1, adversarial lens). Harmless for every other pr-review
-            // session, which never asks to write here at all. Built from the POSIX-normalised
-            // run directory (see AbsolutePathRule's own doc) so this rule matches on a Windows
-            // node too, not only the /tmp paths every test uses (independent pre-PR review,
-            // cycle 1, both lenses).
-            $"Edit(/{EscapeJsonString($"{NormalizeForPermissionRule(runDirectory)}/mention-answer.md")})",
             .. PrReviewAllowedTools,
             .. (qaGateCommands ?? []).Select(gate => $"Bash({EscapeJsonString(gate.Command)}:*)"),
         ];
+        // The one write this session's own prompt can ask for (RunLauncher's mint addendum,
+        // MentionFollowUpPromptBuilder.BuildMintAddendum): a mention-minted primary session
+        // drafts its answer to `<runDirectory>/mention-answer.md`, which
+        // PrReviewEngine.ComposeReportAndParkAsync reads back into the findings report. With
+        // no allow rule for it the write is refused under dontAsk and the whole "You were
+        // asked" section silently disappears from every mention-minted review (independent
+        // pre-PR review, cycle 1, adversarial lens). Harmless for every other pr-review
+        // session, which never asks to write here at all. Built from the POSIX-normalised
+        // run directory (see AbsolutePathRule's own doc) so this rule matches on a Windows
+        // node too, not only the /tmp paths every test uses (independent pre-PR review,
+        // cycle 1, both lenses).
+        if (allowMentionAnswer)
+        {
+            allow.Add($"Edit(/{EscapeJsonString($"{NormalizeForPermissionRule(runDirectory)}/mention-answer.md")})");
+        }
+
         if (assessmentFile is { Length: > 0 })
         {
-            // The only write beyond mention-answer.md: a feedback evaluator's own assessment of its
-            // one piece of feedback. A path rule, never a directory, so it can write nowhere else.
+            // The only write beyond mention-answer.md (and the only one at all when allowMentionAnswer is
+            // false): a feedback evaluator's assessment of its one piece of feedback, or a draft
+            // challenge's report. A path rule, never a directory, so it can write nowhere else.
             allow.Add($"Edit(/{EscapeJsonString(NormalizeForPermissionRule(assessmentFile))})");
         }
 

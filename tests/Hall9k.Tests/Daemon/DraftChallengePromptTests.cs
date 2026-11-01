@@ -14,8 +14,9 @@ using Xunit;
 namespace Hall9k.Tests.Daemon;
 
 /// <summary>
-/// What a draft challenge's prompt carries and promises, beyond the byte-for-byte goldens: the facts the session cannot
-/// know, the framing of a stranger's quoted text, the limits that differ with permissions, and the contract of the report.
+/// What a draft challenge's prompt carries beyond the byte-for-byte goldens: the branches the goldens do not reach (a
+/// checkout the daemon did not move, an unreadable commit, an absent workspace and journal) and the framing of a
+/// stranger's quoted text.
 /// </summary>
 public sealed class DraftChallengePromptTests : IDisposable
 {
@@ -38,32 +39,12 @@ public sealed class DraftChallengePromptTests : IDisposable
         new(home, "/h/demo/repo/dev", commit, refresh, "/runs/s1/challenge-report.md", "/runs/s1", workspace, journal, probeModel);
 
     [Fact]
-    public void The_prompt_names_the_home_the_checkout_the_commit_and_tells_the_session_not_to_fetch()
-    {
-        string prompt = AgentPromptBuilder.BuildChallenge(
-            Draft(), Project(), Facts(refresh: new CheckoutRefresh(true, "already at origin/main")));
-
-        prompt.Should().Contain("/h/demo").And.Contain("relative to it")
-            .And.Contain("/h/demo/repo/dev").And.Contain("commit abc123")
-            .And.Contain("do not fetch");
-    }
-
-    [Fact]
-    public void A_checkout_the_daemon_could_not_bring_up_to_date_is_said_out_loud()
-    {
-        string prompt = AgentPromptBuilder.BuildChallenge(
-            Draft(), Project(), Facts(refresh: new CheckoutRefresh(false, "is 3 commit(s) behind origin/main")));
-
-        prompt.Should().Contain("could not bring the checkout up to date").And.Contain("3 commit(s) behind origin/main")
-            .And.Contain("Do not try to fetch");
-    }
-
-    [Fact]
     public void A_checkout_the_daemon_did_not_try_to_move_is_not_claimed_to_be_current()
     {
         string prompt = AgentPromptBuilder.BuildChallenge(Draft(), Project(), Facts(refresh: null));
 
-        prompt.Should().NotContain("brought the checkout up to date").And.Contain("Do not fetch");
+        prompt.Should().NotContain("brought the checkout up to date")
+            .And.Contain("did not bring this checkout up to date").And.Contain("may be behind it").And.Contain("Do not try to fetch");
     }
 
     [Fact]
@@ -101,32 +82,6 @@ public sealed class DraftChallengePromptTests : IDisposable
     }
 
     [Fact]
-    public void The_project_writing_conventions_are_carried()
-    {
-        AgentPromptBuilder.BuildChallenge(Draft(), Project(), Facts())
-            .Should().Contain("writing conventions").And.Contain("No em dashes");
-    }
-
-    [Fact]
-    public void With_skip_permissions_the_prompt_states_the_five_limits_of_a_probe_and_substitutes_the_cheap_tier_model()
-    {
-        string prompt = AgentPromptBuilder.BuildChallenge(Draft(), Project(), Facts(probeModel: "claude-sonnet-5-5"));
-
-        prompt.Should().Contain("At most five model sessions").And.Contain("`claude-sonnet-5-5`")
-            .And.Contain("only under /runs/s1").And.Contain("No build, no test suite, and nothing that loads this machine")
-            .And.Contain("No git writes").And.Contain("Report every probe");
-    }
-
-    [Fact]
-    public void Without_skip_permissions_no_probe_can_run_and_an_untested_claim_must_be_marked()
-    {
-        string prompt = AgentPromptBuilder.BuildChallenge(Draft(), Project(), Facts(probeModel: null));
-
-        prompt.Should().Contain("No probe can run in this session").And.Contain("begins with the word untested")
-            .And.NotContain("At most five model sessions");
-    }
-
-    [Fact]
     public void An_adopted_drafts_quoted_text_is_framed_as_data_and_an_owners_own_context_is_not()
     {
         TaskDetails adopted = Draft();
@@ -145,14 +100,4 @@ public sealed class DraftChallengePromptTests : IDisposable
         AgentPromptBuilder.BuildChallenge(owned, Project(), Facts()).Should().NotContain("adopted from");
     }
 
-    [Fact]
-    public void The_report_contract_names_the_markers_the_reader_parses()
-    {
-        string prompt = AgentPromptBuilder.BuildChallenge(Draft(), Project(), Facts());
-
-        prompt.Should().Contain(ChallengeReport.VerdictMarker + " <publish as written | publish as revised | do not publish>")
-            .And.Contain(ChallengeReport.ChangeMarker + " <must | should | park> - <what to change> - <the evidence>")
-            .And.Contain("/runs/s1/challenge-report.md")
-            .And.Contain("never text on the verdict line").And.Contain("exact proposed criteria set");
-    }
 }
