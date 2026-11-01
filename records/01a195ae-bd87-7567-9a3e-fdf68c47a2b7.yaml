@@ -1,0 +1,17 @@
+hall9k-task-record: 1
+task-id: 01a195ae-bd87-7567-9a3e-fdf68c47a2b7
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#829
+objective: The no-tools spawn test reads the stand-in's output without failing while the stand-in still holds the file on Windows
+criteria:
+  - ClaudeExecutorNoToolsSpawnTests.ReadWhenWrittenAsync treats a sharing violation on the stream file as not yet written and keeps polling until its deadline, so the test fails only when the expected line never arrives
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/8c47a2b7-the-no-tools-spawn-test-reads
+published: 2026-11-01 05:57:08Z
+context: |-
+  Windows CI on main failed 2026-11-01 at 65fe3bb48 with IOException 'being used by another process' at ClaudeExecutorNoToolsSpawnTests.cs:114. The test reads the file while the batch stand-in is still writing it. It came in with #824, and 6b18a7db8 already added the wait for the last line, so this is the same read. Test-only: no production change.
