@@ -60,7 +60,7 @@ public sealed class LessonPicker(
     /// Runs the pick when <see cref="ShouldPick"/> says to and returns the record it made, or null
     /// when it ran nothing. The caller composes with <see cref="LessonCandidates.For"/> on the result.
     /// </summary>
-    public async Task<LessonPickRecorded?> PickAsync(
+    public async ValueTask<LessonPickRecorded?> PickAsync(
         Guid runId,
         string runDirectory,
         TaskDetails task,

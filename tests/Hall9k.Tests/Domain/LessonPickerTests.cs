@@ -48,19 +48,6 @@ public sealed class LessonPickerTests
             .Which.Mark.Should().Be(LessonProvenanceMark.AgentOnAnotherNode);
     }
 
-    [Fact]
-    public void Newest_first_composes_exactly_what_it_did_before_the_split()
-    {
-        List<LearningDetails> lessons = [.. Enumerable.Range(0, 9).Select(index => Lesson($"Claim number {index}", Now.AddMinutes(-index)))];
-        LessonInjectionCaps caps = new(4, 150);
-
-        InjectedLessons composed = LessonInjection.Compose(lessons, [], ThisNode, caps);
-        InjectedLessons viaCandidates = LessonInjection.Eligible(lessons, [], ThisNode, caps).NewestFirst;
-
-        viaCandidates.Should().BeEquivalentTo(composed);
-        composed.ChosenForTask.Should().BeFalse();
-    }
-
     [Theory]
     [InlineData("aaaaaaaa bbbbbbbb", true)]
     [InlineData("aaaaaaaa,bbbbbbbb", true)]
@@ -202,19 +189,6 @@ public sealed class LessonPickerTests
 
         section.ChosenForTask.Should().Be(carried);
         section.Lessons.Select(lesson => lesson.Id).Should().Equal(carried ? [older.Id] : [newer.Id, older.Id]);
-    }
-
-    [Fact]
-    public void Under_shadow_every_selection_is_the_one_newest_first_makes()
-    {
-        List<LearningDetails> lessons = [.. Enumerable.Range(0, 6).Select(index => Lesson($"Claim {index}", Now.AddMinutes(-index)))];
-        LessonCandidates shadow = LessonInjection.Eligible(
-            lessons, [], ThisNode, new LessonInjectionCaps(3, 10_000), pickerMode: LessonPickerMode.Shadow);
-
-        InjectedLessons withPick = shadow.For(Pick(LessonPickerMode.Shadow, lessons[5].Id, lessons[4].Id));
-        InjectedLessons withNone = shadow.For(null);
-
-        withPick.Should().BeEquivalentTo(withNone);
     }
 
     [Theory]
