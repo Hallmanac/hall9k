@@ -51,8 +51,10 @@ internal static class TaskNextStep
     /// <summary>
     /// What follows the criteria step for a Draft, as markup: publish, or, while the publish gate would refuse the
     /// draft for want of a usable challenge verdict, the challenge first. A challenge already asked for is waited for
-    /// rather than asked for twice. Every command that prints a Draft's <c>Next:</c> line goes through here, so none of
-    /// them sends a newcomer straight into the refusal.
+    /// rather than asked for twice. The four commands that print a Draft's <c>Next:</c> line (<c>task add</c>, <c>draft</c>,
+    /// <c>revise</c>, and <c>show</c>/<c>next</c>) go through here, so none of them sends a newcomer straight into the
+    /// refusal. A hint elsewhere that names <c>h9k task publish</c> on its own (a promoted idea's, an assignment's, a
+    /// stacked parent's) is not routed through it, and reaches the gate's own refusal, which names all three ways out.
     /// </summary>
     internal static string PublishStep(string shortId, bool gateWouldRefuse, bool challengePending) =>
         !gateWouldRefuse
