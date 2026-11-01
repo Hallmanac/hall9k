@@ -478,6 +478,17 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "matches that set, so a change to one still runs this review.")]
         public string? SecurityReview { get; init; }
 
+        [CommandOption("--require-challenge <on|off>")]
+        [Description(
+            "Whether h9k task publish on this project refuses a draft that has no usable challenge verdict on "
+            + "record (h9k task challenge). A project that has recorded no value reads 'on', including one "
+            + "registered before this setting existed. With it on, a draft whose latest verdict is missing, is "
+            + "'do not publish', or is 'publish as revised' holding a must change that the draft has not been "
+            + "revised since, is refused, and the publisher can state why in --skip-challenge \"<reason>\" "
+            + "instead. A pr-review task and a spike are never gated. With it off, publish asks for nothing "
+            + "and h9k task challenge still works. h9k project show prints the value and whether it is the default.")]
+        public string? RequireChallenge { get; init; }
+
         [CommandOption("--claim-gate <off|tracker-assignee>")]
         [Description(
             "What has to be true on this install before a task linked to a Jira card, a GitHub issue, or a Linear issue "
@@ -973,7 +984,13 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             securityReview: settings.SecurityReview is { } securityReview
                 ? Optional<bool>.Of(SecurityReviewSetting.ParseOnOff(securityReview, "--security-review"))
                 : Optional<bool>.None,
-            linearTeam: linearTeam);
+            linearTeam: linearTeam,
+            // No clearing word, the identical --security-review shape: a plain two-state switch where 'off' is
+            // already the way back from 'on'. h9k project show separates the default from a recorded choice
+            // through ChallengeRequirement rather than through a value nobody can type.
+            requireChallenge: settings.RequireChallenge is { } requireChallenge
+                ? Optional<bool>.Of(ChallengeRequirement.ParseOnOff(requireChallenge, "--require-challenge"))
+                : Optional<bool>.None);
 
         ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);
 

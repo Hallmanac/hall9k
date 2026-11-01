@@ -1626,7 +1626,12 @@ public static class CliCommandTree
                     + "already pending is refused until you search the tracker yourself and either link "
                     + "what you find (h9k task link-jira / h9k task link-issue / h9k task link-linear), attest none exists with "
                     + "--no-existing-item, or attest that this task should skip tracking altogether with "
-                    + "--untracked (for internal chores that should not pollute a team's tracker).")
+                    + "--untracked (for internal chores that should not pollute a team's tracker). "
+                    + "A project that requires a challenge (h9k project set --require-challenge, on unless "
+                    + "recorded otherwise) also refuses a draft whose latest challenge verdict is missing, is "
+                    + "'do not publish', or is 'publish as revised' holding a must change the draft has not been "
+                    + "revised since: run h9k task challenge first, or state why with --skip-challenge. A "
+                    + "pr-review task and a spike are never gated.")
                 .WithExample("task", "publish", "28b19893")
                 .WithExample("task", "publish", "28b19893", "--queue")
                 .WithExample("task", "publish", "28b19893", "--no-queue")
@@ -1634,7 +1639,8 @@ public static class CliCommandTree
                 .WithExample("task", "publish", "28b19893", "--untracked")
                 .WithExample("task", "publish", "28b19893", "--pre-approved")
                 .WithExample("task", "publish", "28b19893", "--pre-approved", "after-human-review")
-                .WithExample("task", "publish", "28b19893", "--close-linked-issue", "on-closeout");
+                .WithExample("task", "publish", "28b19893", "--close-linked-issue", "on-closeout")
+                .WithExample("task", "publish", "28b19893", "--skip-challenge", "\"a typo fix; nothing to test\"");
             task.AddCommand<TaskAssignCommand>("assign")
                 .WithDescription(
                     "Record who holds a task, at any stage before it runs: the assignee. It never dispatches. "

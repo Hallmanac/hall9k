@@ -157,6 +157,9 @@ public sealed class ProjectAggregate
     /// <see cref="SecurityReviewSetting"/> resolves the effective on/off, default on.
     /// </summary>
     public bool SecurityReview { get; private set; } = SecurityReviewSetting.Default;
+
+    /// <summary>The challenge requirement the stream last recorded, or null when none was, which reads on (<see cref="ChallengeRequirement"/>).</summary>
+    public bool? RequireChallengeRecorded { get; private set; }
     /// <summary>
     /// What has to be true on this install before a task linked to a Jira card, a GitHub issue, or a Linear issue
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
@@ -353,6 +356,11 @@ public sealed class ProjectAggregate
         {
             LinearTeam = @event.LinearTeam.Value ?? LinearTeamKey.None;
             LinearTeamEverBound |= LinearTeam.HasValue;
+        }
+
+        if (@event.RequireChallenge.HasValue)
+        {
+            RequireChallengeRecorded = @event.RequireChallenge.Value;
         }
 
         if (@event.HomeDirectory.HasValue)

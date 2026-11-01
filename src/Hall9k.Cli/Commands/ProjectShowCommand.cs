@@ -322,6 +322,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Take timeout", TakeTimeoutRow(project, history.WasRecorded(change => change.TakeTimeoutMinutes)));
         table.AddRow("Close linked issue", CloseLinkedIssueRow(
             project, history.WasRecorded(change => change.CloseLinkedIssue)));
+        table.AddRow("Require challenge", RequireChallengeRow(project));
         table.AddRow("Never-close labels", project.NeverCloseLabels.Count == 0
             ? $"[dim]none — an issue's own labels never force never; add one: h9k project set "
               + $"{project.Name.EscapeMarkup()} --never-close-labels epic,prd,adr[/]"
@@ -649,6 +650,25 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
               + "pre-PR Adversarial review does not read for the six security areas; nothing "
               + $"reviews for the classes of defect the Security persona hunts for. Turn it on:[/] "
               + $"h9k project set {name} --security-review on";
+    }
+
+    /// <summary>
+    /// The challenge requirement's effective value and whether it is the default, printed always for the reason
+    /// the rows around it print theirs: "on" as the platform's untouched default and "on" as a choice somebody
+    /// made are different facts.
+    /// </summary>
+    internal static string RequireChallengeRow(ProjectDetails project)
+    {
+        ChallengeRequirement setting = project.ChallengeRequirementSetting;
+        string name = project.Name.EscapeMarkup();
+        string value = $"{setting.OnOff} [dim]({OriginNote(setting.Recorded)})[/]";
+        return setting.IsOn
+            ? $"{value}: [dim]h9k task publish refuses a draft with no usable challenge verdict on record "
+              + "(run h9k task challenge <id> and read the verdict), unless the publisher states why with "
+              + "--skip-challenge \"<reason>\". A pr-review task and a spike are never gated. Turn it off:[/] "
+              + $"h9k project set {name} --require-challenge off"
+            : $"{value}: [dim]h9k task publish asks for no challenge verdict here, and h9k task challenge still "
+              + $"works. Turn it on:[/] h9k project set {name} --require-challenge on";
     }
 
     /// <summary>

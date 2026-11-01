@@ -96,7 +96,8 @@ public static class ProjectDecider
         Optional<bool> securityReview = default,
         Optional<CiPolicy> ciPolicy = default,
         Optional<SolutionMembership?> solution = default,
-        Optional<LinearTeamKey> linearTeam = default)
+        Optional<LinearTeamKey> linearTeam = default,
+        Optional<bool> requireChallenge = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -520,7 +521,8 @@ public static class ProjectDecider
             SecurityReview: securityReview,
             CiPolicy: ciPolicy,
             Solution: solution,
-            LinearTeam: linearTeam);
+            LinearTeam: linearTeam,
+            RequireChallenge: requireChallenge);
     }
 
     /// <summary>
