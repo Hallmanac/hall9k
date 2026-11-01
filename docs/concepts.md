@@ -238,6 +238,7 @@ after it was written down.
 ```
 h9k task add          ->  Draft       being developed; editable; invisible to the dispatcher
 h9k task revise       ->  Draft       objective / criteria / context / type / model / BlockedBy / epic
+h9k task challenge    ->  (same)      one headless session tests the draft and records a verdict; changes nothing
 h9k task assign       ->  (same)      records who holds it at any stage; queues nothing
 h9k task publish      ->  Published   the readiness gate; immutable; queueable, NOT claimable
 h9k task queue        ->  Queued      the go signal; every dependency at true closeout
@@ -246,6 +247,14 @@ h9k task dequeue      ->  Published   keeps the assignee; refused while a lease 
 h9k task unassign     ->  Published   dequeues and lets go of the assignee; refused while a lease is held
 h9k task draft        ->  Draft       refused from Queued/Blocked onward (dequeue first)
 ```
+
+`h9k task challenge` sits between revising and publishing and moves no state. The daemon on the node where it was
+run starts one headless session that tests the draft's claims against the code and writes a report whose closing
+block holds a verdict (publish as written, publish as revised, or do not publish) and one line per change marked
+must, should, or park. Only the verdict and the counts are recorded; the prose stays in a file on that node, and
+applying a verdict is the person's act, with `h9k task revise`. With the project's requirement on (the default,
+`h9k project set --require-challenge`), `h9k task publish` then refuses a draft with no usable verdict unless the
+publisher states why with `--skip-challenge "<reason>"`; a spike and a pr-review task are never gated.
 
 Each verb names the board column the task lands in (Decisions Log #34, and the assign/queue split):
 `assign` moves no column at all, because it records who holds a task and a Draft, a Published task and an

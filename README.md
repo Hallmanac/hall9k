@@ -159,8 +159,8 @@ $ h9k task add --project demo \
 
 Draft created in 'demo': Add rate limiting to the auth endpoints
 (01a02edb-2c55-7030-b4dd-4a9e2088f4fc)
-Next: h9k task publish 2088f4fc (a draft never dispatches; publishing then
-queueing is what starts it)
+Next: h9k task challenge 2088f4fc then, with its verdict read and applied, h9k task publish 2088f4fc (a draft
+never dispatches; publishing then queueing is what starts it)
 ```
 
 ### Refine the draft
@@ -184,6 +184,26 @@ Delivered ([concepts.md](docs/concepts.md#stacked-pull-requests)).
 Refinement ends when the contract is honest: an outcome-phrased objective and criteria a
 reviewer could actually check. A published task is immutable; the edit-after-the-fact path is
 `dequeue` (or `unassign`), `draft`, `revise`, `publish`, `queue`, each step an explicit act.
+
+### Challenge it
+
+Before a draft publishes, an independent session can test it. `h9k task challenge` records a
+request and returns at once; the daemon on that node starts one headless session that reads the code
+at the project's checkout, tests each claim the draft makes, and writes a report whose closing block
+holds a verdict (publish as written, publish as revised, or do not publish) and one line per change,
+each marked must, should, or park. The verdict and the counts land on the task and reach the
+project's orchestrator feed; `h9k task show` prints them and the path of the report. A challenge
+changes nothing about the draft: you apply what you accept with `h9k task revise`, then publish.
+
+```
+$ h9k task challenge 2088f4fc
+$ h9k task show 2088f4fc          # the verdict, the counts, and where the report is
+```
+
+A project requires this by default (`h9k project set <name> --require-challenge off` turns the
+requirement off), so `h9k task publish` refuses a draft with no usable verdict on record. To publish
+without one, state why: `h9k task publish 2088f4fc --skip-challenge "a typo fix"`. A spike and a
+pr-review task are never gated.
 
 ### Publish it, then queue it
 
@@ -541,7 +561,7 @@ in it and its `AGENTS.md` tells it the rest. For a project this database already
 `h9k project init <name>` creates or repairs the same shape. Both are idempotent, both are
 platform code with no agent in them, and `--home <path>` puts the directory wherever you want it.
 
-Then the loop from the section above: `h9k task add`, `h9k task publish --queue`, `h9k status`.
+Then the loop from the section above: `h9k task add`, `h9k task challenge`, `h9k task publish --queue`, `h9k status`.
 
 Start-at-login is a separate opt-in that is never implied by anything else:
 

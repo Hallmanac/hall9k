@@ -1461,6 +1461,18 @@ a run with no task, its own model role (`h9k config set --model-courier`, `claud
 default — cheap by construction, unlike every other role's blank shipped opinion), counted in
 `h9k status`'s spend line the same as any other role's. The lesson picker (`h9k config set --lesson-picker`) runs on the courier's model and effort for the same project and node, so `--model-courier` and `--effort-courier` move it too.
 
+### The draft challenge
+
+`h9k task challenge <id>` records a node-scoped request on a Draft, and the daemon on that node starts exactly one
+headless session for it: Opus 5.5 at high effort unless `--model-challenge`, `--effort-challenge`, or the project's
+own model or effort say otherwise, on any node whatever its default model. The session reads the project's
+reading checkout at a named commit, tests the draft's claims, and writes a report whose closing block the daemon
+parses into one event (a verdict and the counts of its must, should, and park changes, or a failure from a closed
+list). The prose stays in the file on the node that ran it, the event holds nothing the session wrote, and nothing
+applies a verdict. `h9k project set --require-challenge` (on unless recorded otherwise) makes `h9k task publish`
+refuse a draft without a usable verdict unless `--skip-challenge "<reason>"` states why. A challenge holds no run
+slot. Not built: applying a verdict, a refinement-and-challenge loop, and a per-project prompt addendum.
+
 ### The macOS signal fence
 
 On macOS, every agent session the daemon spawns through the executor runs under `/usr/bin/sandbox-exec`
