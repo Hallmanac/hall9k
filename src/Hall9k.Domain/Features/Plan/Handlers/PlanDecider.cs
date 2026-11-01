@@ -41,7 +41,7 @@ public enum PlanStepKind
 /// </summary>
 public static class PlanDecider
 {
-    /// <summary>The next step for one draft, from the plan's record of it and the daemon's round cap.</summary>
+    /// <summary>The next step for one draft, from the plan's record of it alone.</summary>
     public static PlanStepKind NextStep(PlanDraftState draft)
     {
         if (draft.IsClosed || draft.IsParked)
@@ -192,9 +192,9 @@ public static class PlanDecider
     }
 
     /// <summary>
-    /// A draft that is ready was revised after the plan declared it so, which no challenge or session has read. It is no
-    /// longer ready: the plan parks on it as draft changed, and a resume sends it back to a challenge of the text as it
-    /// now stands instead of publishing it unjudged.
+    /// A draft that is ready, or whose verdict is waiting to be applied, was revised after that was decided, which no
+    /// challenge or session has read. It is no longer either: the plan parks on it as draft changed, and a resume sends it
+    /// back to a challenge of the text as it now stands instead of publishing it unjudged.
     /// </summary>
     public static IReadOnlyList<object> ParkReadyDraftChanged(PlanAggregate plan, PlanDraftState draft, DateTimeOffset now) =>
     [

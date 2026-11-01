@@ -150,7 +150,7 @@ internal static class PlanShowComposer
         yield return ReportFile(draft, session);
         if (draft.ParkReason == PlanParkReason.Question)
         {
-            yield return "the draft's journal.md, where the session wrote the question";
+            yield return "the draft's journal.md, where the session wrote the question (a project with no home has no journal, and the question is in the report above)";
         }
     }
 

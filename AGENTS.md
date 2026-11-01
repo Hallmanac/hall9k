@@ -30,7 +30,7 @@ dotnet build                 # full solution (Hall9k.slnx)
 dotnet test                  # unit + integration tiers (integration needs Docker for Testcontainers)
 dotnet run --project src/Hall9k.AppHost    # dev loop: Postgres + daemon + Aspire dashboard
 docker compose up -d         # Postgres only (installed mode / manual runs)
-./src/Hall9k.Cli/bin/Debug/net10.0/h9k     # the CLI binary after build
+./src/Hall9k.Cli/bin/Debug/net10.0/h9k     # the CLI binary after build (a plan runs the *installed* h9k: h9k install --repo)
 ```
 
 `dotnet test` with no filter is this project's own host-coupled gate: it runs only in the

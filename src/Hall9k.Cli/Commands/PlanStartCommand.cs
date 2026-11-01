@@ -68,7 +68,7 @@ public sealed class PlanStartCommand : Hall9kAsyncCommand<PlanStartCommand.Setti
                     $"'{settings.At}' is not a phase a plan starts at: pass refinement (the default) or challenge. "
                     + "Discovery and drafting are not offered.");
 
-        using var store = CliStore.Open();
+        using DocumentStore store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);

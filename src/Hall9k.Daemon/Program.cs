@@ -282,6 +282,7 @@ builder.Services.AddSingleton<EnrolledNodeSnapshots>();
 builder.Services.AddSingleton<LocalFleetProvider>();
 builder.Services.AddSingleton<AutoPrReviewEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();
+builder.Services.AddSingleton<ReadingCheckoutLeases>();
 builder.Services.AddSingleton<DraftChallengeEngine>();
 builder.Services.AddSingleton<IPlanTaskCommands, InstalledCliTaskCommands>();
 builder.Services.AddSingleton<PlanEngine>();

@@ -8,8 +8,8 @@ namespace Hall9k.Daemon.Execution;
 /// <param name="MustCount">How many must changes it lists.</param>
 /// <param name="ShouldCount">How many should changes it lists.</param>
 /// <param name="ParkCount">How many park changes it lists.</param>
-/// <param name="ReportPath">The challenge report on this node, derived from the challenge session's id.</param>
-public sealed record PriorVerdictFacts(ChallengeVerdict Verdict, int MustCount, int ShouldCount, int ParkCount, string ReportPath);
+/// <param name="ReportPath">The challenge report, derived from the challenge session's id, or null when another node ran the challenge and its report is not on this one.</param>
+public sealed record PriorVerdictFacts(ChallengeVerdict Verdict, int MustCount, int ShouldCount, int ParkCount, string? ReportPath);
 
 /// <summary>
 /// The facts about where a plan's refinement session runs that the draft's own record cannot hold, and that the prompt

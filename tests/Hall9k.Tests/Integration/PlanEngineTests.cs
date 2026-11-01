@@ -135,6 +135,9 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
 
         public bool RefuseRevise { get; set; }
 
+        /// <summary>A person revises the draft after the daemon's own check and before the child reads it: the child's fenced append refuses.</summary>
+        public bool PersonRevisesFirst { get; set; }
+
         public bool RefusePublish { get; set; }
 
         /// <summary>A person abandons the draft while the publish waits on the tracker: the publish exits non-zero and the task reads Abandoned.</summary>
@@ -158,8 +161,18 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
             }
 
             await using IDocumentSession session = store.LightweightSession();
+            if (PersonRevisesFirst)
+            {
+                session.Events.Append(taskId, new TaskRevised(
+                    taskId, Optional<string>.Of("A person got there first"), default, default, default, default, default, Now, owner));
+                await session.SaveChangesAsync(cancellationToken);
+                return new TaskCommandResult(1, false, "refused.txt");
+            }
+
+            // As the real child does: recorded as the session's own revision, so it is not mistaken for a person's.
             session.Events.Append(taskId, new TaskRevised(
-                taskId, Optional<string>.Of("Revised by the session"), default, default, default, default, default, Now, owner));
+                taskId, Optional<string>.Of("Revised by the session"), default, default, default, default, default, Now, owner,
+                RefinementSessionId: sessionId));
             await session.SaveChangesAsync(cancellationToken);
             return new TaskCommandResult(0, false, "ok.txt");
         }
@@ -229,7 +242,8 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private PlanEngine NewEngine(IExecutor executor, FakeProcessManager processes, IPlanTaskCommands commands, Action<DaemonOptions>? tweak = null)
+    private PlanEngine NewEngine(IExecutor executor, FakeProcessManager processes, IPlanTaskCommands commands, Action<DaemonOptions>? tweak = null,
+        ReadingCheckoutLeases? leases = null)
     {
         DaemonOptions options = new()
         {
@@ -240,6 +254,7 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
         PlanEngine engine = new(
             postgres.Store, _node, executor, processes, new FixedWorktrees(),
             (_, _, _, _) => Task.FromResult(new ProcessResult(0, "0123abc\n", string.Empty)),
+            leases ?? new ReadingCheckoutLeases(),
             commands, new LaunchHoldEngine(postgres.Store, NullLogger<LaunchHoldEngine>.Instance),
             new DaemonConnection(postgres.ConnectionString), Options.Create(options), NullLogger<PlanEngine>.Instance);
         _engines.Add(engine);
@@ -709,6 +724,34 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
     }
 
     [Fact]
+    public async Task A_person_revising_while_a_publish_as_revised_verdict_waits_parks_the_plan_instead_of_applying_it_to_unjudged_text()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Guid projectId = await SeedProjectAsync(cts.Token);
+        Guid draft = await SeedDraftAsync(projectId, cts.Token);
+        Guid planId = await StartPlanAsync(projectId, cts.Token, PlanPhase.Challenge, drafts: draft);
+        FakeProcessManager processes = new();
+        FakeCommands commands = NewCommands();
+        ScriptedRefinement session = new(processes, RevisedReport, revision: RevisionFile);
+        PlanEngine engine = NewEngine(session, processes, commands);
+        await engine.PollOnceAsync(cts.Token);
+        await AppendChallengeOutcomeAsync(draft, ChallengeVerdict.PublishAsRevised, cts.Token, must: 1);
+
+        // The launch hold keeps the apply session from starting, which is what leaves the verdict waiting.
+        await AppendToNodeAsync(new NodeLaunchHoldRaised(_node.NodeId, "claude is signed out", Now), cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+        (await PlanAsync(planId, cts.Token)).Draft(draft)!.Purpose.Should().Be(RefinementPurpose.ApplyVerdict);
+        await ReviseObjectiveAsync(draft, cts.Token);
+        await AppendToNodeAsync(new NodeLaunchHoldCleared(_node.NodeId, Now), cts.Token);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        (await ParkedAsync(planId, draft, PlanParkReason.DraftChanged, cts.Token)).Should().BeTrue();
+        session.Spawns.Should().BeEmpty("the verdict judged text that is no longer the draft");
+        commands.Calls.Should().BeEmpty("nothing was applied or published");
+    }
+
+    [Fact]
     public async Task Do_not_publish_on_the_last_round_parks_the_plan_without_starting_another_session()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
@@ -728,6 +771,51 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
     }
 
     [Fact]
+    public async Task A_revision_the_child_refuses_because_a_person_revised_first_parks_as_draft_changed_and_not_as_a_refused_revision()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Guid projectId = await SeedProjectAsync(cts.Token);
+        Guid draft = await SeedDraftAsync(projectId, cts.Token);
+        Guid planId = await StartPlanAsync(projectId, cts.Token, drafts: draft);
+        FakeProcessManager processes = new();
+        FakeCommands commands = NewCommands();
+        commands.PersonRevisesFirst = true;
+
+        await NewEngine(new ScriptedRefinement(processes, RevisedReport, revision: RevisionFile), processes, commands).PollOnceAsync(cts.Token);
+        await EventuallyAsync(() => ParkedAsync(planId, draft, PlanParkReason.DraftChanged, cts.Token), cts.Token);
+
+        commands.Calls.Should().ContainSingle("the daemon's own check saw nothing; the child is what refused");
+        (await StreamAsync(draft, cts.Token)).OfType<DraftRefinementRecorded>().Should().ContainSingle()
+            .Which.Failure.Should().Be(RefinementFailureReason.DraftChanged);
+        await using IQuerySession query = postgres.Store.QuerySession();
+        (await query.LoadAsync<TaskDetails>(draft, cts.Token))!.RevisedSinceLastDraftSession.Should().BeTrue("the person's text is still unread by any session");
+    }
+
+    [Fact]
+    public async Task A_plan_asks_for_one_challenge_at_a_time_so_a_queued_one_cannot_start_after_the_plan_parks()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Guid projectId = await SeedProjectAsync(cts.Token);
+        Guid first = await SeedDraftAsync(projectId, cts.Token, "First");
+        Guid second = await SeedDraftAsync(projectId, cts.Token, "Second");
+        Guid planId = await StartPlanAsync(projectId, cts.Token, PlanPhase.Challenge, drafts: [first, second]);
+        FakeProcessManager processes = new();
+        PlanEngine engine = NewEngine(new ScriptedRefinement(processes, UnchangedReport), processes, NewCommands());
+
+        await engine.PollOnceAsync(cts.Token);
+
+        (await StreamAsync(first, cts.Token)).OfType<DraftChallengeRequested>().Should().ContainSingle();
+        (await StreamAsync(second, cts.Token)).OfType<DraftChallengeRequested>().Should().BeEmpty("it waits for the first to land");
+
+        // The first ends with no verdict: the plan parks, and the second is never asked for.
+        await AppendChallengeOutcomeAsync(first, ChallengeVerdict.Unknown, cts.Token, failure: ChallengeFailureReason.TimedOut);
+        await engine.PollOnceAsync(cts.Token);
+
+        (await ParkedAsync(planId, first, PlanParkReason.ChallengeFailed, cts.Token)).Should().BeTrue();
+        (await StreamAsync(second, cts.Token)).OfType<DraftChallengeRequested>().Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task A_refused_publish_parks_and_a_draft_that_reads_published_counts_as_published_however_the_step_ended()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
@@ -740,6 +828,7 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
         PlanEngine engine = NewEngine(new ScriptedRefinement(processes, UnchangedReport), processes, commands);
         await engine.PollOnceAsync(cts.Token);
         await AppendChallengeOutcomeAsync(cutShort, ChallengeVerdict.PublishAsWritten, cts.Token);
+        await engine.PollOnceAsync(cts.Token);
         await AppendChallengeOutcomeAsync(refused, ChallengeVerdict.PublishAsWritten, cts.Token);
 
         commands.PublishCommitsButFails = true;
@@ -758,6 +847,7 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
         PlanEngine refusingEngine = NewEngine(new ScriptedRefinement(processes, UnchangedReport), processes, refusing);
         await refusingEngine.PollOnceAsync(cts.Token);
         await AppendChallengeOutcomeAsync(second, ChallengeVerdict.PublishAsWritten, cts.Token);
+        await refusingEngine.PollOnceAsync(cts.Token);
         await AppendChallengeOutcomeAsync(third, ChallengeVerdict.PublishAsWritten, cts.Token);
         await refusingEngine.PollOnceAsync(cts.Token);
 
@@ -790,10 +880,11 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
         PlanEngine engine = NewEngine(new ScriptedRefinement(processes, UnchangedReport), processes, commands);
         await engine.PollOnceAsync(cts.Token);
         await AppendChallengeOutcomeAsync(stuck, ChallengeVerdict.Unknown, cts.Token, failure: ChallengeFailureReason.TimedOut);
-        await AppendChallengeOutcomeAsync(other, ChallengeVerdict.PublishAsWritten, cts.Token);
         await engine.PollOnceAsync(cts.Token);
         (await ParkedAsync(planId, stuck, PlanParkReason.ChallengeFailed, cts.Token)).Should().BeTrue();
-        commands.Calls.Should().BeEmpty("the plan is parked, so the ready sibling is not published");
+        (await StreamAsync(other, cts.Token)).OfType<DraftChallengeRequested>().Should().BeEmpty(
+            "a plan parked on a sibling asks for no further challenge, so none can start after the park");
+        commands.Calls.Should().BeEmpty("the plan is parked, so nothing is published");
 
         await using (IDocumentSession byHand = postgres.Store.LightweightSession())
         {
@@ -801,6 +892,8 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
             await byHand.SaveChangesAsync(cts.Token);
         }
 
+        await engine.PollOnceAsync(cts.Token);
+        await AppendChallengeOutcomeAsync(other, ChallengeVerdict.PublishAsWritten, cts.Token);
         await engine.PollOnceAsync(cts.Token);
 
         PlanDetails plan = await PlanAsync(planId, cts.Token);
@@ -1066,6 +1159,13 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
         DraftRefinementRecorded ended = (await StreamAsync(draft, cts.Token)).OfType<DraftRefinementRecorded>().Should().ContainSingle().Subject;
         ended.Failure.Should().Be(RefinementFailureReason.DispatchExpired);
         ended.NodeId.Should().Be(otherNode, "the report, if any, is on the node that ran the session");
+    }
+
+    private async Task AppendToNodeAsync(object @event, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        session.Events.Append(_node.NodeId, @event);
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     private async Task ReviseObjectiveAsync(Guid draft, CancellationToken cancellationToken)

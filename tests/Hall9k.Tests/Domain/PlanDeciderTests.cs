@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -271,6 +272,25 @@ public sealed class PlanDeciderTests
 
         Fold(plan, [PlanDecider.ParkOn(plan, draft, PlanParkReason.ChallengeFailed, null, Now)]);
         plan.Drafts[0].LatestSessionId.Should().BeNull("no challenge ran, so the refinement session's report is not this park's");
+    }
+
+    [Fact]
+    public void A_refinement_dispatch_refused_before_any_session_ran_leaves_no_report_to_point_at()
+    {
+        Guid draft = DomainId.New();
+        PlanAggregate plan = Started(PlanPhase.Refinement, draft);
+        Guid challengeSession = DomainId.New();
+        Fold(plan, [new PlanDraftMoved(
+            plan.Id, plan.ProjectId, draft, PlanPhase.Refinement, 1, PlanOutcome.DoNotPublish, RefinementPurpose.AnswerVerdict, false,
+            challengeSession, Now)]);
+        plan.Drafts[0].LatestSessionId.Should().Be(challengeSession);
+
+        Fold(plan, [PlanDecider.ParkOn(plan, draft, PlanParkReason.SessionFailed, null, Now)]);
+
+        plan.Drafts[0].IsParked.Should().BeTrue();
+        plan.Drafts[0].LatestSessionId.Should().BeNull("the challenge's report has nothing to do with a dispatch that was refused");
+        plan.Drafts[0].LatestReportIsChallenge.Should().BeFalse();
+        PlanParkReason.SessionFailed.Description.Should().Contain("refused before it ran").And.Contain("daemon log");
     }
 
     [Fact]

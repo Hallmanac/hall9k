@@ -14,8 +14,8 @@ using Xunit;
 namespace Hall9k.Tests.Daemon;
 
 /// <summary>
-/// What a plan's refinement prompt carries beyond the byte-for-byte golden: the rules a project with no recipe still gets,
-/// the paragraph each purpose gets, the verdict a later session is told, and the one working rule the daemon authors about an
+/// What a plan's refinement prompt carries beyond the byte-for-byte golden (which holds the house rules and the closing
+/// contract word for word): the paragraph each purpose gets, the verdict a later session is told, and the one working rule the daemon authors about an
 /// idea workspace that holds a tracker item (shared with the challenge prompt).
 /// </summary>
 public sealed class PlanRefinementPromptTests : IDisposable
@@ -44,34 +44,6 @@ public sealed class PlanRefinementPromptTests : IDisposable
         new(
             purpose ?? RefinementPurpose.Refine, "/h/demo", "/h/demo/repo/dev", commit, refresh,
             "/runs/s1/refinement-report.md", "/runs/s1/refinement-revision.md", "/runs/s1", workspace, journal, journalToWrite, prior);
-
-    [Fact]
-    public void It_carries_the_house_rules_so_a_project_with_no_recipe_gets_them_too()
-    {
-        string prompt = AgentPromptBuilder.BuildPlanRefinement(Draft(), Project(), Facts());
-
-        prompt.Should().Contain("State the shape before any criterion").And.Contain("one task or several")
-            .And.Contain("stacked on another rather than merely blocked")
-            .And.Contain("someone who did not write it can check it").And.Contain("outcome rather than the mechanism")
-            .And.Contain("smallest change")
-            .And.Contain("Never write a criterion that instructs the dispatched session to abandon, conclude, archive, publish, assign")
-            .And.Contain("Keep security detail out of the task text")
-            .And.Contain("Rewrite the journal").And.Contain("what the challenge should press on")
-            .And.Contain("No git writes of any kind, and no fetch")
-            .And.Contain("No em dashes");
-    }
-
-    [Fact]
-    public void It_tells_the_session_what_it_cannot_write_and_what_one_closing_line_names()
-    {
-        string prompt = AgentPromptBuilder.BuildPlanRefinement(Draft(), Project(), Facts());
-
-        prompt.Should().Contain("`h9k task revise`, `publish`, and `challenge`, and every `h9k plan` command that writes, are refused")
-            .And.Contain("/runs/s1/refinement-report.md").And.Contain("/runs/s1/refinement-revision.md")
-            .And.Contain("REFINEMENT: <revised | unchanged | question>")
-            .And.Contain("Do not name a `model`")
-            .And.Contain("put the question in the journal");
-    }
 
     [Fact]
     public void It_names_the_commit_and_says_when_the_checkout_could_not_be_brought_up_to_the_remote_base_branch()
@@ -113,6 +85,20 @@ public sealed class PlanRefinementPromptTests : IDisposable
         string with = AgentPromptBuilder.BuildPlanRefinement(
             Draft(), Project(), Facts(journal: "/h/demo/tasks/t/journal.md", workspace: _workspace));
         with.Should().Contain("journal is at /h/demo/tasks/t/journal.md").And.Contain($"workspace at {_workspace}").And.NotContain("no journal yet");
+    }
+
+    [Fact]
+    public void A_verdict_another_node_ran_names_no_report_path_and_a_project_with_no_journal_sends_the_question_to_the_report()
+    {
+        PriorVerdictFacts elsewhere = new(ChallengeVerdict.DoNotPublish, 2, 0, 0, null);
+
+        string prompt = AgentPromptBuilder.BuildPlanRefinement(
+            Draft(), Project(), Facts(RefinementPurpose.AnswerVerdict, journalToWrite: null, prior: elsewhere));
+
+        prompt.Should().Contain("latest challenge verdict is do not publish (2 must, 0 should, 0 park)")
+            .And.Contain("Another node ran that challenge, so its report is not readable here")
+            .And.NotContain("Read its report in full")
+            .And.Contain("put the question in your report").And.NotContain("in the journal");
     }
 
     [Fact]

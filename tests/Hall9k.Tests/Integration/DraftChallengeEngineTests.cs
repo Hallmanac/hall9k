@@ -5,6 +5,8 @@ using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Challenge;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Plan;
+using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Tasks;
@@ -102,9 +104,10 @@ public sealed class DraftChallengeEngineTests(PostgresFixture postgres) : IClass
 
     private static DraftChallengeEngine NewEngine(
         DocumentStore store, NodeContext node, IExecutor executor, FakeProcessManager processes,
-        TimeSpan? timeout = null, TimeSpan? foreignCeiling = null) =>
+        TimeSpan? timeout = null, TimeSpan? foreignCeiling = null, ReadingCheckoutLeases? leases = null) =>
         new(store, node, executor, processes, new FixedWorktrees(), (_, _, _, _) => Task.FromResult(
                 new ProcessResult(0, "0123abc\n", string.Empty)),
+            leases ?? new ReadingCheckoutLeases(),
             Options.Create(new DaemonOptions
             {
                 ChallengeTimeout = timeout ?? TimeSpan.FromSeconds(20),
@@ -228,6 +231,92 @@ public sealed class DraftChallengeEngineTests(PostgresFixture postgres) : IClass
         details.ChallengeRequested.Should().BeFalse();
         details.RunningChallengeSessionId.Should().BeNull();
         details.LatestChallengeVerdict.Should().NotBeNull();
+    }
+
+    /// <summary>A plan holding the draft, with a challenge it requested at <paramref name="requestedAt"/> and a sibling that is parked.</summary>
+    private static async Task<Guid> StartParkedPlanAsync(
+        DocumentStore store, NodeContext node, Guid projectId, Guid taskId, DateTimeOffset requestedAt, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        Guid planId = DomainId.New();
+        Guid sibling = DomainId.New();
+        session.Events.StartStream<PlanAggregate>(
+            planId,
+            new PlanStarted(planId, projectId, [taskId, sibling], PlanPhase.Challenge, false, false, node.OwnerId, Now),
+            new PlanChallengeRequested(planId, projectId, taskId, 1, requestedAt),
+            new PlanParked(planId, projectId, sibling, PlanParkReason.Question, null, Now));
+        await session.SaveChangesAsync(cancellationToken);
+        return planId;
+    }
+
+    [Fact]
+    public async Task A_challenge_a_parked_plan_requested_waits_until_the_plan_resumes()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid projectId) = await SeedAsync(store, node, cts.Token);
+        Guid planId = await StartParkedPlanAsync(store, node, projectId, taskId, requestedAt: Now, cts.Token);
+        FakeProcessManager processes = new();
+        ScriptedChallenge session = new(processes, GoodReport);
+        DraftChallengeEngine engine = NewEngine(store, node, session, processes);
+
+        DraftChallengeSweepResult parked = await engine.PollOnceAsync(cts.Token);
+
+        parked.Should().Be(new DraftChallengeSweepResult(0, 0, 0, 0, 0));
+        session.Spawns.Should().BeEmpty("a parked plan starts no new session for any of its drafts");
+        (await StreamAsync(store, taskId, cts.Token)).OfType<DraftChallengeRecorded>().Should().BeEmpty("the request waits rather than failing");
+
+        await using (IDocumentSession resume = store.LightweightSession())
+        {
+            resume.Events.Append(planId, new PlanResumed(planId, projectId, node.OwnerId, Now));
+            await resume.SaveChangesAsync(cts.Token);
+        }
+
+        (await engine.PollOnceAsync(cts.Token)).Should().Be(new DraftChallengeSweepResult(1, 1, 0, 0, 0));
+        session.Spawns.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task A_challenge_a_cancelled_plan_requested_is_withdrawn_with_no_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid projectId) = await SeedAsync(store, node, cts.Token);
+        Guid planId = await StartParkedPlanAsync(store, node, projectId, taskId, requestedAt: Now, cts.Token);
+        await using (IDocumentSession cancel = store.LightweightSession())
+        {
+            cancel.Events.Append(planId, new PlanCancelled(planId, projectId, "not wanted", node.OwnerId, Now));
+            await cancel.SaveChangesAsync(cts.Token);
+        }
+
+        FakeProcessManager processes = new();
+        ScriptedChallenge session = new(processes, GoodReport);
+
+        await NewEngine(store, node, session, processes).PollOnceAsync(cts.Token);
+
+        session.Spawns.Should().BeEmpty();
+        DraftChallengeRecorded recorded = (await StreamAsync(store, taskId, cts.Token)).OfType<DraftChallengeRecorded>().Should().ContainSingle().Subject;
+        (recorded.SessionId, recorded.Failure).Should().Be(((Guid?)null, ChallengeFailureReason.PlanEnded));
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.ChallengeRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_persons_own_request_on_a_draft_a_parked_plan_holds_is_answered_as_usual()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid projectId) = await SeedAsync(store, node, cts.Token);
+        await StartParkedPlanAsync(store, node, projectId, taskId, requestedAt: Now.AddMinutes(-30), cts.Token);
+        FakeProcessManager processes = new();
+        ScriptedChallenge session = new(processes, GoodReport);
+
+        (await NewEngine(store, node, session, processes).PollOnceAsync(cts.Token)).Should().Be(new DraftChallengeSweepResult(1, 1, 0, 0, 0));
+
+        session.Spawns.Should().ContainSingle("the plan's record names another request, so this one is not the plan's to hold");
     }
 
     [Fact]

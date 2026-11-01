@@ -1404,8 +1404,13 @@ public sealed class TaskAggregate
         {
             RevisedSinceChallengeVerdict |= LatestChallengeVerdict is not null;
             RevisedWhileChallengeRan |= RunningChallengeSessionId is not null;
-            RevisedWhileRefinementRan |= RunningRefinementSessionId is not null;
-            RevisedSinceLastDraftSession = true;
+
+            // A revision made on a running session's behalf is the session's own work, not a change it never read.
+            if (@event.RefinementSessionId is null || @event.RefinementSessionId != RunningRefinementSessionId)
+            {
+                RevisedWhileRefinementRan |= RunningRefinementSessionId is not null;
+                RevisedSinceLastDraftSession = true;
+            }
         }
 
         if (@event.Objective.HasValue)
@@ -2659,7 +2664,7 @@ public sealed class TaskAggregate
     /// Whether the draft was revised, in a way a challenge reads, since the last challenge verdict or refinement outcome
     /// was recorded for it. Unlike <see cref="RevisedSinceChallengeVerdict"/> a refinement's outcome clears it, because the
     /// plan's own revision is applied before that outcome is recorded: what is left standing is a person's revision made
-    /// after the plan declared the draft ready, which no session has read. A plan reads it before it publishes.
+    /// after the plan declared the draft ready, or while a session ran, which no session has read. A plan reads it before it publishes.
     /// </summary>
     public bool RevisedSinceLastDraftSession { get; private set; }
 
@@ -2682,7 +2687,9 @@ public sealed class TaskAggregate
             LatestChallengeVerdict = @event;
             RevisedSinceChallengeVerdict = false;
             LatestChallengeVerdictJudgedOlderDraft = RevisedWhileChallengeRan;
-            RevisedSinceLastDraftSession = false;
+
+            // A revision made while this challenge ran is text the verdict never read, so it is still unread.
+            RevisedSinceLastDraftSession &= RevisedWhileChallengeRan;
         }
 
         RevisedWhileChallengeRan = false;
@@ -2712,8 +2719,11 @@ public sealed class TaskAggregate
     {
         RunningRefinementSessionId = null;
         LatestRefinementOutcome = @event;
+
+        // The session read the draft as it stood at dispatch and its own revision does not count, so what a person changed
+        // while it ran is the one thing left that no session has read.
+        RevisedSinceLastDraftSession = RevisedWhileRefinementRan;
         RevisedWhileRefinementRan = false;
-        RevisedSinceLastDraftSession = false;
     }
 
     public void Apply(WorkItemPublicationCompleted @event)

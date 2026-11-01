@@ -1367,6 +1367,11 @@ hold stands, its spend budget is spent, or the project's max parallel tasks is 0
 requests no challenge, and `h9k plan show` says which. The session's tokens are recorded under the model it ran on and
 appear in the spend lines of `h9k status` and `h9k config show`.
 
+A plan's refinement session and a draft challenge read the same checkout, the project home's own `dev/`, and the daemon brings
+it up to the remote base branch before a session starts. It does not do that while another session is reading it, because
+moving the tree would change what that session was told to test against: the later session is told the checkout was left
+where it stood and may be behind, and says so in its report.
+
 The child commands a plan runs, `h9k task revise` and `h9k task publish`, are run from the `h9k` installed at
 `~/.hall9k/bin`, then from the daemon's `PATH`, and never from the build in `src/Hall9k.Cli/bin`. To exercise a plan end to
 end from the development loop (`dotnet run --project src/Hall9k.AppHost`), install the build under test first with

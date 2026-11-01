@@ -42,46 +42,6 @@ public sealed class PlanAggregate
 
     public PlanDraftState? Draft(Guid draftId) => _drafts.FirstOrDefault(draft => draft.DraftId == draftId);
 
-    /// <summary>Folds any plan event, for a caller that holds an event as an object (the daemon's in-memory look-ahead).</summary>
-    public void ApplyEvent(object @event)
-    {
-        switch (@event)
-        {
-            case PlanStarted started:
-                Apply(started);
-                break;
-            case PlanRefinementDispatched dispatched:
-                Apply(dispatched);
-                break;
-            case PlanChallengeRequested requested:
-                Apply(requested);
-                break;
-            case PlanDraftMoved moved:
-                Apply(moved);
-                break;
-            case PlanParked parked:
-                Apply(parked);
-                break;
-            case PlanResumed resumed:
-                Apply(resumed);
-                break;
-            case PlanDraftPublished published:
-                Apply(published);
-                break;
-            case PlanDraftAbandoned abandoned:
-                Apply(abandoned);
-                break;
-            case PlanPublished ended:
-                Apply(ended);
-                break;
-            case PlanCancelled cancelled:
-                Apply(cancelled);
-                break;
-            default:
-                break;
-        }
-    }
-
     public void Apply(PlanStarted @event)
     {
         Id = @event.Id;

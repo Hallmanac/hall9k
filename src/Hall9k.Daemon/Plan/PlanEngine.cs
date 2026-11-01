@@ -63,6 +63,7 @@ public sealed class PlanEngine(
     IProcessManager processManager,
     IWorktreeManager worktrees,
     ProcessRunner processRunner,
+    ReadingCheckoutLeases checkoutLeases,
     IPlanTaskCommands commands,
     LaunchHoldEngine launchHold,
     DaemonConnection connection,
@@ -121,7 +122,8 @@ public sealed class PlanEngine(
     /// <summary>
     /// Called by the loop when the daemon is stopping: every running session is a detached process that would outlive
     /// the daemon, so each job is told to stop its session and record the outcome, and this waits a short while for them.
-    /// What does not land in time is recorded as failed by the next start.
+    /// What does not land in time is recorded as failed by the next start. It takes no <see cref="CancellationToken"/>: it
+    /// runs after the host's stopping token has fired, which is what called it, and <paramref name="wait"/> is its bound.
     /// </summary>
     public async Task StopAsync(TimeSpan wait)
     {
@@ -324,7 +326,9 @@ public sealed class PlanEngine(
         {
             switch (PlanDecider.NextStep(draft))
             {
-                case PlanStepKind.RequestChallenge:
+                // One at a time: a challenge the plan asked for and the challenge engine has not started would otherwise
+                // start after the plan parked on a sibling's outcome, and the plan decides again once the first lands.
+                case PlanStepKind.RequestChallenge when plan.Drafts.All(other => other.ChallengeRequestedAt is null):
                     return await RequestChallengeAsync(session, fence, plan, draft, project, now, cancellationToken);
                 case PlanStepKind.DispatchRefinement when _sessions.IsEmpty:
                     return await DispatchAsync(session, fence, plan, draft, project, cancellationToken);
@@ -527,95 +531,130 @@ public sealed class PlanEngine(
             return StepOutcome.Stepped;
         }
 
-        // Only the home's own dev/ is moved, the challenge engine's rule, and the outcome is carried into the prompt.
-        CheckoutRefresh? refresh = null;
-        if (ProjectCheckout.IsHomeDevWorktree(project, checkout))
+        // A verdict waiting to be applied judged the draft as it stood: a person's revision since then is text no challenge
+        // read, so applying the verdict to it would publish it unjudged. The plan parks as draft changed, and a resume
+        // challenges the draft as it now stands.
+        if (purpose == RefinementPurpose.ApplyVerdict && aggregate.RevisedSinceLastDraftSession)
         {
-            refresh = await worktrees.RefreshReadingCheckoutAsync(checkout, project.BaseBranch, cancellationToken);
-            logger.Log(
-                refresh.UpToDate
-                    ? LogLevel.Information
-                    : LogLevel.Warning,
-                "Refinement session for draft {TaskId} reads {Checkout}, which {Detail}", taskId, checkout, refresh.Detail);
+            logger.LogWarning(
+                "Plan {PlanId}: draft {DraftId} was revised after the verdict waiting to be applied; parking it", plan.Id, taskId);
+            return await SavePlanAsync(
+                session, planFence, PlanDecider.ParkReadyDraftChanged(plan, draft, DateTimeOffset.UtcNow), cancellationToken);
         }
 
-        string? commit = await HeadCommitAsync(checkout, cancellationToken);
-        TaskDetails current = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
-            ?? throw new InvalidOperationException($"Task {taskId} has a stream and no document.");
-
-        Guid sessionId = DomainId.New();
-        string sessionDirectory = RunPaths.GlobalDirectory(sessionId);
-        (string? ideaWorkspace, string? taskDirectory) = await DraftChallengeEngine.LocateDraftFilesAsync(
-            session, project, current, cancellationToken);
-        string? journal = taskDirectory is null
-            ? null
-            : DraftChallengeEngine.FindJournal(taskDirectory);
-        // Told to every session for a draft that has one: a plan started on a draft a person already challenged, or begun
-        // again after one that exhausted its rounds, dispatches a plain refine whose draft was judged before.
-        PriorVerdictFacts? prior = current.LatestChallengeVerdict is { SessionId: { } challengeSession } verdict
-                ? new PriorVerdictFacts(
-                    verdict.Verdict, verdict.MustCount, verdict.ShouldCount, verdict.ParkCount,
-                    RunPaths.ChallengeReportFile(challengeSession))
-                : null;
-        string reportPath = RunPaths.RefinementReportFile(sessionId);
-        string revisionPath = RunPaths.RefinementRevisionFile(sessionId);
-        string? projectHome = project.HomeDirectory.HasValue
-            ? project.HomeDirectory.Value
-            : null;
-        string? journalToWrite = journal
-            ?? (taskDirectory is null
-                ? null
-                : Path.Combine(taskDirectory, "journal.md"));
-        string prompt = AgentPromptBuilder.BuildPlanRefinement(
-            current, project,
-            new PlanRefinementPromptFacts(
-                purpose, projectHome, checkout, commit, refresh, reportPath, revisionPath, sessionDirectory, ideaWorkspace,
-                journal, journalToWrite, prior));
-
-        // Recorded before anything is spawned, RunLauncher's order, and on both streams in one save: committing first
-        // is what makes a crash lose too, and the plan never claims a session the task does not know about.
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        session.Events.Append(
-            taskId, expectedVersion: taskFence.Version + 1,
-            new DraftRefinementDispatched(taskId, sessionId, node.NodeId, now, model, effort, purpose));
-        session.Events.Append(
-            plan.Id, expectedVersion: planFence.Version + 1,
-            new PlanRefinementDispatched(plan.Id, plan.ProjectId, taskId, sessionId, purpose, now));
+        // Only the home's own dev/ is moved, the challenge engine's rule, and the outcome is carried into the prompt. The
+        // lease is held until the session has ended: a challenge reads the same checkout on a loop of its own, and neither
+        // moves the tree under the other's session (a checkout someone else is reading is left where it stands, and the
+        // prompt says so).
+        ReadingCheckoutJoin join = await checkoutLeases.JoinAsync(
+            checkout,
+            ProjectCheckout.IsHomeDevWorktree(project, checkout)
+                ? () => worktrees.RefreshReadingCheckoutAsync(checkout, project.BaseBranch, cancellationToken)
+                : null,
+            cancellationToken);
+        bool handedToJob = false;
         try
         {
-            await session.SaveChangesAsync(cancellationToken);
-        }
-        catch (EventStreamUnexpectedMaxEventIdException)
-        {
-            logger.LogDebug("Draft {TaskId} or its plan advanced while its refinement was being dispatched; leaving it", taskId);
-            return StepOutcome.Nothing;
-        }
-
-        RefinementJob job = new(
-            plan.Id, taskId, sessionId, purpose, checkout, sessionDirectory, reportPath, revisionPath, prompt, model, effort);
-        CancellationTokenSource cancel = new();
-        TaskCompletionSource finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        _sessions[sessionId] = new RunningSession(plan.Id, taskId, cancel, finished);
-
-        // Registered before the task starts and removed only by its own last act, so a sweep that runs while the
-        // session is live never mistakes it for one a restart left behind.
-        _ = Task.Run(
-            async () =>
+            CheckoutRefresh? refresh = join.Refresh;
+            if (refresh is not null)
             {
-                try
+                logger.Log(
+                    refresh.UpToDate
+                        ? LogLevel.Information
+                        : LogLevel.Warning,
+                    "Refinement session for draft {TaskId} reads {Checkout}, which {Detail}", taskId, checkout, refresh.Detail);
+            }
+
+            string? commit = await HeadCommitAsync(checkout, cancellationToken);
+            TaskDetails current = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
+                ?? throw new InvalidOperationException($"Task {taskId} has a stream and no document.");
+
+            Guid sessionId = DomainId.New();
+            string sessionDirectory = RunPaths.GlobalDirectory(sessionId);
+            (string? ideaWorkspace, string? taskDirectory) = await DraftChallengeEngine.LocateDraftFilesAsync(
+                session, project, current, cancellationToken);
+            string? journal = taskDirectory is null
+                ? null
+                : DraftChallengeEngine.FindJournal(taskDirectory);
+            // Told to every session for a draft that has one: a plan started on a draft a person already challenged, or begun
+            // again after one that exhausted its rounds, dispatches a plain refine whose draft was judged before. The report
+            // is only on the node that ran the challenge, so a verdict that replicated from another names no path here.
+            PriorVerdictFacts? prior = current.LatestChallengeVerdict is { } verdict
+                ? new PriorVerdictFacts(
+                    verdict.Verdict, verdict.MustCount, verdict.ShouldCount, verdict.ParkCount,
+                    verdict is { SessionId: { } challengeSession } && verdict.NodeId == node.NodeId
+                        ? RunPaths.ChallengeReportFile(challengeSession)
+                        : null)
+                : null;
+            string reportPath = RunPaths.RefinementReportFile(sessionId);
+            string revisionPath = RunPaths.RefinementRevisionFile(sessionId);
+            string? projectHome = project.HomeDirectory.HasValue
+                ? project.HomeDirectory.Value
+                : null;
+            string? journalToWrite = journal
+                ?? (taskDirectory is null
+                    ? null
+                    : Path.Combine(taskDirectory, "journal.md"));
+            string prompt = AgentPromptBuilder.BuildPlanRefinement(
+                current, project,
+                new PlanRefinementPromptFacts(
+                    purpose, projectHome, checkout, commit, refresh, reportPath, revisionPath, sessionDirectory, ideaWorkspace,
+                    journal, journalToWrite, prior));
+
+            // Recorded before anything is spawned, RunLauncher's order, and on both streams in one save: committing first
+            // is what makes a crash lose too, and the plan never claims a session the task does not know about.
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            session.Events.Append(
+                taskId, expectedVersion: taskFence.Version + 1,
+                new DraftRefinementDispatched(taskId, sessionId, node.NodeId, now, model, effort, purpose));
+            session.Events.Append(
+                plan.Id, expectedVersion: planFence.Version + 1,
+                new PlanRefinementDispatched(plan.Id, plan.ProjectId, taskId, sessionId, purpose, now));
+            try
+            {
+                await session.SaveChangesAsync(cancellationToken);
+            }
+            catch (EventStreamUnexpectedMaxEventIdException)
+            {
+                logger.LogDebug("Draft {TaskId} or its plan advanced while its refinement was being dispatched; leaving it", taskId);
+                return StepOutcome.Nothing;
+            }
+
+            RefinementJob job = new(
+                plan.Id, taskId, sessionId, purpose, checkout, sessionDirectory, reportPath, revisionPath, prompt, model, effort);
+            CancellationTokenSource cancel = new();
+            TaskCompletionSource finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _sessions[sessionId] = new RunningSession(plan.Id, taskId, cancel, finished);
+            handedToJob = true;
+
+            // Registered before the task starts and removed only by its own last act, so a sweep that runs while the
+            // session is live never mistakes it for one a restart left behind.
+            _ = Task.Run(
+                async () =>
                 {
-                    await RunJobAsync(job, cancel, _stopping.Token);
-                }
-                finally
-                {
-                    _sessions.TryRemove(sessionId, out _);
-                    cancel.Dispose();
-                    finished.SetResult();
-                    OnWork?.Invoke();
-                }
-            },
-            CancellationToken.None);
-        return StepOutcome.Dispatched;
+                    try
+                    {
+                        await RunJobAsync(job, cancel, _stopping.Token);
+                    }
+                    finally
+                    {
+                        join.Lease.Dispose();
+                        _sessions.TryRemove(sessionId, out _);
+                        cancel.Dispose();
+                        finished.SetResult();
+                        OnWork?.Invoke();
+                    }
+                },
+                CancellationToken.None);
+            return StepOutcome.Dispatched;
+        }
+        finally
+        {
+            if (!handedToJob)
+            {
+                join.Lease.Dispose();
+            }
+        }
     }
 
     private async Task RunJobAsync(RefinementJob job, CancellationTokenSource cancel, CancellationToken stopping)
@@ -631,7 +670,9 @@ public sealed class PlanEngine(
         catch (Exception exception)
         {
             logger.LogError(exception, "Draft {TaskId}: the refinement session failed before an outcome could be recorded", job.TaskId);
-            await RecordEndQuietlyAsync(job, RefinementOutcome.Unknown, RefinementFailureReason.SessionError, null);
+            // Recorded with no token of its own on purpose: this is the last act of a job that has already failed, and a
+            // cancelled daemon is exactly when the outcome most needs to land.
+            await RecordEndQuietlyAsync(job, RefinementOutcome.Unknown, RefinementFailureReason.SessionError, null, CancellationToken.None);
         }
     }
 
@@ -817,13 +858,22 @@ public sealed class PlanEngine(
             }
         }
 
+        // The check above only spares a child that would refuse. The child makes the real one: told which session it acts
+        // for, it applies the revision only if nobody revised the draft since that session was dispatched, in the same
+        // fenced append, and records it as the session's own. A person's revise cannot slip between the two.
         TaskCommandResult result = await commands.ReviseAsync(job.PlanId, job.SessionId, job.TaskId, job.RevisionPath, cancellationToken);
         if (!result.Succeeded)
         {
             logger.LogWarning(
                 "Draft {TaskId}: applying the revision was refused (exit {ExitCode}, timed out {TimedOut}); its output is in {Output}",
                 job.TaskId, result.ExitCode, result.TimedOut, result.OutputFile);
-            return RefinementFailureReason.RevisionRefused;
+
+            // A child that refused because the draft changed under it left the record saying so; any other refusal did not.
+            await using IQuerySession after = store.QuerySession();
+            TaskDetails? latest = await after.LoadAsync<TaskDetails>(job.TaskId, cancellationToken);
+            return latest is { RevisedWhileRefinementRan: true }
+                ? RefinementFailureReason.DraftChanged
+                : RefinementFailureReason.RevisionRefused;
         }
 
         return null;
@@ -851,11 +901,12 @@ public sealed class PlanEngine(
         new(job.TaskId, job.SessionId, job.Purpose, job.Model, job.Effort, outcome, failure, result);
 
     private async Task RecordEndQuietlyAsync(
-        RefinementJob job, RefinementOutcome outcome, RefinementFailureReason failure, AgentResult? result)
+        RefinementJob job, RefinementOutcome outcome, RefinementFailureReason failure, AgentResult? result,
+        CancellationToken cancellationToken)
     {
         try
         {
-            await RecordEndAsync(EndOf(job, outcome, failure, result), CancellationToken.None);
+            await RecordEndAsync(EndOf(job, outcome, failure, result), cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
