@@ -662,6 +662,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             }
         }
 
+        if (details.NotePromotion is { } notePromotion)
+        {
+            AnsiConsole.MarkupLine($"\n[bold]Note promotion[/] [dim](the small closeout session that decides whether one of this task's notes becomes a lesson)[/]");
+            foreach (string line in NotePromotionLines(notePromotion))
+            {
+                AnsiConsole.MarkupLine(line.EscapeMarkup());
+            }
+        }
+
         if (details.PendingTakeRequestedAt is { } pendingAt)
         {
             // idea 202383dc, item 5: a cooperative take request nothing has answered yet — either
@@ -3173,6 +3182,28 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             $"  Picked ({pick.PickedLessonIds.Count}): {Ids(pick.PickedLessonIds)}",
             $"  Newest-first would have carried ({pick.NewestFirstLessonIds.Count}): {Ids(pick.NewestFirstLessonIds)}",
             $"  Model {pick.Model.Value}, took {pick.Duration.TotalSeconds.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)}s",
+        ];
+    }
+
+    /// <summary>
+    /// The lines <c>h9k task show</c> prints for a task's note promotion: the outcome, how many notes
+    /// were kept and dropped, how many the trust rule held out, how many answer lines were ignored, the
+    /// model and how long the session took. Everything printed is a count, an id or a closed-vocabulary
+    /// word: the record holds no note text and nothing the session wrote, and the notes themselves are
+    /// read with <c>h9k task notes</c> by a person.
+    /// </summary>
+    internal static IReadOnlyList<string> NotePromotionLines(NotePromotionRecorded promotion)
+    {
+        string kept = promotion.Decisions
+            .Where(decision => decision.LessonId is not null)
+            .Select(decision => $"note {DomainId.Short(decision.NoteId)} became lesson {DomainId.Short(decision.LessonId.GetValueOrDefault())}")
+            .FirstOrDefault() ?? "none";
+        return
+        [
+            $"  Outcome {promotion.Outcome.Value}, run {DomainId.Short(promotion.RunId)}, recorded {promotion.RecordedAt.ToLocalTime():g}",
+            $"  Notes decided {promotion.Decisions.Count}: kept {promotion.KeptCount}, dropped {promotion.DroppedCount}; held out by the trust rule {promotion.HeldCount}; answer lines ignored {promotion.IgnoredLineCount}",
+            $"  Kept: {kept}",
+            $"  Model {promotion.Model.Value}, took {promotion.Duration.TotalSeconds.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)}s",
         ];
     }
 

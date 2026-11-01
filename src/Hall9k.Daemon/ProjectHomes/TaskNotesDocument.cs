@@ -46,7 +46,8 @@ public static class TaskNotesDocument
         document.AppendLine(
             $"{views.Count} note{(views.Count == 1 ? string.Empty : "s")}, newest first. A note marked HELD is kept "
             + "out of every session's prompt by the trust rule lessons use, and is shown here so a person can "
-            + "judge it.");
+            + "judge it. Each note's outcome says what the closeout promotion step made of it: kept as a lesson, "
+            + "dropped with its reason, held, or undecided when no step decided it.");
 
         foreach (TaskNoteView view in views)
         {
@@ -62,7 +63,7 @@ public static class TaskNotesDocument
             document.AppendLine();
             document.AppendLine(
                 $"- id: {note.NoteId}\n- author: {RelayedText.OneLine(author(view.Entry))}\n- session: {session}\n"
-                + $"- source: {note.Source.Label}\n- provenance: {view.Mark.Label}");
+                + $"- source: {note.Source.Label}\n- provenance: {view.Mark.Label}\n- outcome: {view.OutcomeLabel}");
         }
 
         return document.ToString();
