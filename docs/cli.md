@@ -51,7 +51,7 @@ One line per branch. Ask `--help` for the rest.
 | `h9k status` | The attention pane: what needs you, what has gone quiet, what is running. Bounded on purpose. Beneath the spend lines it prints a throughput block for the current spend period — tasks merged, median and p90 claim-to-merge, first-pass merge share, laps per merged task, and the share of task time spent queued or waiting on a human — so speed and efficiency read in the same glance as cost. Under five merged tasks it prints the count and says there are too few to summarize rather than a median of two. The same block says who ran the period's phases: the share of build, gate, review-cycle, pull-request-open and closeout phases that a person ran by hand, that were delegated to an agent, that ran automatically, or that an override skipped, counted against the period's total phase count rather than averaged from each task's own percentage. When more than one owner held claims in the period it adds a line for your own phases, keyed by this node's owner root, and it never prints another owner's figures; your line holds back its shares under five merged tasks of yours, as the block does. Each queued row also says how long it has waited for its present slot, and the queued section's own heading carries the period's total queue time. It shows your own work: a task is yours when this node's owner root may act on it, by the same rule the task commands refuse another owner's task with, or when it is waiting on a take you asked for. A teammate's task, and one whose owner root this node cannot resolve, is counted in no band, and the header says once how many rows it is holding back; `--everyone` lists them as a Teammates band of their own, naming each owner and showing only the state and the objective, never a cause, phase or next step written in the owner's voice. A review request or mention row names its covering task only when that task is yours. When your own entry in a project's member labels has neither a display name nor a declared login, and the project has another member, it prints one line saying teammates see you as a fingerprint and naming `h9k owner set --display-name`. |
 | `h9k task show <id>` | One task in full: contract, dependencies, external reference, conversation, its own passage in time (how long it queued, built, sat in gates, cycled through review, waited on a human, and waited for its merge, plus lap, cycle, and session counts), one row saying who ran each phase (by hand, delegated to an agent, automatic, or skipped by an override, with consecutive phases of one class read together, for example "Build and gates by hand; review cycles 1 and 2 automatic; PR opened by hand (skip to PR); closeout automatic after pr resolve"; a hand fix inside an automatic review cycle and a hand-off back to the platform are named, and a pr-review task gets no such row), every run and its outcome, each run's own gate wall-clock durations, a flag when one materially exceeds the project's recent recorded average for that gate, and each run's own worktree path, branch and live agent sessions, and the task's lesson pick when it has one (the mode, the outcome, the lessons picked and the ones newest-first would have carried, how many were eligible, how many ids the answer named that stood for nothing, the model, and how long the session took). The second command of any investigation. A teammate's task is shown as theirs: it names its owner and carries its state, objective, acceptance criteria, dependencies and runs, but no cause, phase or next step, which are the owner's to read |
 | `h9k task next <id>` | Where one task stands, who moves next (you, the platform, a running agent, or GitHub), and the exact command or commands that move it, computed from the platform's own records with no agent call. It is read-only and prints plain text. It composes the row `h9k status` shows, so the lever on a needs-you row is the same text on both screens, and it prints the next step `h9k task show` prints for a task that has not run yet, including the three exits from Failed. For a run in the review loop it names the next review step; at an interactive park it lists that boundary's choices; for a task whose pull request is open it states the run state closeout last recorded, with the threads, checks, or conflict that state carries, and when it was recorded (closeout records a change, not every poll). A teammate's task names its owner and no command. A session started by `h9k task drive` runs it before every move |
-| `h9k logs <id>` | A run's transcript, rendered from its stream-json (`--raw` for the stream-json itself, and `--run <run-id>` for an earlier run than the task's latest). The log dive `h9k status` is meant to save you. |
+| `h9k logs <id>` | A run's transcript, rendered from its stream-json (`--raw` for the stream-json itself, and `--run <run-id>` for an earlier run than the task's latest). The log dive `h9k status` is meant to save you. A person's command: it is refused inside any dispatched session, review or not, because a session's transcript can carry task notes (see [Task notes](#task-notes)). |
 
 ### Ideas: capture and discovery
 
@@ -200,7 +200,7 @@ whose active lessons have passed the count cap.
 
 ### Tasks: development and dispatch
 
-`h9k task add | revise | set-session-cap | set-review-caps | set-pre-approved | publish | assign | queue | unassign | dequeue | draft | list | show | pull | log-interaction | scope | share | set-private | handoff | take | grant | refuse | run-local`
+`h9k task add | revise | set-session-cap | set-review-caps | set-pre-approved | publish | assign | queue | unassign | dequeue | draft | list | show | pull | log-interaction | note | notes | scope | share | set-private | handoff | take | grant | refuse | run-local`
 
 `add` creates a Draft. `revise` is Draft-only, with a few exceptions, the main one being `--queue-first`/
 `--clear-queue-first` sets or clears a task-level scheduling marker — the next free dispatch slot
@@ -1171,6 +1171,31 @@ its outcome, so the record says so plainly rather than letting a human's own cal
 agent's independent decision. Unlike `write-jira` or `link-issue`, this is not an observation gate:
 there is nothing external here to verify the claim against, so the platform records only what its
 own channels can see, honestly — best-effort by construction, not enforcement.
+
+### Task notes
+
+`h9k task note <task> "<text>"` · `h9k task notes <task>`
+
+Task notes are short notes that a task's working sessions leave each other (see
+[concepts.md](concepts.md#task-notes) for what they are and what they are not). `note` records one
+on the task's own stream and prints its id. It works from a plain terminal, an attended session and
+a dispatched session, on a task in any state. Blank text, or text over 1,000 characters, is refused
+naming the limit, and nothing is recorded. Inside a dispatched session it works on that session's
+own task only; on any other task it is refused, naming both tasks. A note is permanent and public
+(it lives in the project's shared ledger), so it never holds secrets, credentials, personal data,
+customer details, or another project's name. A claim meant to outlive the task belongs to
+`h9k learn` instead.
+
+`notes` is for a person. It prints the task's notes newest first, each with its id, time, author,
+session, source (the verb, or a session's closing block) and provenance mark, and then the notes of
+the other tasks in its epic in the same project. A note that the trust rule holds out of prompts is
+still shown here, marked HELD, and control characters in a note act on no terminal. `notes` is
+refused inside any dispatched session, review or not, as `h9k logs` is, with a message saying that a
+session receives notes through its prompt; a plain terminal and an attended session are unaffected.
+`h9k task show`, `task next`, `task list`, `status`, `epic show` and `orchestrator feed` print no
+note text. The daemon also records a note for each bullet in the closing block a build, follow-up or
+fix session may end its final message with, and the prompts that carry notes are bounded by caps
+that are constants rather than `h9k config` settings.
 
 ### Messages: node-to-node notes
 
