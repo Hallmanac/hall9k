@@ -413,6 +413,70 @@ write its report and nothing else, and its verdict must mark any claim it could 
 it runs on Opus 5.5 at high effort on any node, whatever the node's default model, node-wide effort, or role
 settings for other sessions say.
 
+**A plan carries drafts to Published.** `h9k plan start <draft> [<draft>...]` records a plan on a stream of its own and
+returns without waiting; the daemon on the node where you ran it drives the plan, and a plan started while the daemon is
+stopped waits for it (`h9k plan show` says so). Every draft starts at refinement, or at challenge with `--at challenge`,
+which is refused for a draft with no acceptance criteria; discovery and drafting are not offered. A plan holds ids,
+phases, rounds, and closed outcomes and no prose, not even a title, and none of its records leaves the node, so no
+other node starts a session for it and a plan record arriving by replication starts nothing. It creates no run, lease,
+branch, or worktree. The loop is the daemon's: one refinement session per draft (a headless session that tests the draft's
+claims against the commit the checkout is at, states the shape before any criterion, writes criteria someone else can
+check, proposes the smallest change, and keeps security detail out of the task text) writes a report and, when it
+revises, a revision file beside it; the daemon applies the revision with the same validation and effects as
+`h9k task revise --file` by running the installed `h9k` as a child process, and only if nobody else changed the draft
+after dispatch and the file names no model. Then the same challenge `h9k task challenge` runs, requested by the plan.
+`publish as written` makes the draft ready; `publish as revised` gets one refinement session told to apply the verdict's
+must and should changes, after which the draft is ready with no further challenge, and a session that changed nothing
+parks the plan; `do not publish` gets a session told to answer the verdict and then a new challenge; a park change
+drives nothing. A round is one challenge of one draft, and a plan runs at most two per draft. The cap is the daemon option
+`PlanRoundCap` and has no node, project, or task setting, because only a person's `h9k plan resume` or a new plan
+grants more; a `do not publish` on the last round parks the plan rather than starting another. When every draft is
+ready the daemon publishes each with the behaviour of `h9k task publish --no-queue`, so the challenge gate, the tracker
+item, and the ledger record happen as they do by hand, with the person who started the plan recorded as the publisher; the
+plan grants no pre-approval, assigns nothing, and queues nothing, and it ends Published when its last draft does.
+
+`h9k plan start` is refused, with the reason and before any session starts, for anyone who may not publish every draft
+it names, and for a draft that is not a Draft, is a pr-review task or a spike, is in a live plan on this node, has a
+refinement or challenge requested or running (a session another node dispatched stops counting once it has stood
+past the foreign-session ceiling with no outcome), or belongs to a different project from the others named. It is
+refused for a project that is archived, has no working checkout, or does not run agents with skip-permissions, because the
+session writes its report, a revision, and the draft's `journal.md` outside its checkout. It is refused for a draft
+whose context still carries an adopted item's quoted description or the notice that its idea's workspace holds a tracker
+item, because refinement would rewrite a stranger's words into the task's own context and a build would then take them as
+the owner's: replace the context in your own words with `h9k task revise --context` and read the objective as well, and a
+draft whose context a person has replaced starts normally. On a project whose publish would ask for a tracker attestation
+it is refused unless it carries `--no-existing-item` or `--untracked` (which mean what they mean on `h9k task publish`, are
+refused where that command would refuse them, are recorded on the plan with who gave them, and are what the plan's
+publish passes on) or every draft is already linked.
+
+A plan parks for a person for one reason from a closed list, and says which draft: `rounds exhausted`, `question` (the
+session ended with a question only a person can settle, written in the draft's `journal.md`), `verdict not applied`,
+`draft changed`, `revision refused`, `session failed`, `challenge failed`, or `publish refused`. While a plan is parked
+no new session starts for any of its drafts, and a session already running finishes. `h9k plan show <plan>` prints the
+plan's state and, for each draft, its phase (refinement, challenge, or published), its round, its latest outcome, and where
+its latest report is, and for a park the reason, the way forward, and where to read the rest, because the record holds
+nothing a session wrote. `h9k plan resume <plan>` re-runs the step that parked, and after `rounds exhausted` grants one more
+round. Publishing or abandoning a parked draft by hand answers its park, so the plan carries on with no resume.
+`h9k plan cancel <plan> --reason "<why>"` ends a live plan, stops its refinement session without applying anything, and leaves
+its drafts as Drafts, free for another plan; a plan whose drafts have all been abandoned ends cancelled on its own. A
+published draft that has no tracker item and none on its way, on a project that tracks a backlog, and that was not
+published untracked is named by `h9k plan show` and by the plan's end item.
+
+A node runs one refinement session at a time, oldest plan first, on a loop of its own, so a long session holds up
+neither task dispatch, a challenge, nor another plan's next step. **A plan's sessions hold no slot against the node's run
+ceiling or the project's**, since a plan has no run or lease to count; with a challenge that is at most two sessions above
+the ceiling, and `PlanRefinementTimeout` (thirty minutes) bounds each. While the node's launch hold stands, its spend
+budget is spent, or the project's max parallel tasks is 0, a plan starts no refinement session and requests no challenge, and
+`h9k plan show` says which. A session running when the daemon restarts is stopped and recorded as failed on the next start and never
+re-dispatched. The model is the project's `--model`, then `--model-refinement`, then the node's default, and the effort follows
+the same chain through the project's `--effort`, `--effort-refinement`, and the node-wide `--effort`; a draft's own model or effort
+does not move it. The session's tokens land in the spend lines of `h9k status` and `h9k config show` under the model it ran
+on, and `h9k task show` counts the session. `h9k task show` names the live plan a draft is in and its phase, and wherever
+`h9k task revise` or `h9k task show` prints that draft's `Next:` line, it points at `h9k plan show`. `h9k status` lists a parked
+plan under Needs you with its reason and `h9k plan resume`; a park reaches the project's orchestrator feed at the level a review
+park does, a plan's end arrives as an ordinary item, and a phase move does not arrive at all. A dispatched session may run
+`h9k plan show` and `h9k plan list` and is refused the rest.
+
 **The publish gate asks for a verdict.** With the requirement on (`h9k project set <name> --require-challenge
 on|off`, which reads on for every project that recorded no value, and which `h9k project show` prints with whether
 it is the default), `h9k task publish` refuses a Draft whose latest verdict is missing, is `do not publish`, or is
@@ -432,6 +496,11 @@ Smaller flags on the same commands:
 | Command | What it is for |
 |---|---|
 | `h9k task challenge <id>` | Asks the daemon on this node for one independent challenge of a Draft, as above, and returns without waiting. |
+| `h9k plan start <draft> [<draft>...]` | Hands drafts of one project to the daemon on this node to carry through refinement and challenge to Published, as above. Takes `--at challenge`, `--no-existing-item`, and `--untracked`, and returns without waiting. |
+| `h9k plan show <plan>` | Prints a plan's state and each draft's phase, round, latest outcome, and report path; a park's reason, way forward, and where to read the rest. |
+| `h9k plan list [--project <p>] [--all]` | Lists the plans on this node, live ones by default. |
+| `h9k plan resume <plan>` | Re-runs the step that parked, and after `rounds exhausted` grants one more round. |
+| `h9k plan cancel <plan> --reason "<why>"` | Ends a live plan, stops its session without applying anything, and leaves its drafts as Drafts. |
 | `h9k task publish --skip-challenge "<reason>"` | Publishes past the challenge gate by stating why, recorded with who gave it; a blank reason is refused. |
 | `h9k task add --context "<text>"` | Sets the agent-facing context, meaning the pointers, constraints, and boundaries the session reads, and `h9k task revise --context` replaces it. |
 | `h9k task revise --effort <low\|medium\|high\|xhigh>` | Sets this Draft's own reasoning effort, the most specific level of the chain (task, then project, then the node's value for the session's role, then the node-wide value, then the model's own default), with `default` clearing it. It is stored on the task like its model, so it travels with the task and wins on every node. `h9k task show` prints it when set. |
@@ -2357,7 +2426,7 @@ environment variable that outranks it, and the default for every one of them.
 | `h9k config set --model-review-finalpass <model>` | Sets a narrower override for the mandatory final full pass, which falls through to `--model-review` when unset. |
 | `h9k config set --model-fix <model>` | Sets this node's model for the Fix role, the session that applies review findings. |
 | `h9k config set --model-synthesis <model>` | Sets this node's model for condensing a fan-in of blocker handoffs. |
-| `h9k config set --model-refinement <model>` | Sets this node's model for the future draft-refinement role, which is configurable before it exists. |
+| `h9k config set --model-refinement <model>` | Sets this node's model for the Refinement role, the session a plan (`h9k plan start`) dispatches to refine a draft. It sits above the node's default model and below a project's `--model`, and a draft's own model does not move it. `--effort-refinement` follows the same chain through the project's `--effort` and the node-wide `--effort`. |
 | `h9k config set --model-publication <model>` | Sets this node's model for writing a task up as an external tracker card. |
 | `h9k config set --model-courier <model>` | Sets this node's model for the feed courier, where `default` does not clear to the platform default because the courier's own floor is `claude-sonnet-5-5`. It also sets the model the lesson picker runs on, which resolves as the courier does. |
 | `h9k config set --model-challenge <model>` | Sets this node's model for the Challenge role, the session `h9k task challenge` runs on a draft. `default` does not clear to the platform default: the role's own floor is `claude-opus-5-5[1m]`, whatever `--default-model` says, and a draft's own model does not move it. `--effort-challenge` has a floor of `high` the same way, skipping the node-wide `--effort`. `h9k config show` prints the value in force and where it came from. |

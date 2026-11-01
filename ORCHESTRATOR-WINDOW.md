@@ -45,6 +45,31 @@ h9k task publish <id> --queue                                       # the gate, 
 Publishing is refused for a draft with no usable challenge verdict (a project can turn the requirement off with
 `h9k project set <name> --require-challenge off`, and a publisher can state a reason with `--skip-challenge "<why>"`).
 
+A draft that needs refining before it is challenged, or several of them, goes to the daemon as a **plan**:
+
+```bash
+h9k plan start <draft> [<draft>...]                                 # the daemon refines, challenges, applies, and publishes; returns at once
+h9k plan show <plan>                                                # where each draft stands, and where its reports are
+h9k plan resume <plan>                                              # answer a park: re-runs the step that parked
+```
+
+`h9k plan start` replaces the headless refinement session this window used to spawn and the challenge-then-publish steps
+it ran by hand: one refinement session per draft, then the same independent challenge, then the changes the verdict
+accepts, then the publish, under a cap of two challenge rounds per draft. It publishes with `h9k task publish --no-queue`,
+so assigning and queueing stay yours. It is refused before any session starts for a draft that is not a plain Draft, is
+in a live plan, or whose context still quotes an adopted item (read it into the task's own words with `h9k task revise
+--context`, and read the objective too), and on a project whose publish asks for a tracker attestation you give
+`--no-existing-item` or `--untracked` once, at start. Do not poll it: the project's feed delivers a plan's end as an
+ordinary item and a **park** as an urgent one, carrying only ids and the reason (rounds exhausted, question, verdict not
+applied, draft changed, revision refused, session failed, challenge failed, or publish refused), and a phase move does not
+arrive at all. Answer a park by reading `h9k plan show <plan>`, which prints where the session's report and the draft's
+`journal.md` are, and then either `h9k plan resume <plan>` (after `rounds exhausted` it grants one more round), or by
+hand: publishing or abandoning the parked draft answers its park and the plan carries on with no resume. A refinement that
+believes a draft should split ends with the question outcome; answer it by cancelling the plan (`h9k plan cancel <plan>
+--reason "<why>"`, which leaves the drafts as Drafts) and starting a plan on the resulting drafts. Refinement with the
+operator in the terminal is still `recipes/task-refinement.md`, and its rule that publishing waits for the operator to
+walk the criteria does not apply to a draft in a plan.
+
 Three things are outside the law, because they are not platform features:
 
 - **The planning docs.** Amending SLICE-1.md or PLAN.md: this is the window's own work product,

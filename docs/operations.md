@@ -1048,6 +1048,10 @@ Which model runs what is explained in [Which model runs what](#which-model-runs-
 | `Hall9k__ModelByRole__Challenge` | blank | The node's model for the draft challenge (`--model-challenge`). Blank does not mean the platform default: a challenge's own floor is `claude-opus-5-5[1m]`, whatever `Hall9k__DefaultModel` says, so it runs on the same model on any node. |
 | `Hall9k__ChallengeTimeout` | `00:30:00` | How long a challenge session gets before the daemon terminates it and records the challenge as failed. |
 | `Hall9k__ChallengePollInterval` | `00:00:30` | How often the daemon looks for challenge requests; the doorbell usually gets there first. |
+| `Hall9k__PlanRefinementTimeout` | `00:30:00` | How long a plan's refinement session (`h9k plan start`) gets before the daemon terminates it, records the failure, and parks the plan. |
+| `Hall9k__PlanRoundCap` | `2` | How many challenge rounds a plan runs for one draft, where a round is one challenge of one draft. There is no node, project, or task setting: only `h9k plan resume` after rounds exhausted, or a new plan, grants more. |
+| `Hall9k__PlanCommandTimeout` | `00:05:00` | How long one child `h9k` command a plan runs (the revise that applies a revision, the publish at the plan's end) gets before it is killed and counted as a refusal. |
+| `Hall9k__PlanPollInterval` | `00:00:30` | How often the daemon looks at its plans; the doorbell usually gets there first. |
 | `Hall9k__ModelByRole__Courier` | blank | The node's model for the feed courier (`--model-courier`), which is also the model the lesson picker runs on. Blank does not mean the platform default: a courier's own floor is `claude-sonnet-5-5`. |
 | `Hall9k__ModelByRole__SecurityPreflight` | blank | The node's model for the pull-request review pre-flight (idea 6be68ee2, finding 1, phase one), the short, no-checkout security lap every pr-review dispatch now runs first, before any worktree is cut, over the pull request's own changed-file list and diff hunks read through `gh` (`--model-security-preflight`). Blank does not mean the platform default: the pre-flight's own floor is `claude-opus-5-5`, since it reads attacker-written text ahead of any worktree or permission scoping to a real checkout. |
 
@@ -1157,7 +1161,7 @@ h9k config set --effort-build xhigh --effort-review high    # per-role effort, a
 h9k config set --effort-review-verify medium                # Verify-shape passes only; defaults to --effort-review
 h9k config set --model-review sonnet --model-fix haiku      # per-role model overrides
 h9k config set --model-build sonnet --model-synthesis haiku # the build session, and the blocker-handoff condenser
-h9k config set --model-refinement haiku --model-publication haiku   # the draft-refinement and tracker-card sessions
+h9k config set --model-refinement haiku --model-publication haiku   # a plan's refinement sessions, and the tracker-card sessions
 h9k config set --model-review-verify sonnet                 # Verify-shape passes only; defaults to --model-review
 h9k config set --model-review-finalpass sonnet              # the mandatory FinalFullPass only; defaults to --model-review
 h9k config set --model-challenge claude-opus-5-5          # the draft challenge; 'default' returns it to its claude-opus-5-5[1m] floor
@@ -1310,7 +1314,7 @@ Hall9k runs two kinds of session on a model, and each has its own chain that you
 touching the other.
 
 **Agent sessions** are everything the daemon spawns: the build, review, fix, synthesis,
-refinement, publication, and courier sessions. Each resolves its model at dispatch, most specific
+refinement (a plan's, from `h9k plan start`), publication, and courier sessions. Each resolves its model at dispatch, most specific
 first, and the resolved value is recorded on the dispatch event as an observed fact of the run:
 
 1. The task's own override (`h9k task add --model`, `h9k task revise --model`).
@@ -1350,6 +1354,18 @@ node-wide effort, or other roles' settings say. The Refinement role is deliberat
 refinement falls through to the node default and the rule would not hold on a node with a cheaper one.
 `--model-challenge default` leaves the role on that floor. A challenge holds no run slot: the node runs one at a
 time above its run ceiling, and `ChallengeTimeout` bounds each.
+
+A plan's refinement session (`h9k plan start`) uses the Refinement role as it stands, with no floor of its own: its model
+is the project's `--model`, then the node's `--model-refinement`, then the node's `--default-model`, and its effort
+follows the same chain through the project's `--effort`, `--effort-refinement`, and the node-wide `--effort`. A draft's
+own model or effort does not move it. On a node whose role values are blank the session therefore runs on whatever the
+node's default is, so set `--model-refinement` and `--effort-refinement` before the first plan if you want it on a
+particular tier. A plan's sessions hold no slot against the node's run ceiling or the project's, because a plan has no
+run or lease to count: the node runs one refinement session at a time on a loop of its own, bounded by
+`PlanRefinementTimeout`, so with a challenge at most two such sessions run above the ceiling. While the node's launch
+hold stands, its spend budget is spent, or the project's max parallel tasks is 0, a plan starts no refinement session and
+requests no challenge, and `h9k plan show` says which. The session's tokens are recorded under the model it ran on and
+appear in the spend lines of `h9k status` and `h9k config show`.
 
 The lesson picker has no role of its own. It resolves its model and effort exactly as the courier
 does for the same project and node, so `--model-courier` and `--effort-courier` move it too, and a
