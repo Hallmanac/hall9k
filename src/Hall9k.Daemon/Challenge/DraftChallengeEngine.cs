@@ -184,8 +184,9 @@ public sealed class DraftChallengeEngine(
                 }
 
                 logger.LogWarning(
-                    "Task {TaskId}: challenge session {SessionId} was dispatched by this node and nothing is running it; recording it as failed",
+                    "Task {TaskId}: challenge session {SessionId} was dispatched by this node and nothing is watching it; stopping it and recording it as failed",
                     task.Id, sessionId);
+                await TerminateLeftBehindAsync(task.Id, sessionId, cancellationToken);
                 await RecordAsync(
                     task.Id, sessionId, node.NodeId, null, ChallengeFailureReason.DaemonRestarted,
                     task.RunningChallengeModel, task.RunningChallengeEffort, null, cancellationToken);
@@ -358,6 +359,8 @@ public sealed class DraftChallengeEngine(
                     ExtraReadRoots = skipPermissions
                         ? []
                         : extraReadRoots,
+                    // The report is the only write the session may make.
+                    AllowMentionAnswer = false,
                 },
                 cancellationToken);
         }
@@ -369,6 +372,8 @@ public sealed class DraftChallengeEngine(
                 cancellationToken);
             return Attempt.SessionFailed;
         }
+
+        await RecordProcessIdentityAsync(taskId, sessionId, agent, cancellationToken);
 
         logger.LogInformation(
             "Task {TaskId}: challenge session {SessionId} dispatched (pid {ProcessId}, model {Model}, artifacts in {Directory})",
@@ -575,6 +580,60 @@ public sealed class DraftChallengeEngine(
             Path.Combine(taskDirectory, "journal.md"),
             Path.Combine(ProjectHomePaths.TaskWorkspaceDirectory(taskDirectory), "journal.md"),
         }.FirstOrDefault(File.Exists);
+
+    /// <summary>
+    /// Writes the session's pid and start time beside its report. The session is detached by design, so a daemon that
+    /// dies while it runs leaves it running; this file is what lets the next start stop it. A write that fails is
+    /// logged and the session carries on: the 30-minute bound still holds for every case but a hard daemon crash.
+    /// </summary>
+    private async Task RecordProcessIdentityAsync(Guid taskId, Guid sessionId, SpawnedAgent agent, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string file = RunPaths.ChallengeProcessFile(sessionId);
+            Directory.CreateDirectory(Path.GetDirectoryName(file) ?? throw new InvalidOperationException($"No directory for {file}."));
+            await File.WriteAllTextAsync(
+                file, $"{agent.ProcessId}\n{agent.StartedAt.UtcTicks}\n", cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(
+                exception, "Task {TaskId}: could not write the challenge session's process identity; a daemon crash would leave it running",
+                taskId);
+        }
+    }
+
+    /// <summary>
+    /// Stops the session a previous daemon process left running, found by the identity file written at spawn. The pid
+    /// and start time together are the identity, so a pid the operating system has since reused is not touched. A
+    /// session with no file (the crash fell between the dispatch and the spawn, or the write failed) has nothing to stop.
+    /// </summary>
+    private async Task TerminateLeftBehindAsync(Guid taskId, Guid sessionId, CancellationToken cancellationToken)
+    {
+        string file = RunPaths.ChallengeProcessFile(sessionId);
+        try
+        {
+            if (!File.Exists(file))
+            {
+                return;
+            }
+
+            string[] lines = await File.ReadAllLinesAsync(file, cancellationToken);
+            if (lines.Length >= 2 && int.TryParse(lines[0], out int processId) && long.TryParse(lines[1], out long ticks))
+            {
+                DateTimeOffset startedAt = new(ticks, TimeSpan.Zero);
+                logger.LogInformation(
+                    "Task {TaskId}: stopping challenge session {SessionId} (pid {ProcessId}) if a previous daemon process left it running",
+                    taskId, sessionId, processId);
+                processManager.Terminate(processId, startedAt);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception, "Task {TaskId}: could not stop challenge session {SessionId}; recording it as failed anyway", taskId, sessionId);
+        }
+    }
 
     private void Terminate(Guid taskId, SpawnedAgent agent)
     {

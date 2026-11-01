@@ -129,6 +129,13 @@ public sealed record AgentSpawnRequest(
     public IReadOnlyList<string> ExtraReadRoots { get; init; } = [];
 
     /// <summary>
+    /// Whether a review-permissions session (<see cref="UsesReviewPermissions"/>) may write
+    /// <c>mention-answer.md</c> in its run directory, the one write a mention-minted review's prompt asks for. True for
+    /// every session but the draft challenge, whose report is the only file it may write.
+    /// </summary>
+    public bool AllowMentionAnswer { get; init; } = true;
+
+    /// <summary>
     /// The name this session's Claude Code process launches under (task: every dispatched agent
     /// session launches under a human-readable id-and-role name) — passed straight through to
     /// <c>claude -n/--name</c>, verified against <c>claude --help</c> and confirmed empirically

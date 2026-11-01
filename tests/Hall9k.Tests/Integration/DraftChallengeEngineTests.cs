@@ -265,6 +265,7 @@ public sealed class DraftChallengeEngineTests(PostgresFixture postgres) : IClass
         spawn.SkipPermissions.Should().BeFalse();
         spawn.UsesReviewPermissions.Should().BeTrue();
         spawn.AssessmentFile.Should().Be(RunPaths.ChallengeReportFile(spawn.SessionId));
+        spawn.AllowMentionAnswer.Should().BeFalse("the report is the only file the session may write");
         spawn.Prompt.Should().Contain("No probe can run in this session").And.NotContain("At most five model sessions");
     }
 
@@ -388,12 +389,20 @@ public sealed class DraftChallengeEngineTests(PostgresFixture postgres) : IClass
             await session.SaveChangesAsync(cts.Token);
         }
 
+        // The identity a spawn writes beside the report: the previous daemon process died with the session still running.
+        DateTimeOffset startedAt = Now.AddMinutes(-10);
+        Directory.CreateDirectory(RunPaths.GlobalDirectory(orphan));
+        await File.WriteAllTextAsync(RunPaths.ChallengeProcessFile(orphan), $"4242\n{startedAt.UtcTicks}\n", cts.Token);
+
         FakeProcessManager processes = new();
+        processes.MarkAlive(4242);
         ScriptedChallenge session2 = new(processes, GoodReport);
         DraftChallengeSweepResult sweep = await NewEngine(store, node, session2, processes).PollOnceAsync(cts.Token);
 
         sweep.Recovered.Should().Be(1);
         session2.Spawns.Should().BeEmpty();
+        processes.Terminations.Should().ContainSingle("a session the dead daemon left running is stopped, not just forgotten")
+            .Which.Should().Be((4242, startedAt));
         DraftChallengeRecorded recorded = (await StreamAsync(store, taskId, cts.Token))
             .OfType<DraftChallengeRecorded>().Should().ContainSingle().Subject;
         recorded.Failure.Should().Be(ChallengeFailureReason.DaemonRestarted);

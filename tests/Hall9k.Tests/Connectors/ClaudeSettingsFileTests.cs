@@ -261,6 +261,21 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
         without.Except(with).Should().BeEmpty();
     }
 
+    /// <summary>A draft challenge writes its report and nothing else: no mention-answer write rides beside it.</summary>
+    [Fact]
+    public void Without_the_mention_answer_the_report_is_the_only_write_rule()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run",
+            assessmentFile: "/tmp/run/challenge-report.md", allowMentionAnswer: false));
+
+        string[] writes = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
+            .EnumerateArray().Select(element => element.GetString()!)
+            .Where(rule => rule.StartsWith("Edit(", StringComparison.Ordinal) || rule.StartsWith("Write(", StringComparison.Ordinal))];
+
+        writes.Should().Equal(["Edit(//tmp/run/challenge-report.md)"]);
+    }
+
     [Fact]
     public void The_allow_list_carries_a_write_rule_for_the_mention_answer_file()
     {
