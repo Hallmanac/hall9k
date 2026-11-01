@@ -1,7 +1,6 @@
 using FluentAssertions;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
-using Hall9k.Daemon.Challenge;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -99,5 +98,4 @@ public sealed class DraftChallengePromptTests : IDisposable
         owned.AgentContext = "My own pointers.";
         AgentPromptBuilder.BuildChallenge(owned, Project(), Facts()).Should().NotContain("adopted from");
     }
-
 }

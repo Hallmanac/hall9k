@@ -394,7 +394,7 @@ ended here once it has stood past the foreign-session ceiling. A challenge chang
 refused `h9k task publish`, `revise`, `assign`, `queue`, and `challenge`, and nothing in the daemon applies a
 verdict. `h9k task show` prints the latest challenge (requested, running, failed with its reason, or the verdict
 with its counts, its model and effort, the report's path on the node that holds it, and whether the draft was
-revised since), and a recorded verdict or failure reaches the project's orchestrator feed as an ordinary item
+revised since, or while the session ran, in which case it judged older text), and a recorded verdict or failure reaches the project's orchestrator feed as an ordinary item
 carrying only the verdict and counts or the failure reason. The verb is refused for anyone who may not publish the
 task, and for a task that is not a Draft, has no acceptance criteria, belongs to an archived project, has no
 working checkout, or already has a challenge requested or running. A node runs one challenge at a time, and a
@@ -409,7 +409,9 @@ settings for other sessions say.
 **The publish gate asks for a verdict.** With the requirement on (`h9k project set <name> --require-challenge
 on|off`, which reads on for every project that recorded no value, and which `h9k project show` prints with whether
 it is the default), `h9k task publish` refuses a Draft whose latest verdict is missing, is `do not publish`, or is
-`publish as revised` holding a `must` with no revision of the draft since that verdict landed. Any other latest
+`publish as revised` holding a `must` with no revision of the draft since that verdict landed. A revision counts
+when it changes the objective, the criteria, the context, or one of the facts the session was shown beside them
+(type, dependencies, stacking, epic); one made while the session ran does not, because it came before the verdict. Any other latest
 verdict passes, including after later revisions, because revising is how a verdict gets applied; a newer verdict
 replaces an older one and a failure replaces nothing. The refusal names the verb, `--skip-challenge`, and the
 setting. `h9k task publish <id> --skip-challenge "<reason>"` publishes past the gate: a blank reason is refused,

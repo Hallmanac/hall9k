@@ -3002,11 +3002,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         // Revised-since is a fact about the newest verdict only: an older one a newer verdict replaced is history.
         bool isLatestVerdict = details.LatestChallengeVerdict == outcome;
-        string revised = !isLatestVerdict
-            ? string.Empty
-            : details.RevisedSinceChallengeVerdict
-                ? "; the draft was revised since"
-                : "; the draft was not revised since";
+        string revised = (isLatestVerdict, details.RevisedSinceChallengeVerdict, details.LatestChallengeVerdictJudgedOlderDraft) switch
+        {
+            (false, _, _) => string.Empty,
+            (true, true, _) => "; the draft was revised since",
+            (true, false, true) => "; the draft was revised while the session ran, so it judged older text, and not revised since",
+            _ => "; the draft was not revised since",
+        };
         return $"[green]{outcome.Verdict.Phrase.EscapeMarkup()}[/]: [dim]{outcome.MustCount} must, "
             + $"{outcome.ShouldCount} should, {outcome.ParkCount} park; landed {landed}; {tier}; {report}{revised}[/]";
     }

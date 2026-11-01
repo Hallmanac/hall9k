@@ -109,7 +109,10 @@ public sealed class TaskDetails
     /// <summary>Whether the draft was revised after <see cref="LatestChallengeVerdict"/> landed.</summary>
     public bool RevisedSinceChallengeVerdict { get; set; }
 
-    /// <summary>Whether the draft's text was revised after the running challenge was dispatched; see <see cref="TaskAggregate.RevisedWhileChallengeRan"/>.</summary>
+    /// <summary>Whether <see cref="LatestChallengeVerdict"/> judged an older draft than the current one; see <see cref="TaskAggregate.LatestChallengeVerdictJudgedOlderDraft"/>.</summary>
+    public bool LatestChallengeVerdictJudgedOlderDraft { get; set; }
+
+    /// <summary>Whether the draft was revised after the running challenge was dispatched; see <see cref="TaskAggregate.RevisedWhileChallengeRan"/>.</summary>
     public bool RevisedWhileChallengeRan { get; set; }
 
     /// <summary>The reason the publisher gave for publishing past the challenge gate; null when the gate asked for nothing.</summary>
@@ -816,7 +819,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     // the criteria were retyped identically.
     public void Apply(IEvent<TaskRevised> @event, TaskDetails view)
     {
-        if (@event.Data.ChangesDraftText())
+        if (@event.Data.ChangesWhatChallengeReads())
         {
             view.RevisedSinceChallengeVerdict |= view.LatestChallengeVerdict is not null;
             view.RevisedWhileChallengeRan |= view.RunningChallengeSessionId is not null;
@@ -1853,7 +1856,8 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         if (@event.Data.IsVerdict)
         {
             view.LatestChallengeVerdict = @event.Data;
-            view.RevisedSinceChallengeVerdict = view.RevisedWhileChallengeRan;
+            view.RevisedSinceChallengeVerdict = false;
+            view.LatestChallengeVerdictJudgedOlderDraft = view.RevisedWhileChallengeRan;
         }
 
         view.RevisedWhileChallengeRan = false;

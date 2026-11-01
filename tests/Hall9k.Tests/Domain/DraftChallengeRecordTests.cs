@@ -117,12 +117,14 @@ public sealed class DraftChallengeRecordTests
             new DraftChallengeDispatched(taskId, DomainId.New(), nodeId, Now, AgentModel.ChallengeDefault, AgentEffort.High)), view);
         projection.Apply(new FakeEvent<TaskRevised>(EffortOnly() with { Objective = Optional<string>.Of("Ship it, revised again") }), view);
         projection.Apply(new FakeEvent<DraftChallengeRecorded>(verdict), view);
-        view.RevisedSinceChallengeVerdict.Should().BeTrue("the verdict judged the text as it stood at dispatch");
+        view.LatestChallengeVerdictJudgedOlderDraft.Should().BeTrue("the verdict judged the text as it stood at dispatch");
+        view.RevisedSinceChallengeVerdict.Should().BeFalse("that revision came before the verdict existed");
 
         projection.Apply(new FakeEvent<DraftChallengeDispatched>(
             new DraftChallengeDispatched(taskId, DomainId.New(), nodeId, Now, AgentModel.ChallengeDefault, AgentEffort.High)), view);
         projection.Apply(new FakeEvent<DraftChallengeRecorded>(verdict), view);
         view.RevisedSinceChallengeVerdict.Should().BeFalse();
+        view.LatestChallengeVerdictJudgedOlderDraft.Should().BeFalse();
     }
 
     [Fact]
