@@ -33,7 +33,7 @@ namespace Hall9k.Daemon.Review;
 /// The pr-review task type's own, deliberately separate driver (task type PrReview,
 /// AGENTS.md's "a pull-request-review task type"): a run whose primary session already IS
 /// the adversarial lens (dispatched by RunLauncher like any other task, just with the
-/// adversarial-review prompt and a read-only PR worktree) is completed here rather than by
+/// adversarial-review prompt and a read-only PR checkout) is completed here rather than by
 /// ReviewEngine — there is no diff of this run's own to fix, re-review, or open a pull
 /// request over, only someone else's already-open one to read. Dispatches the conformance
 /// lens second, merges both lenses' findings into one report, and parks the run exactly the

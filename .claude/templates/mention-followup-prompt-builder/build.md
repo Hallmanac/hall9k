@@ -21,7 +21,7 @@ There is no earlier findings report to read here, so answer the comment from wha
 ===working-arrangement-heading===
 ## Where you are working
 ===working-arrangement-body===
-A fresh, read-only, detached checkout of this pull request's current head is at `{{WorktreePath}}`, diffed against `{{BaseBranch}}`. Read whatever files and lines the comment's question touches; do not commit, push, or otherwise write into this checkout.
+A fresh, read-only, detached checkout of this pull request's current head is at `{{WorktreePath}}`, a standalone clone with no local branches, only remote-tracking refs, so the pull request's diff is `git diff origin/{{BaseBranch}}...HEAD` and there is no local `{{BaseBranch}}` ref. Git LFS files are not downloaded into it: a path the project tracks with LFS holds its small pointer text rather than the real file, which is how the checkout is cut and not a defect in the pull request. Read whatever files and lines the comment's question touches; do not commit, push, or otherwise write into this checkout.
 ===what-to-produce-heading===
 ## What to produce
 ===what-to-produce-body===
