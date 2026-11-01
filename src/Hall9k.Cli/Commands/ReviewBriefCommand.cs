@@ -112,7 +112,7 @@ public sealed class ReviewBriefCommand : Hall9kAsyncCommand<ReviewBriefCommand.S
         HumanGateBriefingFacts facts = new(
             taskId, project.Name, task.Objective, task.AcceptanceCriteria,
             summary, summaryWrittenAt, tipAuthoredAt, summaryPath,
-            details.ReviewSettlement.Value, details.ReviewCycle, details.ReviewResidualsUnfixed,
+            details.ReviewSettlement.Value, details.ReviewCycle, FindingsNotFixed(details),
             RunPaths.ReviewFindingsFile(runDirectory, details.ReviewCycle),
             commits, files, lines,
             details.WorktreePath, details.Branch, baseCommit, head ?? "(the branch tip could not be read)",
@@ -122,6 +122,20 @@ public sealed class ReviewBriefCommand : Hall9kAsyncCommand<ReviewBriefCommand.S
             stoppedFor);
         return HumanGateBriefing.Render(facts);
     }
+
+    /// <summary>
+    /// Every residual finding the branch carries to the pull request unfixed, which is what the briefing's
+    /// "left unfixed" sentence counts. <see cref="RunDetails.ReviewResidualsUnfixed"/> alone is only the
+    /// findings decided fix-here that no fix session was ever handed; a ride-along below the fix bar, a
+    /// finding routed to a task of its own, and one whose routing failed are not fixed on this branch
+    /// either, and the reader of this page is the person the briefing spares from the report, so a
+    /// sentence that left them out would read as a cleaner branch than it is.
+    /// </summary>
+    internal static int FindingsNotFixed(RunDetails details) =>
+        details.ReviewResidualsUnfixed
+        + details.ReviewResidualsRideAlong
+        + details.ReviewResidualsRouted
+        + details.ReviewResidualsRoutingFailed;
 
     /// <summary>
     /// The refusal everywhere but the stop, naming the one command that says where the task is. Quotes the

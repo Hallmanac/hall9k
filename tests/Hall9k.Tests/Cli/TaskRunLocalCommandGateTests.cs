@@ -67,4 +67,28 @@ public sealed class TaskRunLocalCommandGateTests
             .Should().Be(TaskRunLocalCommand.StepApprovalDecision.Refuse,
                 "there is no --yes: a bare skip-the-prompt flag cannot bind approval to the exact steps shown");
     }
+
+    [Fact]
+    public void A_gated_headless_run_that_is_live_is_working_in_the_worktree()
+    {
+        TaskRunLocalCommand.GatedRunIsWorking(humanGate: true, interactiveClaim: false, RunState.Running)
+            .Should().BeTrue();
+        TaskRunLocalCommand.GatedRunIsWorking(humanGate: true, interactiveClaim: false, RunState.UnderReview)
+            .Should().BeTrue();
+        TaskRunLocalCommand.GatedRunIsWorking(humanGate: true, interactiveClaim: false, RunState.ReviewParked)
+            .Should().BeFalse("the park at the gate is where the worktree is the person's");
+    }
+
+    [Fact]
+    public void The_owners_own_build_on_a_gated_task_may_run_the_product_but_the_pipeline_after_delivery_may_not()
+    {
+        TaskRunLocalCommand.GatedRunIsWorking(humanGate: true, interactiveClaim: true, RunState.Running)
+            .Should().BeFalse("no platform session is in the worktree during the owner's own build");
+        TaskRunLocalCommand.GatedRunIsWorking(humanGate: true, interactiveClaim: true, RunState.Dispatched)
+            .Should().BeFalse();
+        TaskRunLocalCommand.GatedRunIsWorking(humanGate: true, interactiveClaim: true, RunState.UnderReview)
+            .Should().BeTrue("the gates and review sessions own the worktree once the build is delivered");
+        TaskRunLocalCommand.GatedRunIsWorking(humanGate: false, interactiveClaim: false, RunState.Running)
+            .Should().BeFalse();
+    }
 }

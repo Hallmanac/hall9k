@@ -89,4 +89,24 @@ public sealed class HumanGateFindingTests
                 .And.Contain($"h9k review resolve {taskId} --merge-ready");
         }
     }
+
+    [Fact]
+    public void The_repark_reason_offers_each_finding_only_the_levers_that_fit_it()
+    {
+        Guid taskId = Guid.Parse("01a19510-0000-7000-8000-0000000000aa");
+
+        string uncommitted = HumanGateFinding.Decide(Reviewed, Reviewed, ["src/A.cs"], requireUnchangedTip: true).ReparkReason(taskId);
+        uncommitted.Should().Contain("If you discarded it").And.Contain($"h9k review proceed {taskId}");
+
+        string noStatus = HumanGateFinding.Decide(Reviewed, Reviewed, null, requireUnchangedTip: true).ReparkReason(taskId);
+        noStatus.Should().Contain("Check the worktree yourself").And.NotContain("Commit the work or discard it");
+
+        string noTip = HumanGateFinding.Decide(Reviewed, null, [], requireUnchangedTip: true).ReparkReason(taskId);
+        noTip.Should().Contain("Check the branch yourself")
+            .And.NotContain("review proceed", "a proceed cannot compare a tip that could not be read")
+            .And.NotContain("Hand the commits to review");
+
+        string moved = HumanGateFinding.Decide(Reviewed, Later, [], requireUnchangedTip: true).ReparkReason(taskId);
+        moved.Should().Contain("Hand the commits to review").And.NotContain("review proceed");
+    }
 }

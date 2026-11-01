@@ -65,9 +65,15 @@ public static class TaskDriveAnchorBuilder
     /// session is taught the verb but never asked for the closing block, since nothing records an
     /// attended session's final message.
     /// </param>
+    /// <param name="humanGate">
+    /// Whether the task has a human gate. This anchor is where an attended build composes the summary it
+    /// passes to <c>h9k task deliver</c>, so a gated task's anchor carries the same ask for a plain opening
+    /// paragraph that a headless build prompt does (<see cref="WorkPromptBuilder.AppendHumanGateSummaryAsk"/>).
+    /// Not used once the pull request is open, where the gate has already been answered.
+    /// </param>
     public static string Build(
         Guid taskId, string worktreePath, string branch, string prSummaryDraftPath, WritingConventions conventions,
-        string? recipeFile, PullRequestStage? pullRequestStage = null, InjectedTaskNotes? taskNotes = null)
+        string? recipeFile, PullRequestStage? pullRequestStage = null, InjectedTaskNotes? taskNotes = null, bool humanGate = false)
     {
         const string file = $"{TemplateDirectory}/anchor.md";
         Dictionary<string, string> values = new()
@@ -84,9 +90,24 @@ public static class TaskDriveAnchorBuilder
             ["TitlePrefix"] = PrSummaryParser.TitlePrefix,
         };
 
-        StringBuilder anchor = pullRequestStage is null
-            ? BuildFragments(file, values, ["title", "register", "read-first", "never-advance", "verb-map", "job-changes", "worktree-rules", "pr-summary", "skip-to-pr"])
-            : BuildFollowUp(file, values, pullRequestStage);
+        StringBuilder anchor;
+        if (pullRequestStage is null)
+        {
+            anchor = BuildFragments(
+                file, values, ["title", "register", "read-first", "never-advance", "verb-map", "job-changes", "worktree-rules", "pr-summary"]);
+            if (humanGate)
+            {
+                WorkPromptBuilder.AppendHumanGateSummaryAsk(anchor);
+                anchor.AppendLine();
+            }
+
+            PromptTemplates.AppendTemplate(anchor, file, "skip-to-pr", values);
+            anchor.AppendLine();
+        }
+        else
+        {
+            anchor = BuildFollowUp(file, values, pullRequestStage);
+        }
 
         WorkPromptBuilder.AppendTaskNotes(anchor, taskNotes, taskId);
         WorkPromptBuilder.AppendWritingConventions(

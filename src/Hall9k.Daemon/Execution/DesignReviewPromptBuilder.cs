@@ -159,7 +159,7 @@ public static class DesignReviewPromptBuilder
         // what BuildConformanceReview does with the same field.
         prompt.AppendLine(task.AgentContext);
         prompt.AppendLine();
-        if (task.ExternalReference.IsNotBlank() && WorkItemContext.CarriesQuotedDescription(task.AgentContext))
+        if (WorkItemContext.CarriesQuotedDescription(task.AgentContext))
         {
             PromptTemplates.AppendTemplate(prompt, file, "context-is-data");
             prompt.AppendLine();

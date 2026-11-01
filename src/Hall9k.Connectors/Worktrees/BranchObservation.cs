@@ -5,8 +5,9 @@ namespace Hall9k.Connectors.Worktrees;
 /// <summary>
 /// What a run's worktree and branch hold right now, observed with git and never assumed: the branch ref's
 /// tip and the uncommitted paths that would be stranded if the branch were pushed. Shared by the daemon's
-/// human-gate check (which asks it the same question <c>h9k review fixed</c> asks from the command line)
-/// and the briefing, so both count uncommitted work the same way.
+/// human-gate check, which counts uncommitted work the way <c>h9k review fixed</c> does from the command
+/// line (that command keeps its own listing, written to the same rule), and by the briefing, which reads
+/// only the branch tip from here.
 /// </summary>
 public static class BranchObservation
 {

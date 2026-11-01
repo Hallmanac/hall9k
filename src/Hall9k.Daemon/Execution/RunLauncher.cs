@@ -1710,6 +1710,24 @@ public sealed class RunLauncher(
             return false;
         }
 
+        // A task whose human gate is on opens its pull request only after an answer at the gate, and the
+        // shortcut below runs no review pass that could stop there. The failed run answers it when it
+        // recorded an answer (h9k review proceed or resolve --merge-ready, which a fix withdraws again) or
+        // an owner's skip to the pull request. Anything else means the gate was turned on after this run
+        // pushed (h9k task revise --human-gate takes any live task with no pull request), so the retry
+        // falls through to the ordinary dispatch, whose review settles and stops at the gate.
+        if (task.HumanGate
+            && failedRun.HumanGateAnsweredAt is null
+            && failedRun.ReviewSkip is null)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: the human gate is on and the failed run {FailedRunId} recorded no answer at it "
+                + "— dispatching a full build and review pipeline instead of resuming directly at the open, "
+                + "so the run stops at the gate before its pull request opens",
+                taskId, failedRunId);
+            return false;
+        }
+
         // Refused before Directory.Exists or RunDirectory is touched at all (security review idea
         // 6be68ee2, process-injection finding 2): failedRun replicated onto this node the same as
         // any other run record, and a run this node never actually dispatched can name a

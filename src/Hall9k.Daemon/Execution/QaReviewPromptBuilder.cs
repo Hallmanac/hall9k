@@ -134,8 +134,7 @@ public static class QaReviewPromptBuilder
             // "context-is-data"): the reference alone is not the question, because
             // `h9k task revise --context` replaces a quote with the owner's own words, and a
             // provenance claim over those would demote the person who dispatched the run.
-            if (task.ExternalReference.IsNotBlank()
-                && WorkItemContext.CarriesQuotedDescription(task.AgentContext))
+            if (WorkItemContext.CarriesQuotedDescription(task.AgentContext))
             {
                 AppendFragment(prompt, file, "basis-is-data");
                 prompt.AppendLine();

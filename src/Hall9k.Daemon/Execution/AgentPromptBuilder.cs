@@ -2988,7 +2988,7 @@ public static class AgentPromptBuilder
         }
 
         if (mechanicsOverride is { DiffIsForeignPullRequest: true }
-            && task.ExternalReference.IsNotBlank() && WorkItemContext.CarriesQuotedDescription(task.AgentContext))
+            && WorkItemContext.CarriesQuotedDescription(task.AgentContext))
         {
             AppendFragment(prompt, file, "adopted-external-item");
         }

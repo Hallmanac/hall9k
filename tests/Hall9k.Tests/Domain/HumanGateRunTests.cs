@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -284,5 +285,44 @@ public sealed class HumanGateRunTests
 
         run.HumanGateAnswer.Should().Be(HumanGateAnswer.None);
         run.HumanGateTipSha.Should().BeNull();
+    }
+
+    [Fact]
+    public void A_rebase_recovery_or_gate_repair_session_dispatched_after_an_answer_spends_it_because_an_agent_then_writes_commits()
+    {
+        foreach (bool recovery in new[] { true, false })
+        {
+            (RunAggregate run, Guid id) = Settled();
+            ParkAtTheGate(run, id);
+            run.Apply(new ReviewParkResolved(id, ReviewVerdict.MergeReady, "ship it", Now, DomainId.New()));
+            run.HumanGateAnswer.Should().Be(HumanGateAnswer.ResolvedMergeReady);
+
+            if (recovery)
+            {
+                run.Apply(new PreFinalPassRebaseRecoveryDispatched(
+                    id, DomainId.New(), 5003, Now, Now, AgentModel.Unknown, "abc1234", "def5678", "rebase-recovery"));
+            }
+            else
+            {
+                run.Apply(new SettlingGateRepairDispatched(
+                    id, DomainId.New(), 5003, Now, Now, AgentModel.Unknown, "gate output", "gate-repair"));
+            }
+
+            run.HumanGateAnswer.Should().Be(HumanGateAnswer.None);
+            run.HumanGateAnsweredAt.Should().BeNull();
+            run.HumanGateTipSha.Should().BeNull();
+        }
+    }
+
+    [Fact]
+    public void A_session_dispatched_after_a_skip_leaves_the_skip_standing_because_it_was_the_owners_decision_to_open_as_it_comes_out()
+    {
+        (RunAggregate run, Guid id) = Settled();
+        run.Apply(new ReviewSkippedToPullRequest(id, DomainId.New(), Now, "ship it", false, ["the final pass"]));
+
+        run.Apply(new PreFinalPassRebaseRecoveryDispatched(
+            id, DomainId.New(), 5003, Now, Now, AgentModel.Unknown, "abc1234", "def5678", "rebase-recovery"));
+
+        run.HumanGateAnswer.Should().Be(HumanGateAnswer.Skipped);
     }
 }
