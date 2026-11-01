@@ -101,7 +101,9 @@ public static class ClaudeSettingsFile
         long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
         long maxMilliseconds = defaultMilliseconds * 2;
         string hooks = guardReviewThreadReplies ? $", {ReviewThreadReplyGuardHook}" : string.Empty;
-        string effortLevel = effort is { IsWellFormed: true } ? $", \"effortLevel\": \"{effort.Value}\"" : string.Empty;
+        string effortLevel = effort is { IsWellFormed: true }
+            ? $", \"effortLevel\": \"{effort.Value}\""
+            : string.Empty;
         return $$$"""{"includeCoAuthoredBy": false{{{effortLevel}}}, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}{{{hooks}}}}""";
     }
 
@@ -420,8 +422,9 @@ public static class ClaudeSettingsFile
     /// the two that name a configured program, for those two subcommands only. It cannot see what
     /// git does with the checkout's own contents, so the <c>env</c> block below also sets
     /// <c>safe.bareRepository=explicit</c> for the session, which keeps git to the checkout's own
-    /// repository. A rule for any further git command would have neither: the guard does not look
-    /// at that command's flags.
+    /// repository. The setting applies to every git process the session starts, but the guard reads
+    /// only <c>git diff</c> and <c>git log</c>, so a rule for any further git command would have no
+    /// guard looking at that command's flags.
     /// </para>
     /// <para>
     /// <b>A session with gate commands does not get that setting.</b> A QA session builds and runs
@@ -453,10 +456,14 @@ public static class ClaudeSettingsFile
     {
         long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
         long maxMilliseconds = defaultMilliseconds * 2;
-        string effortLevel = effort is { IsWellFormed: true } ? $", \"effortLevel\": \"{effort.Value}\"" : string.Empty;
+        string effortLevel = effort is { IsWellFormed: true }
+            ? $", \"effortLevel\": \"{effort.Value}\""
+            : string.Empty;
         // A QA session runs the project's own gates, some of which create bare repositories on
         // purpose, so it is left without the setting (see this method's doc).
-        string bareRepositoryEnv = qaGateCommands is { Count: > 0 } ? string.Empty : PrReviewBareRepositoryEnvJson;
+        string bareRepositoryEnv = qaGateCommands is { Count: > 0 }
+            ? string.Empty
+            : PrReviewBareRepositoryEnvJson;
         List<string> allow =
         [
             AbsolutePathRule("Read", worktreePath),
@@ -547,7 +554,8 @@ public static class ClaudeSettingsFile
     /// rule turns off Claude Code's own flag checks for the command it names, and the stand-ins
     /// this project supplies (the git read-only guard hook and the <c>safe.bareRepository</c>
     /// setting, both described on <see cref="BuildForPrReview"/>) are written for <c>git diff</c>
-    /// and <c>git log</c> alone, so any other git command's flags would run with nothing looking at
+    /// and <c>git log</c> alone (the setting reaches every git process of the session, but the guard
+    /// reads only those two), so any other git command's flags would run with nothing looking at
     /// them. A test pins that these two are the only git rules.
     /// </para>
     /// <para>
