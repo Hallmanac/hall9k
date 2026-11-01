@@ -141,6 +141,10 @@ public sealed class ReviewPersonaRegistryTests
         "`git log -p -- <path>` shows a file's changes",
         "`git log -G<regex> --oneline` finds the commits that changed a matching line",
         "`git diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 <revision> -- <path>` prints a file as it stood at any revision",
+        "`git show <revision>:<path>` prints a file at any revision",
+        "`git grep <pattern> <revision>` searches a revision",
+        "`git blame <path>` shows who last changed each line",
+        "`git ls-files` lists the files",
         "do not retry a variation of it",
         "say in your report what you could not check or search as a result",
     ];
@@ -169,7 +173,7 @@ public sealed class ReviewPersonaRegistryTests
         AgentPromptBuilder.AppendShellLimits(statement);
 
         string text = statement.ToString();
-        foreach (string command in new[] { "git show", "git grep", "git ls-files", "git blame", "git status", "git rev-parse" })
+        foreach (string command in new[] { "git status", "git rev-parse" })
         {
             text.Should().NotContain(command);
         }

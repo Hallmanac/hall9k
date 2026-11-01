@@ -102,7 +102,7 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // (TaskDriveCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
         // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), which reads identically to
         // one on IsInteractiveClaim's own Guid.Empty discriminator. Delivering it here would push its
-        // read-only detached refs/pull/<n>/head worktree and hand a run with no PrReviewBaseRefName
+        // read-only detached refs/pull/<n>/head checkout and hand a run with no PrReviewBaseRefName
         // and no adversarial report into PrReviewEngine.DriveAsync — the same failure
         // TaskDriveCommand.ClaimAndCutAsync's own pr-review refusal exists to prevent, reachable here
         // only because this command has no refusal of its own (independent pre-PR review, cycle 1,

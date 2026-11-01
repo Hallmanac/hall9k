@@ -45,7 +45,7 @@ Read the packet above and report findings in the same shape the first lap's repo
 
 ## Where you are
 
-A read-only checkout of this pull request's head is at `/home/reviewer/.hall9k/projects/hall9k/repo/wt-pr-42` — a detached worktree of project hall9k's clone at `/home/reviewer/.hall9k/projects/hall9k/repo`, with no local branch, so there is nothing here that could be pushed by accident. The base branch is available as `origin/main`, so `git diff origin/main...HEAD` is the pull request's own range.
+A read-only checkout of this pull request's head is at `/home/reviewer/.hall9k/projects/hall9k/repo/wt-pr-42` — a standalone clone cut from project hall9k's clone at `/home/reviewer/.hall9k/projects/hall9k/repo`, with no local branch and no remote, so there is nothing here that could be pushed by accident. It holds that clone's remote-tracking refs and tags, so `git show`, `git grep` and `git blame` work on any revision. The base branch is available as `origin/main`, so `git diff origin/main...HEAD` is the pull request's own range.
 
 ## Working rules
 

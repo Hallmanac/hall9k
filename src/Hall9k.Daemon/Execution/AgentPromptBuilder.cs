@@ -2548,7 +2548,7 @@ public static class AgentPromptBuilder
     /// <paramref name="baseBranch"/> is the pull request's own base ref, never
     /// <c>project.BaseBranch</c>: the two disagree whenever the reviewed pull request targets
     /// anything other than the project's default branch, and the mechanics section must name the
-    /// range it can actually reproduce. The checkout is a detached, branch-less worktree
+    /// range it can actually reproduce. The checkout is a detached, branch-less standalone clone
     /// (<c>CreatePrReviewCheckoutAsync</c>), so the mechanics section also says that plainly rather
     /// than naming a `pr/&lt;n&gt;` ref that does not exist. And no verification ever runs against a
     /// foreign pull request — the gate status here says so, rather than asserting an observation
