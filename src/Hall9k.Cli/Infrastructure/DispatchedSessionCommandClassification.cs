@@ -204,6 +204,9 @@ internal static class DispatchedSessionCommandClassification
             [typeof(ReviewResolveCommand.Settings)] = (DispatchedSessionAccess.Refused, "review resolve"),
             [typeof(ReviewProceedCommand.Settings)] = (DispatchedSessionAccess.Refused, "review proceed"),
             [typeof(ReviewFixedCommand.Settings)] = (DispatchedSessionAccess.Refused, "review fixed"),
+            // Read-only, but it is the owner's briefing at a stop that only they answer, and a dispatched
+            // session has no business at the human gate.
+            [typeof(ReviewBriefCommand.Settings)] = (DispatchedSessionAccess.Refused, "review brief"),
 
             // ---- pr ----
             [typeof(PullRequestResolveCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr resolve"),

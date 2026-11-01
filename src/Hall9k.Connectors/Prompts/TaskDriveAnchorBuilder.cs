@@ -100,6 +100,49 @@ public static class TaskDriveAnchorBuilder
         return PromptLineEndings.Finish(anchor);
     }
 
+    /// <summary>
+    /// The anchor for the attended session <c>h9k task drive</c> prints a launch line for at a task's human
+    /// gate on a run a headless dispatch holds. It names the gate, the briefing command, and the outcomes
+    /// (rendered from <see cref="InteractiveBoundaryChoices"/>, the one vocabulary the park reason,
+    /// <c>h9k task next</c>, <c>h9k status</c>, and the briefing also render, so no surface can offer a
+    /// different set), and tells the session to leave the worktree alone once a lever has handed the branch
+    /// back. It carries no register step: the session registers nothing.
+    /// </summary>
+    public static string BuildGate(
+        Guid taskId, string worktreePath, string branch, WritingConventions conventions, string? recipeFile)
+    {
+        const string file = $"{TemplateDirectory}/anchor.md";
+        Dictionary<string, string> values = new()
+        {
+            ["TaskId"] = taskId.ToString(),
+            ["Worktree"] = worktreePath,
+            ["Branch"] = branch,
+            ["RecipeFile"] = recipeFile ?? string.Empty,
+            ["RegisterSession"] = WorkPromptBuilder.RegisterSessionWord,
+        };
+
+        StringBuilder anchor = BuildFragments(file, values, ["gate-title", "gate-read-first", "gate-never-advance"]);
+        PromptTemplates.AppendTemplate(anchor, file, "gate-outcomes-lead", values);
+        anchor.AppendLine();
+        foreach (string choice in InteractiveBoundaryChoices.Lines(InteractiveBoundaryLevers.HumanGate, taskId))
+        {
+            anchor.AppendLine($"- {choice}");
+        }
+
+        anchor.AppendLine();
+        PromptTemplates.AppendTemplate(anchor, file, "gate-worktree-rules", values);
+        anchor.AppendLine();
+        WorkPromptBuilder.AppendWritingConventions(
+            anchor, string.Empty, conventions, PromptTemplates.Load(file, "writing-conventions-lead"));
+        if (recipeFile is not null)
+        {
+            anchor.AppendLine();
+            PromptTemplates.AppendTemplate(anchor, file, "recipe", values);
+        }
+
+        return PromptLineEndings.Finish(anchor);
+    }
+
     private static StringBuilder BuildFragments(string file, Dictionary<string, string> values, string[] fragments)
     {
         StringBuilder anchor = new();

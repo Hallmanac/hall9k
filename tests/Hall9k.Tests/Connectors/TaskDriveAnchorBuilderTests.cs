@@ -2,6 +2,7 @@ using System.Text;
 using FluentAssertions;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Storage;
 using Xunit;
 
@@ -164,6 +165,37 @@ public sealed class TaskDriveAnchorBuilderTests
 
         anchor.Should().NotContain("\r");
         anchor.Should().NotContain("{{");
+    }
+
+    [Fact]
+    public void The_gate_anchor_names_the_gate_the_briefing_and_the_same_outcomes_the_park_offers_and_registers_nothing()
+    {
+        string anchor = TaskDriveAnchorBuilder.BuildGate(
+            TaskId, "/wt/task", "task/abc12345-thing", WritingConventions.Default, recipeFile: null);
+
+        anchor.Should().Contain("human gate").And.Contain($"h9k review brief {TaskId}")
+            .And.Contain($"h9k task next {TaskId}");
+        foreach (string choice in InteractiveBoundaryChoices.Lines(InteractiveBoundaryLevers.HumanGate, TaskId))
+        {
+            anchor.Should().Contain(choice, "the anchor offers exactly the choices the park reason and the briefing offer");
+        }
+
+        string flat = string.Join(' ', anchor.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        flat.Should().Contain($"you register nothing: do not run `h9k task register-session`");
+        anchor.Should().NotContain("Your first action is", "the session registers nothing")
+            .And.NotContain("--clear-interactive-mode")
+            .And.NotContainEquivalentOf("interactive mode is on");
+    }
+
+    [Fact]
+    public void The_gate_anchor_tells_the_session_to_leave_the_worktree_alone_once_a_lever_has_handed_the_branch_back()
+    {
+        string anchor = TaskDriveAnchorBuilder.BuildGate(
+            TaskId, "/wt/task", "task/abc12345-thing", WritingConventions.Default, recipeFile: RecipeFile);
+
+        anchor.Should().Contain("Once one of the commands above has handed the branch back to the platform, leave the worktree alone");
+        anchor.Should().Contain($"`{RecipeFile}`");
+        anchor.Should().NotContain("\r").And.NotContain("{{");
     }
 
     private static string Build(WritingConventions? conventions = null, string? recipeFile = null) =>

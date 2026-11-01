@@ -203,6 +203,15 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
+        // A task's human gate on a run a headless dispatch holds: there is no claim to take and nothing to
+        // cut, so this prints a launch line for an attended session in the run's own worktree and records
+        // nothing. Every other park on a headless run falls through to the refusal it has always earned.
+        if (task.State == TaskState.Claimed && !task.IsInteractiveClaim
+            && await TryPrintGateStepInAsync(session, task, context, settings, cancellationToken) is { } stepIn)
+        {
+            return stepIn;
+        }
+
         // Minted once per invocation, whether or not it ends up used: a fresh claim records it
         // as RunDispatched.SessionId — the same "session id is the first spawned session's own
         // id" convention headless dispatch's RunLauncher follows — and a re-entry keeps it in
@@ -317,6 +326,98 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
                         session, taskId, new LocalFleetSource(session, project, context.OwnerId).LessonReader,
                         onFailure: null, cancellationToken),
                     cancellationToken);
+    }
+
+    /// <summary>
+    /// At a task's human gate on a run a headless dispatch holds, prints the launch line for an attended
+    /// session in the run's worktree, whose anchor names the gate, the briefing command, and the outcomes
+    /// (<see cref="TaskDriveAnchorBuilder.BuildGate"/>), and returns the exit code. Null when this is not
+    /// that case, so the caller continues into the ordinary claim path and its ordinary refusals.
+    /// <para>
+    /// Nothing is claimed or recorded: the session registers nothing, so entering or leaving it changes
+    /// neither the claim, the interactive flag, nor the park. It still refuses a task another owner holds,
+    /// and a machine that does not hold the run's worktree, which it names the node for.
+    /// </para>
+    /// </summary>
+    internal static async Task<int?> TryPrintGateStepInAsync(
+        IDocumentSession session, TaskAggregate task, BootstrapContext context, Settings settings,
+        CancellationToken cancellationToken)
+    {
+        RunDetails? current = task.CurrentRunId is { } runId
+            ? await session.LoadAsync<RunDetails>(runId, cancellationToken)
+            : null;
+        if (current is not { ParkedIsHumanGate: true } run || run.State != RunState.ReviewParked)
+        {
+            return null;
+        }
+
+        await TaskOwnerGuard.AssertMayActAsync(session, task, context, cancellationToken);
+        if (settings.PrintPrompt || settings.DirectLaunch)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is stopped at its human gate, where the run belongs to a headless dispatch and the "
+                + "build prompt does not apply. Drop --print-prompt and --direct-launch: h9k task drive prints a "
+                + "launch line for a session whose anchor names the gate, the briefing, and the outcomes.");
+        }
+
+        if (run.WorktreePath.IsBlank() || !Directory.Exists(run.WorktreePath))
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id}'s worktree is not on this machine: it lives at {run.WorktreePath} on "
+                + $"{await ReviewBriefCommand.DescribeNodeAsync(session, run.NodeId, cancellationToken)}. Run "
+                + "h9k task drive there; a session can only work in a worktree on its own machine.");
+        }
+
+        TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(task.Id, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {task.Id}.");
+        ProjectDetails project = await session.LoadAsync<ProjectDetails>(taskDetails.ProjectId, cancellationToken)
+            ?? throw new DomainNotFoundException($"Task {task.Id}'s project no longer exists.");
+
+        string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+        Directory.CreateDirectory(runDirectory);
+        string anchorFile = Path.GetFullPath(RunPaths.TaskAnchorFile(runDirectory));
+        string? recipeFile = project.HomeDirectory.HasValue
+            && ProjectHomePaths.TaskDriveRecipeFile(project.HomeDirectory.Value) is { } recipe
+            && File.Exists(recipe)
+            ? recipe
+            : null;
+        await File.WriteAllTextAsync(
+            anchorFile,
+            TaskDriveAnchorBuilder.BuildGate(task.Id, run.WorktreePath, run.Branch, project.WritingConventions, recipeFile),
+            cancellationToken);
+
+        // The headless run wrote its settings file already; a run that somehow lacks one gets the same
+        // content every interactive session is given, so the platform-imposed overrides still apply.
+        string settingsFile = RunPaths.SettingsFile(runDirectory);
+        if (!File.Exists(settingsFile))
+        {
+            await File.WriteAllTextAsync(settingsFile, SettingsContent(), cancellationToken);
+        }
+
+        AgentModel model = await TaskStartCommand.ResolveBuildModelAsync(taskDetails, project, cancellationToken);
+        AgentEffort effort = await TaskStartCommand.ResolveBuildEffortAsync(taskDetails, project, cancellationToken);
+        string sessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.InteractiveClaim);
+        TaskDriveLaunchText text = LaunchTextDefaults.RenderTaskDrive(
+            new TaskDriveLaunch(
+                run.WorktreePath, anchorFile, Path.GetFullPath(settingsFile), sessionName,
+                $"You are at task {DomainId.Short(task.Id)}'s ({task.Id}) human gate. Follow the task anchor: read the "
+                + "briefing, tell me what changed and where it stands, and wait for my word before you move it.",
+                model, effort, project.SkipPermissions, ResumeSessionId: null),
+            LaunchTextDefaults.HostShell);
+
+        AnsiConsole.MarkupLineInterpolated($"[dim]Task {task.Id} is stopped at its human gate. Nothing was claimed or recorded: this session registers nothing, and entering or leaving it changes neither the claim, the interactive flag, nor the stop.[/]");
+        AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {run.WorktreePath}[/]");
+        AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {run.Branch}[/]");
+        AnsiConsole.MarkupLineInterpolated($"[dim]Task anchor: {anchorFile}[/]");
+        if (text.EffortNotice is not null)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]{text.EffortNotice}[/]");
+        }
+
+        AnsiConsole.MarkupLine("[dim]Paste this line into a terminal to start a session at the gate:[/]");
+        LaunchLineWriter.Write(text.Line);
+        AnsiConsole.MarkupLineInterpolated($"[dim]h9k review brief {task.Id} prints the briefing without a session.[/]");
+        return ExitCodes.Ok;
     }
 
     /// <summary>

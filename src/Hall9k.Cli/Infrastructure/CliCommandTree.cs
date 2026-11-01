@@ -737,6 +737,22 @@ public static class CliCommandTree
                     + "run parked for a genuine dispute or a cap/budget reason, which still take only "
                     + "h9k review resolve.")
                 .WithExample("review", "proceed", "28b19893");
+            review.AddCommand<ReviewBriefCommand>("brief")
+                .WithDescription(
+                    "Prints the briefing for the stop before a pull request opens: a task's human gate "
+                    + "(h9k task add --human-gate) or interactive mode's gates-to-pull-request boundary. In "
+                    + "order: the opening paragraph of the run's own pull request summary (at most 150 words, "
+                    + "cut with a pointer to the full file), what was asked for, how automated review settled "
+                    + "(the settlement word, the cycle count, and the findings left unfixed with a pointer to "
+                    + "the merged report), the commits oldest first with a total of files and lines changed "
+                    + "(past 20 commits, a count), then where the branch lives, git lines that open the whole "
+                    + "change and each commit in the compare tool git is configured to use, how to run it "
+                    + "(h9k task run-local, when the project has a run skill), how to step in (h9k task "
+                    + "drive), and your choices. Read-only: no GitHub pull request exists yet and none is "
+                    + "called, no session starts, and nothing is recorded. Answers only on the machine that "
+                    + "holds the run's worktree and names the node that does elsewhere; refused anywhere but "
+                    + "this stop, naming h9k task next.")
+                .WithExample("review", "brief", "28b19893");
             review.AddCommand<ReviewFixedCommand>("fixed")
                 .WithDescription(
                     "You fixed the findings yourself (task: a human at the wheel takes the fix role herself): "
@@ -1551,7 +1567,10 @@ public static class CliCommandTree
                 .WithExample("task", "add", "--project", "hall9k", "--type", "spike", "--kind", "research",
                     "--objective", "\"Does the flag survive\"", "--exit-criterion", "\"It resumes after a restart\"")
                 .WithExample("task", "add", "--project", "hall9k", "--type", "content",
-                    "--objective", "\"Update the README\"", "--criteria", "\"docs/README.md covers it\"");
+                    "--objective", "\"Update the README\"", "--criteria", "\"docs/README.md covers it\"")
+                .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Rework the status pane\"",
+                    "--criteria", "\"h9k status lists parked runs first\"", "--human-gate")
+                .WithExample("task", "add", "--evolved-from", "28b19893");
             task.AddCommand<TaskReviseCommand>("revise")
                 .WithDescription(
                     "Revise a draft: objective, acceptance criteria, agent context, type, model, effort, dependencies, "
@@ -1565,9 +1584,14 @@ public static class CliCommandTree
                     + "names nothing else in any live state — Queued, Blocked, a currently Claimed task (for its "
                     + "next turn in the queue, or its run's next phase boundary), even a Done one (for the "
                     + "follow-up run a later reopen might dispatch); refused only on Abandoned, which nothing "
-                    + "ever requeues from. Each option passed replaces that part; each one left off is left "
-                    + "alone.")
+                    + "ever requeues from. --human-gate/--clear-human-gate join them: the human gate stops one "
+                    + "task after automated review settles and before its pull request opens, and either flag "
+                    + "works on any live task whose pull request has not opened (a pr-review task and a spike "
+                    + "refuse it, since they open no pull request of their own). Each option passed replaces "
+                    + "that part; each one left off is left alone.")
                 .WithExample("task", "revise", "28b19893", "--criteria", "\"h9k status shows the blocked reason\"")
+                .WithExample("task", "revise", "28b19893", "--human-gate")
+                .WithExample("task", "revise", "28b19893", "--clear-human-gate")
                 .WithExample("task", "revise", "28b19893", "--blocked-by", "3f2a91b2", "--blocked-by", "91bd44c0")
                 .WithExample("task", "revise", "28b19893", "--clear-dependencies")
                 .WithExample("task", "revise", "28b19893", "--epic", "3f2a91b2")
@@ -1976,7 +2000,10 @@ public static class CliCommandTree
                     + "unchanged plan runs immediately, and a changed or first-ever one prints every step and "
                     + "asks — a y/n in an interactive terminal, or, non-interactively, a matching --approve "
                     + "<fingerprint> or nothing runs. Refused for a dispatched session; run it from the "
-                    + "orchestrator window instead.")
+                    + "orchestrator window instead. On a task with a human gate it is the \"run it\" step of "
+                    + "the briefing (h9k review brief): it works at the gate, on a run a headless dispatch holds, "
+                    + "refuses while that run's gates or sessions are still working, and a launch still up when the "
+                    + "run leaves the gate is stopped and recorded before any gate or session starts in the worktree.")
                 .WithExample("task", "run-local", "28b19893")
                 .WithExample("task", "run-local", "28b19893", "--continue")
                 .WithExample("task", "run-local", "28b19893", "--approve", "a1b2c3d4e5f6")
@@ -2020,7 +2047,14 @@ public static class CliCommandTree
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Objective met by hand in the worktree\"", "--pr", "https://github.com/x/y/pull/7");
             task.AddCommand<TaskDriveCommand>("drive")
                 .WithDescription(
-                    "Drive a Published, Queued, or already-Blocked task interactively, or take a task whose pull request is "
+                    "At a task's human gate on a run a headless dispatch holds (h9k status lists it as needing "
+                    + "you), this prints a launch line for an attended Claude Code session in the run's "
+                    + "worktree instead of claiming anything: the session registers nothing, and entering or "
+                    + "leaving it changes neither the claim, the interactive flag, nor the stop. Its anchor "
+                    + "names the gate, the briefing command, and the outcomes. At every other park on a "
+                    + "headless run this refuses, as it always has, and it refuses a task held by another owner "
+                    + "and a machine that does not hold the worktree, naming the node that does. "
+                    + "Otherwise: drive a Published, Queued, or already-Blocked task interactively, or take a task whose pull request is "
                     + "already open back into an interactive claim on its branch (see the pull-request stage below). "
                     + "On a Published task assigned to nobody, "
                     + "this queues it for your own owner and claims it interactively in one atomic event append, "
