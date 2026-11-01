@@ -1,0 +1,76 @@
+hall9k-task-record: 1
+task-id: 01a194fc-0f12-7207-a18a-84b9ee441155
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#820
+objective: A task marked for it stops after automated review settles and before its GitHub pull request opens, and its owner can read a short plain briefing, walk and run the branch, and then approve, change, or discard it from inside hall9k
+criteria:
+  - |-
+    `h9k task add --human-gate` and `h9k task revise --human-gate` put a human gate on one task, `h9k task revise --clear-human-gate` takes it off, and `h9k task show` says whether it is on. Both revise flags work on any live task whose pull request has not opened, not only a Draft. A pr-review task and a spike refuse the flag, saying that they open no pull request of their own. A task without the flag moves through review and opens its pull request exactly as it does today.
+  - A gated run whose automated review has settled, under any review stage composition including `none`, parks at the boundary before the pull request opens. This holds however review ended, including a `h9k review resolve --merge-ready` at an earlier park, because only an answer given at this boundary releases it. The park pushes nothing and opens nothing, it is listed as needing the owner in `h9k status`, and `h9k task next` lists its choices. The run stops at no other interactive boundary on the way there.
+  - A follow-up run on a task whose pull request is already open never stops at the gate. A task with both the gate and interactive mode stops once at this boundary, not twice. Clearing the gate while the run is still in review lets that run open its pull request without stopping; clearing it at the park does not release the park. `h9k task skip-to-pr` from an earlier park still opens the pull request without stopping, because it is the owner's recorded override.
+  - |-
+    `h9k review brief <id>` prints the briefing at this boundary, whether the run stopped for the gate or for interactive mode, and elsewhere refuses and names `h9k task next`. It is read-only, needs no GitHub pull request, and makes no GitHub call. In order it gives the summary, the objective and criteria, how review settled (the settlement word, the cycle count, and the count of findings left unfixed with a pointer to the merged report), the commits oldest first with a total of files and lines changed, then the compare, run, step-in, and outcome lines. Past 20 commits the list collapses to a count. On a machine that does not hold the run's worktree it refuses and names the node that does.
+  - The briefing's summary is the first paragraph of the `pr-summary.md` body that is not a heading, at most 150 words, cut with a pointer to the full file when it runs over. For a gated task the build and fix prompts ask that the `PR SUMMARY:` body open with a plain, behaviour-first paragraph of at most 120 words saying what someone using the product will see change. The gate starts no session of its own, and a task without the gate gets no such ask. A run with no summary says so and still prints everything else. When the tip commit was authored after the summary was written, the briefing says the summary is older than the branch; a rebase alone never causes that line.
+  - The briefing names the run's worktree path, branch, base commit, and head commit, and gives ready-to-paste `git` lines that open the whole change and each commit in the compare tool the person has configured for git. Hall9k records no editor setting of its own.
+  - When the project has a run skill, the briefing names `h9k task run-local <id>`, and that command stands the branch up at the gate on a run that a headless dispatch holds. When the project has none, the briefing says so and names the command that asks for one, and every outcome still works. On a gated run `run-local` refuses while the run's gates or sessions are working. A launch still up when the run leaves the gate is stopped and recorded before any gate or session starts in that worktree.
+  - At the gate on a run that a headless dispatch holds, `h9k task drive <id>` prints a launch line for an attended session in the run's worktree, whose anchor names the gate, the briefing command, and the outcomes, and tells the session to leave the worktree alone once a lever has handed the branch back. The session registers nothing. Entering or leaving it changes neither the claim, the interactive flag, nor the park. At every other park on a headless run `drive` refuses exactly as it does today, and it refuses a task held by another owner or a machine that does not hold the worktree, naming the node that does.
+  - |-
+    `h9k review proceed <id>` at the gate, with the branch tip where it stood at the park and no uncommitted work in the worktree, opens the pull request on the next sweep. From there the task continues as it does today, including a pre-approved task merging under its own rule, and `h9k task show` names who approved and when.
+  - When the branch tip has moved since the park, or the worktree holds uncommitted work as `h9k review fixed` counts it, `h9k review proceed` opens no pull request. The run parks at the same boundary again with a reason naming what was found and the levers `h9k review fixed` and `h9k review resolve --merge-ready`. This holds whichever machine the proceed came from, and it holds at this boundary on an interactive-mode task too.
+  - |-
+    `h9k review resolve <id> --needs-fixes "<what to change>"` at the gate dispatches a fix session over that text, after which the run passes the gates, a review pass reads the fix however review ended before, and the run stops at the gate again before any pull request opens.
+  - |-
+    `h9k review fixed <id>` is accepted at this boundary, where it is refused today. It refuses over uncommitted work and over a tip still where it stood at the park, and it refuses `--no-change` here, naming `h9k review proceed`, because no finding is waiting for an answer. The gates run over the person's commits. A review pass then reads those commits as it reads a fix session's, whatever the last cycle's verdict, findings, or final-pass count were and whether or not a human ended the loop earlier; the only exceptions are the compositions that owe a fix session's commits no pass (`none`, and `skip-final-pass` once every track has concluded). The run then stops at the gate again. A gated run without the interactive flag takes no other interactive stop on the way back.
+  - |-
+    `h9k review resolve <id> --merge-ready --reason "<why>"` at the gate over a moved tip runs the gates on that tip, dispatches no review session, records the settlement as `Settled` rather than `Clean`, and opens the pull request. With uncommitted work in the worktree it opens no pull request and commits nothing, and the run stays at this boundary with a reason naming what was found, whichever machine the resolve came from.
+  - |-
+    `h9k task add --evolved-from <id>` creates a Draft that copies the source task's objective, criteria, context, type, epic, idea provenance, and human gate, and adds the source's abandon reason to the context when it has one. `h9k task show` on the new draft names the task it evolved from. `h9k task abandon` at the gate ends the task as it does today, and the briefing names both commands as the discard outcome.
+  - The park reason, `h9k task next`, `h9k status`, the briefing, and the step-in anchor offer the same choices at the gate, and on a task whose interactive flag is off none of them names `--clear-interactive-mode` or says interactive mode is on. Each new flag and verb has help text, an example, and an entry in `docs/cli.md`, `docs/concepts.md`, and the `hall9k-cli-reference` skill.
+dependencies: []
+epic-title: Challenge, internal PR gate, and plans
+epic-id: 01a194fc-0573-7598-83b5-8ba75e451233
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/ee441155-a-task-marked-for-it-stops-aft
+published: 2026-11-01 03:02:41Z
+context: |-
+  ## Why
+
+  This is section A2 of `ideas/13403621-named-agent-files-claude-code-s-claude-agents-as-a-bridge-be/workspace/plan-work-brief.md` under the project home; read that section and the Rulings in `journal.md` beside it. The owner's time is scarcer than tokens, so the stop comes after automated review, and it is per task because a stop on every task makes the owner the bottleneck.
+
+  ## Shape
+
+  One task and one pull request, the second of four in epic 5e451233. It stands alone: no blockers, nothing stacked. The challenge feature, the plan concept, task notes, Ralph loops, agent files, and multi-vendor work are out of scope.
+
+  ## Settled decisions, with reasons
+
+  - The field is a new per-task flag, not `InteractiveModeEnabled`. That flag parks at all four boundaries and changes prompts and closeout, while the gate wants exactly one stop. The gate reuses the interactive park, so `ParkedIsInteractiveGate` stays true and the existing levers apply. It does not reuse `InteractiveGateCleared`, which any earlier proceed, resolve, or skip also sets. The gate reads its own run fact, set by an answer at this boundary or by `skip-to-pr`, and reset by a fix dispatch or a hand fix.
+  - There is no project or node default. A default that is on is the bottleneck the brief rules out, and one that is off does nothing.
+  - A late human change owes the same review a fix session's commits get. The route exists, but `h9k review fixed` was built for a run still in its loop, so the settled state needs clearing at this park (see below). The recorded way to skip that is `h9k review resolve --merge-ready --reason`, which settles as `Settled`.
+  - The gate does not depend on `h9k task run-local`. The briefing offers it where a run skill exists, and a project without one still gets the gate, with the worktree on the page. A known run-skill parser defect is a separate task, so do not fix it here.
+  - The summary reuses the `PR SUMMARY:` block rather than a new session (tools before tokens). Median merged hall9k pull-request body: 247 words, so the opening paragraph is the bound, not the whole body.
+  - `h9k task skip-to-pr` and the `h9k pr review` lap are not reused at this park. Skip refuses here because nothing is left to skip. The lap needs a pull request and is read-only, so borrow only the idea of its factual sections.
+
+  ## Where the code is (verified at ef0ee52f9)
+
+  - The boundary: `src/Hall9k.Daemon/Review/ReviewEngine.cs:840`, with the park helper `EnsureInteractiveProceedAsync` at :7394. It reads the flag fresh; do the same. A follow-up reaches this case too, which is why the gate must check for an open pull request.
+  - Choices: `src/Hall9k.Domain/Features/Run/InteractiveBoundaryChoices.cs`. `LeversFor` keys on the phase alone and `TaskNextCommand.AppendParkChoices` reads it, so it needs to learn the gate.
+  - `h9k review fixed` is refused at this boundary by the `ParkedFromReviewPhase != FixNeeded` check in `src/Hall9k.Cli/Commands/ReviewFixedCommand.cs:147`.
+  - `h9k task drive` refuses a headless claim through `TaskDriveCommand.cs` (`UnclaimableStateAdvice`, and the state check in `ClaimAndCutAsync`). Do not convert the claim, because that would turn on interactive mode and its other stops.
+  - The moved-tip hole exists today: `Apply(ReviewBoundaryApproved)` returns to MergeReady and `PullRequestOpener` pushes whatever the branch holds, so commits made at this park reach a pull request unread and still record as a clean review. `h9k review proceed` may run from a machine without the worktree, so the check belongs with the daemon. `RunAggregate.CycleHeadSha` moves only when a cycle starts and so misses a pre-final-pass rebase; record the tip at the park instead.
+  - `run-local` has no run-state check and tears down only on closeout or a missing worktree: `src/Hall9k.Daemon/LocalLaunches/LocalLaunchSweepEngine.cs`.
+  - A parked run holds no dispatch slot (`src/Hall9k.Daemon/Dispatch/NodeLoad.cs`), and its lease is refreshed, so a gate can wait for days.
+
+  - `Apply(ReviewHumanFixApplied)` at `RunAggregate.cs:1443`, when parked from MergeReady, must do what the needs-fixes branch at `:1731` to `:1753` does (verdict, budget base, final-pass rounds). Both must also clear `_humanEndedTheLoop`, which nothing clears today. Without this the Bar clause (`ReviewEngine.cs:7890`) settles at `:1158` with no pass, which was 35 of the last 90 settles.
+  - `EnsureTipAnswersTheFixAsync` (`ReviewFixedCommand.cs:387`) compares to `CycleHeadSha`. At this boundary compare to the recorded park tip.
+  - The moved-tip check reads the branch ref, because `PullRequestOpener` pushes the branch, and treats an unreadable tip or status as moved.
+  - A run with stray uncommitted work fails or spends a recovery session at the gates (`VerificationRunner.cs:184`), which is why the `--merge-ready` guard and the anchor's hand-back line exist.
+  - The older-summary check compares author date, because the rebase at `ReviewEngine.cs:509` rewrites commit dates.
+  - `LocalLaunchTeardown.Reason` takes no run state and its sweep ticks every 20 seconds, so the stop on leaving the gate belongs in the review loop's re-entry, ahead of the gate.
+
+  ## Constraints
+
+  Events stay additive so older streams replay. New verbs go in `DispatchedSessionCommandClassification`. Tests never create branches or touch GitHub: make the moved-tip decision a pure function over observed facts and test that.
