@@ -3814,6 +3814,13 @@ public static class AgentPromptBuilder
             AppendFragment(prompt, file, "stacked-diff-range", ("ScopeBoundary", scopeBoundary));
             AppendStackedScopeBoundaryReason(prompt, baseBranch, Fragment($"{TemplateDirectory}/stacked-scope-boundary.md", "lead-in-sentence-head"));
         }
+        else if (mechanicsOverride is { DiffIsForeignPullRequest: true })
+        {
+            // A pull-request review checkout is a standalone clone with no local branches, so the
+            // ordinary range's fallback to a local base ref (shared with the project home's dev/
+            // worktree) names a ref that does not exist there.
+            AppendFragment(prompt, file, "foreign-diff-range", ("BaseBranch", baseBranch));
+        }
         else
         {
             AppendFragment(prompt, file, "ordinary-diff-range", ("BaseBranch", baseBranch));

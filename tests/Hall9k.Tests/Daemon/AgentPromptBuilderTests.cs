@@ -1234,7 +1234,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
         prompt.Should().NotContain("A second",
             "the two pr-review lenses never run at the same time, so this claim is never true here");
-        prompt.Should().Contain("Do NOT build, test, or run anything that writes into this worktree");
+        prompt.Should().Contain("Do NOT build, test, or run anything that writes into this checkout");
     }
 
     /// <summary>

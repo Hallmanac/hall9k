@@ -445,7 +445,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             "Whether a QA-persona review of a pull request in this project may launch the running "
             + "product and drive it through browser automation (idea b9b09779, piece 2). Default 'off': "
             + "the QA review reads the diff, builds its blast-radius map, and runs the project's "
-            + "end-to-end tests on the review worktree, and anything its verdict needs the running "
+            + "end-to-end tests on the review checkout, and anything its verdict needs the running "
             + "product for becomes a human walk-through it writes out step by step rather than "
             + "something it goes and does. 'on' lets that session start the product from the run skill "
             + "on the project's ledger, on an ephemeral port it reports and tears down, drive the "
@@ -1136,7 +1136,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             AnsiConsole.MarkupLine(
                 ReviewDriveSetting.ParseOnOff(settings.DesignReviewDrive, "--design-review-drive")
                     ? "[dim]Design reviews here may now stand the product up: the session launches the app on "
-                      + "the review worktree on an ephemeral port it reports, walks the changed user-facing "
+                      + "the review checkout on an ephemeral port it reports, walks the changed user-facing "
                       + "flows, screenshots them, audits each walked screen for accessibility, and tears it "
                       + "down. It still needs a run skill on this project's ledger; with none, the review is "
                       + "code-and-design-file only and says so.[/]"

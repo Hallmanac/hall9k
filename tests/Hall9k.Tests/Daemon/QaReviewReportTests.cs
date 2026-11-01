@@ -207,7 +207,7 @@ public sealed class QaReviewReportTests
 
         body.Should().Contain("## QA review");
         body.Should().Contain("Blast radius: 3 entries — 1 covered, 1 new-test, 1 walk-through.");
-        body.Should().Contain("End-to-end tests: ran on the review worktree and passed.");
+        body.Should().Contain("End-to-end tests: ran on the review checkout and passed.");
         body.Should().Contain(
             "Driven: nothing — the product was not launched, because this project has QA-review driving "
             + "turned off and has no run skill on its ledger.");
@@ -246,7 +246,7 @@ public sealed class QaReviewReportTests
 
         string body = await ComposeQaSectionAsync(failing);
 
-        body.Should().Contain("End-to-end tests: ran on the review worktree and failed; the evidence is in the report below.");
+        body.Should().Contain("End-to-end tests: ran on the review checkout and failed; the evidence is in the report below.");
         body.Should().Contain("expected 42.00, received 55.00");
         body.Should().Contain("The same test passes on a clean checkout of main");
         body.Should().Contain("33 passed, 1 failed");

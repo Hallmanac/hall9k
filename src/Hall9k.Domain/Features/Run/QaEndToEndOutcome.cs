@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
-/// What happened when a QA review ran the project's end-to-end tests on the review worktree
+/// What happened when a QA review ran the project's end-to-end tests on the review checkout
 /// (idea b9b09779, piece 2). Four observations and a sentinel for "the session never said",
 /// because all five are different facts and only four of them are observations.
 /// <para>
@@ -73,8 +73,8 @@ public sealed record QaEndToEndOutcome
     /// false (independent pre-PR review, cycle 1, adversarial finding).
     /// </summary>
     public string Describe(bool gateSetAccepted) =>
-        this == Pass ? "ran on the review worktree and passed"
-        : this == Fail ? "ran on the review worktree and failed; the evidence is in the report below"
+        this == Pass ? "ran on the review checkout and passed"
+        : this == Fail ? "ran on the review checkout and failed; the evidence is in the report below"
         : this == Absent ? "this project has none to run, so nothing was observed"
         : this == Unaccepted
             ? gateSetAccepted

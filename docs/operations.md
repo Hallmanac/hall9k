@@ -1524,7 +1524,7 @@ not joined is refused.
 The QA review reads the pull request through blast radius rather than correctness: it maps what
 the diff changes, what sits next to it, and the flows crossing either, grades every entry as
 covered, owed a new automated end-to-end test, or owed a human walk-through, and runs the
-project's end-to-end tests on the review worktree. Whether it may also launch the running product
+project's end-to-end tests on the review checkout. Whether it may also launch the running product
 and drive it through browser automation is the project's own setting, `h9k project set <project>
 --qa-review-drive on|off`, and it is **off by default** — turning it on is standing consent that a
 review starts a real process on this machine on every pull request, not just the one you are

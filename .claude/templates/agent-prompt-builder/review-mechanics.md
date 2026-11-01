@@ -62,6 +62,13 @@
   when this worktree carries no `origin/{{BaseBranch}}` at all: a task worktree's local
   base-branch ref, when one exists, is shared with the project home's `dev/` worktree and
   is routinely stale relative to this task's actual base.
+===foreign-diff-range===
+  The diff under review: `git diff origin/{{BaseBranch}}...HEAD` (commits:
+  `git log origin/{{BaseBranch}}..HEAD`). This checkout is a standalone clone with no local
+  branches at all, only remote-tracking refs, so `origin/{{BaseBranch}}` is the base to use and
+  there is no local `{{BaseBranch}}` ref to fall back to. Git LFS files are not downloaded here:
+  a path the project tracks with LFS holds its small pointer text rather than the real file.
+  That is how this checkout is cut, not a defect in the pull request, so do not report it as one.
 ===report-verified-findings===
 - Report verified findings only. For every suspected defect, read the surrounding
   code until you can confirm it is real; discard anything you cannot confirm.
@@ -70,7 +77,7 @@
   makes it misbehave, and what goes wrong).
 - Do NOT modify files, commit, push, or open pull requests. You are read-only.
 ===no-build-foreign===
-- **Do NOT build, test, or run anything that writes into this worktree.** This is
+- **Do NOT build, test, or run anything that writes into this checkout.** This is
   someone else's already-open pull request, not this task's own diff to fix — there
   is nothing here for a build or test run to verify, only to disturb.
   Reading, searching, and read-only git are what this pass is made of. This session

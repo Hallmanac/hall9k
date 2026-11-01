@@ -776,7 +776,7 @@ this same kind of task on its own (see "starts automatically by default" further
 
 `h9k task add --from-pr` adopts an existing, open pull request (a number, `owner/repo#42`, or a
 URL) as a `pr-review` task: read-only, on the owner's behalf, and never a build. The node pulls
-the pull request into a detached worktree and runs an adversarial-weighted independent review
+the pull request into a detached standalone checkout and runs an adversarial-weighted independent review
 over it — both lenses, the same machinery the pre-PR review loop uses — then parks a findings
 report the owner walks by hand, finding by finding, through the `walk-pr-review-findings` skill:
 dismiss it, comment, or have a session post on the owner's explicit go, always under the owner's
@@ -1190,7 +1190,7 @@ areas in the pre-PR Adversarial review (on by default, and read as each pass is 
 review stage composition that runs no Adversarial pass (`ConformanceOnly`, `None`) does no pre-PR
 security reading. The QA review
 reads a pull request through a blast-radius map, a covered / new-test / walk-through verdict on
-every entry, and the project's end-to-end tests run on the review worktree. The designer's own
+every entry, and the project's end-to-end tests run on the review checkout. The designer's own
 review answers seven lenses in a fixed order (user experience, conformance to the proposed
 design, motion, CSS practice, accessibility, look and feel, design system), reports `no
 reference supplied` rather than judging against an imagined design when no Figma link, image
