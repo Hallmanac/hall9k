@@ -366,7 +366,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             }
         }
 
-        using var store = CliStore.Open();
+        using DocumentStore store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
