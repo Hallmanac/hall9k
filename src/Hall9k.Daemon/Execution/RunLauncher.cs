@@ -23,6 +23,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Tasks.Rendering;
@@ -745,6 +746,12 @@ public sealed class RunLauncher(
             LessonCandidates lessonCandidates = await LoadRecordedLessonsAsync(
                 session, project, runId, cancellationToken);
             InjectedLessons lessons = lessonCandidates.For(task.LessonPick);
+            // The task's notes, read once beside the lessons for the same reason: every work prompt
+            // this method composes carries the identical section. Null when it could not be read,
+            // which composes the prompt without it; a failed read never fails the dispatch.
+            InjectedTaskNotes? taskNotes = task.Type == TaskType.PrReview || task.Type == TaskType.Spike
+                ? null
+                : await LoadTaskNotesAsync(session, project, task, runId, cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
             // before the vocabulary existed) keeps the historic review-feedback meaning.
@@ -858,7 +865,7 @@ public sealed class RunLauncher(
                         task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                         interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                         baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
-                        voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet)
+                        voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet, taskNotes: taskNotes)
                     : task.FollowUpKind == FollowUpKind.Rebase
                         // voiceSkill on both of these too: each ends in the rebase verification
                         // rule, whose gate-fix instruction asks an append-style project for an
@@ -867,7 +874,7 @@ public sealed class RunLauncher(
                             task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                             interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                             baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
-                            voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet)
+                            voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet, taskNotes: taskNotes)
                         : isStackReplay
                             ? AgentPromptBuilder.BuildStackReplay(
                                 task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
@@ -888,12 +895,12 @@ public sealed class RunLauncher(
                                     task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                     interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                                     baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
-                                    voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet)
+                                    voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet, taskNotes: taskNotes)
                                 : AgentPromptBuilder.BuildFollowUp(
                                     task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                     interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                                     baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
-                                    voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet);
+                                    voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet, taskNotes: taskNotes);
 
                 // The first lap after a driven task is handed back to automation starts from the analysis
                 // closeout made while the owner drove (task: analysis-only closeout), whatever kind of lap
@@ -958,7 +965,7 @@ public sealed class RunLauncher(
                         task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs,
                         baseBranch: runBaseBranch, baseCommit: baseCommit,
                         commandTimeout: options.Value.VerifyGateTimeout, voiceSkill: voiceSkill,
-                        lessons: lessons, localFleet: localFleet);
+                        lessons: lessons, localFleet: localFleet, taskNotes: taskNotes);
             }
 
             // isPrReview and the followUp branches above both compose through AgentPromptBuilder's
@@ -1827,6 +1834,23 @@ public sealed class RunLauncher(
             return LessonCandidates.None;
         }
     }
+
+    /// <summary>
+    /// The notes section for the prompt about to be composed, or null when the read failed, which
+    /// composes the prompt without the section. Logged once with the run id and never thrown: a
+    /// session missing its notes is a worse session, not a failed dispatch.
+    /// </summary>
+    private async Task<InjectedTaskNotes?> LoadTaskNotesAsync(
+        IQuerySession query, ProjectDetails project, TaskDetails task, Guid runId, CancellationToken cancellationToken) =>
+        await TaskNoteFeed.LoadForPromptAsync(
+            query, task.Id,
+            fleets is null
+                ? null
+                : async token => (await fleets.GetAsync(project.Id, token))?.NodeIds,
+            cancellationToken,
+            exception => logger.LogWarning(exception,
+                "Run {RunId}: could not read task {TaskId}'s notes, so this session's prompt carries no "
+                + "notes section", runId, task.Id));
 
     /// <summary>
     /// Runs the lesson pick for a fresh build and returns the section the prompt carries: the one

@@ -184,7 +184,11 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             // task's recorded pick under the daemon's own rules, or newest-first when there is none.
             lessons: await LessonPromptFeed.LoadAsync(
                 session, project.Id, fleet.LessonReader, taskDetails.LessonPick, cancellationToken),
-            localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken));
+            localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken),
+            // The task's notes, through the same Domain read the daemon uses. A failed read composes
+            // the prompt without the section.
+            taskNotes: await TaskNoteFeed.LoadForPromptAsync(
+                session, taskDetails.Id, fleet.LessonReader, cancellationToken));
 
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
         Directory.CreateDirectory(resolvedRunDirectory);
