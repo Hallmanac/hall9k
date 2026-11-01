@@ -334,6 +334,32 @@ public static class RunPaths
     public static string ChallengeProcessFile(Guid sessionId) => Path.Combine(GlobalDirectory(sessionId), "challenge-process.txt");
 
     /// <summary>
+    /// The report a plan's refinement session writes (<c>h9k plan start</c>), whose last line names the one outcome. Derived
+    /// from the session id alone, like <see cref="ChallengeReportFile"/>, so no event carries a machine path.
+    /// </summary>
+    public static string RefinementReportFile(Guid sessionId) => Path.Combine(GlobalDirectory(sessionId), "refinement-report.md");
+
+    /// <summary>The revision a refinement session wrote beside its report, in the format <c>h9k task revise --file</c> reads.</summary>
+    public static string RefinementRevisionFile(Guid sessionId) => Path.Combine(GlobalDirectory(sessionId), "refinement-revision.md");
+
+    /// <summary>Where the daemon writes a refinement session's process identity, for the same reason as <see cref="ChallengeProcessFile"/>.</summary>
+    public static string RefinementProcessFile(Guid sessionId) => Path.Combine(GlobalDirectory(sessionId), "refinement-process.txt");
+
+    /// <summary>
+    /// A plan's own directory, beside the session directories its sessions run in: the output of the child <c>h9k</c>
+    /// commands the daemon runs for it, which can quote a session's text and so never rides a stream.
+    /// </summary>
+    public static string PlanDirectory(Guid planId) => Path.Combine(Root, "plans", planId.ToString());
+
+    /// <summary>The output of the revise the daemon ran for a refinement session's revision.</summary>
+    public static string PlanReviseOutputFile(Guid planId, Guid sessionId) =>
+        Path.Combine(PlanDirectory(planId), $"revise-{sessionId:N}.txt");
+
+    /// <summary>The output of the latest publish the daemon ran for one draft of the plan.</summary>
+    public static string PlanPublishOutputFile(Guid planId, Guid draftId) =>
+        Path.Combine(PlanDirectory(planId), $"publish-{draftId:N}.txt");
+
+    /// <summary>
     /// One review cycle's merged findings: every lens's verified findings under its own
     /// heading (log #59), written by the daemon when the cycle's last pass lands. This is the
     /// document the fix session is handed and the one a park points a human at, so the name

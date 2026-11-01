@@ -2005,6 +2005,9 @@ public sealed class EventReplicationInbox(
         // unassigned, which is where the gate reads the verdict.
         typeof(DraftChallengeDispatched),
         typeof(DraftChallengeRecorded),
+        // A plan's refinement session on the same unassigned draft, for the same reason.
+        typeof(DraftRefinementDispatched),
+        typeof(DraftRefinementRecorded),
     };
 
     /// <summary>

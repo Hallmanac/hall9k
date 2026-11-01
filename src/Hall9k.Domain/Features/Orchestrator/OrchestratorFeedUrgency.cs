@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
 
@@ -37,6 +38,7 @@ public static class OrchestratorFeedUrgency
         typeof(ReviewBodyReplyRefused),
         typeof(ReviewFindingRouted),
         typeof(QuestionAsked),
+        typeof(PlanParked),
 
         // Daemon trouble: the machinery, not the work, went wrong.
         typeof(RunSessionErrorRetried),

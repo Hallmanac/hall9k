@@ -1404,6 +1404,8 @@ public sealed class TaskAggregate
         {
             RevisedSinceChallengeVerdict |= LatestChallengeVerdict is not null;
             RevisedWhileChallengeRan |= RunningChallengeSessionId is not null;
+            RevisedWhileRefinementRan |= RunningRefinementSessionId is not null;
+            RevisedSinceLastDraftSession = true;
         }
 
         if (@event.Objective.HasValue)
@@ -2653,6 +2655,14 @@ public sealed class TaskAggregate
     /// <summary>Whether the draft was revised after the running challenge was dispatched; see <see cref="LatestChallengeVerdictJudgedOlderDraft"/>.</summary>
     public bool RevisedWhileChallengeRan { get; private set; }
 
+    /// <summary>
+    /// Whether the draft was revised, in a way a challenge reads, since the last challenge verdict or refinement outcome
+    /// was recorded for it. Unlike <see cref="RevisedSinceChallengeVerdict"/> a refinement's outcome clears it, because the
+    /// plan's own revision is applied before that outcome is recorded: what is left standing is a person's revision made
+    /// after the plan declared the draft ready, which no session has read. A plan reads it before it publishes.
+    /// </summary>
+    public bool RevisedSinceLastDraftSession { get; private set; }
+
     public void Apply(DraftChallengeRequested @event) => ChallengeRequested = true;
 
     public void Apply(DraftChallengeDispatched @event)
@@ -2672,9 +2682,38 @@ public sealed class TaskAggregate
             LatestChallengeVerdict = @event;
             RevisedSinceChallengeVerdict = false;
             LatestChallengeVerdictJudgedOlderDraft = RevisedWhileChallengeRan;
+            RevisedSinceLastDraftSession = false;
         }
 
         RevisedWhileChallengeRan = false;
+    }
+
+    /// <summary>The refinement session of a plan dispatched and not yet recorded, or null when none is running.</summary>
+    public Guid? RunningRefinementSessionId { get; private set; }
+
+    /// <summary>The newest recorded refinement outcome, applied or not: what <c>h9k task show</c> prints.</summary>
+    public DraftRefinementRecorded? LatestRefinementOutcome { get; private set; }
+
+    /// <summary>
+    /// Whether the draft was revised, in a way the prompt carries, after the running refinement session was dispatched.
+    /// The daemon's draft-changed check reads exactly this: a revision from that session is applied only to the draft
+    /// the session read. The stream's version cannot answer it, because it moves for events that change nothing about
+    /// the draft (a challenge's request, a spend record).
+    /// </summary>
+    public bool RevisedWhileRefinementRan { get; private set; }
+
+    public void Apply(DraftRefinementDispatched @event)
+    {
+        RunningRefinementSessionId = @event.SessionId;
+        RevisedWhileRefinementRan = false;
+    }
+
+    public void Apply(DraftRefinementRecorded @event)
+    {
+        RunningRefinementSessionId = null;
+        LatestRefinementOutcome = @event;
+        RevisedWhileRefinementRan = false;
+        RevisedSinceLastDraftSession = false;
     }
 
     public void Apply(WorkItemPublicationCompleted @event)

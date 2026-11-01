@@ -3,6 +3,7 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -260,6 +261,19 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
                 _ => throw new InvalidOperationException("Unreachable: candidate.Data matched neither rotation type."),
             };
             return new OrchestratorFeedScope(rotationProjectId, null);
+        }
+
+        // A plan's own stream belongs to no project the resolver could name either: it is keyed by its own id and never
+        // replicates. Its events carry the project id themselves, and the ones that concern a draft carry its id.
+        if (candidate.Data is PlanParked or PlanPublished or PlanCancelled)
+        {
+            return candidate.Data switch
+            {
+                PlanParked parked => new OrchestratorFeedScope(parked.ProjectId, parked.DraftId),
+                PlanPublished published => new OrchestratorFeedScope(published.ProjectId, null),
+                PlanCancelled cancelled => new OrchestratorFeedScope(cancelled.ProjectId, null),
+                _ => throw new InvalidOperationException("Unreachable: candidate.Data matched no plan event."),
+            };
         }
 
         if (!lookup.Resolved.TryGetValue(candidate.StreamId, out ReplicationOwnership? owner))
