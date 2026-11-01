@@ -432,6 +432,20 @@ public sealed class GitReadOnlyGuardTests
         GitReadOnlyGuardRoutes.EscapesTheCheckout("git diff a\\\n#  --output=/tmp/pwn").Should().BeTrue();
 
     /// <summary>
+    /// The shell splits words on space, tab, and newline only, so a <c>#</c> after a form feed,
+    /// carriage return, vertical tab, or no-break space continues the word and the text after it is
+    /// live (independent pre-PR review, cycle 8, conformance lens).
+    /// </summary>
+    [Theory]
+    [InlineData("git diff a\f# --output=/tmp/pwn")]
+    [InlineData("git diff a\r# --output=/tmp/pwn")]
+    [InlineData("git diff a\v# --ext-diff")]
+    [InlineData("git diff a\u00A0# --output=/tmp/pwn")]
+    [InlineData("git log a\u2003# --show-signature")]
+    public void A_hash_after_a_character_the_shell_does_not_split_on_does_not_hide_a_flag(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
     /// A shell may expand an unquoted glob after a leading dot to the parent directory (macOS
     /// <c>/bin/bash</c> 3.2 does for each of these), which makes two such paths a filesystem diff of
     /// files above the checkout.

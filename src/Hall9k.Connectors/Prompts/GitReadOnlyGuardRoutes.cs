@@ -259,7 +259,7 @@ public static class GitReadOnlyGuardRoutes
             }
 
             live.Append(current);
-            atWordStart = char.IsWhiteSpace(current) || IsUnquotedShellOperator(current);
+            atWordStart = IsShellBlank(current) || IsUnquotedShellOperator(current);
             index++;
         }
 
@@ -657,6 +657,19 @@ public static class GitReadOnlyGuardRoutes
 
         return result.ToString();
     }
+
+    /// <summary>
+    /// Whether a character is one the shell splits words on: space, tab, or newline, and nothing
+    /// else. <see cref="char.IsWhiteSpace(char)"/> also accepts form feed, vertical tab, carriage
+    /// return, and the Unicode spaces, none of which bash or zsh treat as a word break, so a
+    /// <c>#</c> after one continues the word instead of starting a comment (independent pre-PR
+    /// review, cycle 8, conformance lens: <c>git diff a&lt;FF&gt;# --output=/tmp/pwn</c> had its
+    /// live flag dropped as a "comment"). Used where the question is where a comment can begin,
+    /// so that an over-wide answer hides live text; the word splitter in
+    /// <see cref="UnescapeShellQuoting"/> keeps the wider test, which errs toward exposing text.
+    /// </summary>
+    private static bool IsShellBlank(char character) =>
+        character is ' ' or '\t' or '\n';
 
     /// <summary>
     /// Whether an unquoted character is one of the shell's control or redirection operators
