@@ -66,7 +66,8 @@ public sealed class ClaudeExecutor(
         string settingsContent = request.UsesReviewPermissions
             ? ClaudeSettingsFile.BuildForPrReview(
                 options.Value.VerifyGateTimeout, request.WorktreePath, runDirectory, request.QaGateCommands,
-                request.Effort, request.AssessmentFile, request.ExtraReadRoots, request.AllowMentionAnswer)
+                request.Effort, request.AssessmentFile, request.ExtraReadRoots, request.AllowMentionAnswer,
+                request.GitHubRepository)
             : ClaudeSettingsFile.Build(
                 options.Value.VerifyGateTimeout, guardReviewThreadReplies: true, effort: request.Effort);
         await File.WriteAllTextAsync(SettingsFile(request, runDirectory), settingsContent, cancellationToken);

@@ -121,6 +121,14 @@ public sealed record AgentSpawnRequest(
     public Guid? TaskId { get; init; }
 
     /// <summary>
+    /// The <c>owner/repo</c> a pr-review session's <c>gh</c> reads run against, set as <c>GH_REPO</c> in
+    /// its settings file (<see cref="UsesReviewPermissions"/>). The review checkout is a standalone
+    /// clone with no remote, so without it <c>gh pr view 42</c> has no repository to resolve the
+    /// number in. Null for every session that works in a checkout with an origin.
+    /// </summary>
+    public string? GitHubRepository { get; init; }
+
+    /// <summary>
     /// Directories a review-permissions session may read beside its working directory and its own run
     /// directory (<see cref="UsesReviewPermissions"/>), each as a <c>Read</c> and a <c>Grep</c> rule. Set only by the
     /// draft challenge on a project that does not skip permissions, for the idea's workspace and the

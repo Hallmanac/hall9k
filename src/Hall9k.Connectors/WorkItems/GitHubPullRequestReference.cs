@@ -1,5 +1,6 @@
 using System.Globalization;
 using Hall9k.Connectors.Text;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Connectors.WorkItems;
@@ -57,6 +58,17 @@ public static class GitHubPullRequestReference
         number = 0;
         return false;
     }
+
+    /// <summary>
+    /// The <c>owner/repo</c> a pr-review task's stored external reference (<c>github-pr:owner/repo#42</c>)
+    /// names, or null when the task carries none or it is not in that form. This is what a review
+    /// session's <c>GH_REPO</c> is set from: its checkout has no remote, so <c>gh</c> cannot work the
+    /// repository out for itself.
+    /// </summary>
+    public static string? RepositoryOfTask(string? externalReference) =>
+        TryParseCanonical(ExternalReference.Parse(externalReference).Reference, out string repository, out _)
+            ? repository
+            : null;
 
     /// <summary>
     /// The <c>owner/repo</c> a pull request's own URL belongs to. Throws rather than returning
