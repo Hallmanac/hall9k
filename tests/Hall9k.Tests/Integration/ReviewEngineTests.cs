@@ -1856,6 +1856,513 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         return (taskId, runId, worktreePath, originPath);
     }
 
+    // ---- the human gate: a stop after automated review settles and before the pull request opens ----
+
+    private static ReviewEngine NewGateEngine(DocumentStore store, ScriptedExecutor executor) =>
+        NewEngine(store, executor, new DaemonOptions(), RecordingProcessRunner.NeverInvoked(), ExternalProcess.Runner);
+
+    /// <summary>Two merge-ready lens verdicts: cycle 1 converges clean and the run settles.</summary>
+    private static ScriptedExecutor CleanReview() => new(
+        "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+        "Nothing survived verification.\n\nVERDICT: merge-ready");
+
+    private async Task<List<object>> StreamAsync(DocumentStore store, Guid runId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        return [.. (await query.Events.FetchStreamAsync(runId, token: cancellationToken)).Select(e => e.Data)];
+    }
+
+    /// <summary>
+    /// A gated run whose review settled parks at the boundary before the pull request opens: nothing is
+    /// pushed or opened, the park is an interactive gate that records the reviewed tip, and its reason
+    /// speaks of the gate and never of interactive mode, which this task does not have on.
+    /// </summary>
+    [Fact]
+    public async Task A_gated_run_parks_at_the_gate_once_review_settles_and_records_the_reviewed_tip()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, humanGate: true);
+
+        ScriptedExecutor executor = CleanReview();
+        bool mergeReady = await NewGateEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the run stops at the gate instead of handing on to the pull request opener");
+        executor.Spawns.Should().HaveCount(2, "the gate starts no session of its own");
+        List<object> events = await StreamAsync(store, runId, cts.Token);
+        ReviewParked park = events.OfType<ReviewParked>().Should().ContainSingle().Subject;
+        park.IsHumanGate.Should().BeTrue();
+        park.IsInteractiveGate.Should().BeTrue("the existing interactive levers apply to it");
+        park.HumanGateTipSha.Should().Be(GitOutput(worktreePath, "rev-parse HEAD"));
+        park.Reason.Should().Contain("human gate").And.Contain($"h9k review brief {taskId}")
+            .And.Contain($"h9k review proceed {taskId}")
+            .And.NotContain("clear-interactive-mode").And.NotContainEquivalentOf("interactive mode is on");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails details = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        details.State.Should().Be(RunState.ReviewParked);
+        details.ParkedIsHumanGate.Should().BeTrue();
+    }
+
+    /// <summary>A task without the flag reviews and hands on to the pull request exactly as it always did.</summary>
+    [Fact]
+    public async Task A_task_without_the_gate_hands_straight_on_to_the_pull_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
+
+        bool mergeReady = await NewGateEngine(store, CleanReview()).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        (await StreamAsync(store, runId, cts.Token)).OfType<ReviewParked>().Should().BeEmpty();
+    }
+
+    /// <summary>Composition none dispatches no reviewer at all, and the gate holds it anyway.</summary>
+    [Fact]
+    public async Task A_gated_run_under_composition_none_still_stops_at_the_gate()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, humanGate: true, reviewStageComposition: ReviewStageComposition.None);
+
+        ScriptedExecutor executor = new();
+        bool mergeReady = await NewGateEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+        executor.Spawns.Should().BeEmpty("composition none dispatches no review session");
+        (await StreamAsync(store, runId, cts.Token)).OfType<ReviewParked>().Should().ContainSingle()
+            .Which.IsHumanGate.Should().BeTrue();
+    }
+
+    /// <summary>A proceed with the branch where the park left it opens the pull request, and nothing else is asked.</summary>
+    [Fact]
+    public async Task A_proceed_over_an_unchanged_tip_releases_the_run_to_the_pull_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token, humanGate: true);
+        (await NewGateEngine(store, CleanReview()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+
+        ScriptedExecutor after = new();
+        bool mergeReady = await NewGateEngine(store, after).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the pull request opens on the next sweep");
+        after.Spawns.Should().BeEmpty();
+        (await StreamAsync(store, runId, cts.Token)).OfType<ReviewParked>().Should().ContainSingle(
+            "one stop, however the task came to this boundary");
+    }
+
+    /// <summary>
+    /// The moved-tip hole: commits made during the park used to reach a pull request unread, still recorded
+    /// as a clean review. The daemon now sends the run back to the same boundary, naming what it found and
+    /// the two levers that answer it, and keeps the original reviewed tip.
+    /// </summary>
+    [Fact]
+    public async Task A_proceed_over_a_moved_tip_parks_at_the_same_boundary_again_instead_of_opening_anything()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, humanGate: true);
+        (await NewGateEngine(store, CleanReview()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        string reviewedTip = GitOutput(worktreePath, "rev-parse HEAD");
+        CommitDocOnlyChange(worktreePath);
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+
+        ScriptedExecutor after = new();
+        bool mergeReady = await NewGateEngine(store, after).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("nothing has read those commits");
+        after.Spawns.Should().BeEmpty();
+        List<ReviewParked> parks = [.. (await StreamAsync(store, runId, cts.Token)).OfType<ReviewParked>()];
+        parks.Should().HaveCount(2);
+        parks[1].IsHumanGate.Should().BeTrue();
+        parks[1].HumanGateTipSha.Should().Be(reviewedTip, "the reviewed tip stays the one to compare against");
+        parks[1].Reason.Should().Contain("moved from").And.Contain($"h9k review fixed {taskId}")
+            .And.Contain($"h9k review resolve {taskId} --merge-ready");
+    }
+
+    /// <summary>Uncommitted work parks the run at the gate again, whichever machine the proceed came from.</summary>
+    [Fact]
+    public async Task A_proceed_over_uncommitted_work_parks_at_the_same_boundary_again_naming_the_files()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, humanGate: true);
+        (await NewGateEngine(store, CleanReview()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        File.AppendAllText(Path.Combine(worktreePath, "Widget.cs"), "// edited by hand\n");
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+
+        bool mergeReady = await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+        List<ReviewParked> parks = [.. (await StreamAsync(store, runId, cts.Token)).OfType<ReviewParked>()];
+        parks.Should().HaveCount(2);
+        parks[1].Reason.Should().Contain("uncommitted work").And.Contain("Widget.cs");
+    }
+
+    /// <summary>
+    /// A merge-ready resolve at an EARLIER park does not answer the gate: only an answer at this boundary
+    /// releases it. Seeded by resolving a cap park merge-ready before the loop ever settles.
+    /// </summary>
+    [Fact]
+    public async Task A_merge_ready_resolve_at_an_earlier_park_leaves_the_gate_standing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token, humanGate: true);
+        await SeedParkedReviewAsync(store, runId, cts.Token);
+        await ResolveParkAsync(store, runId, ReviewVerdict.MergeReady, "fine", cts.Token);
+
+        bool mergeReady = await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the run settled by a human ending, and still stops at the gate before the pull request");
+        List<ReviewParked> parks = [.. (await StreamAsync(store, runId, cts.Token)).OfType<ReviewParked>()];
+        parks.Should().HaveCount(2);
+        parks[1].IsHumanGate.Should().BeTrue();
+    }
+
+    /// <summary>Clearing the gate while the run is still in review lets it open its pull request without stopping.</summary>
+    [Fact]
+    public async Task Clearing_the_gate_before_review_settles_lets_the_run_through_without_stopping()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token, humanGate: true);
+        ScriptedExecutor executor = CleanReview();
+        executor.OnSpawnByIndex[0] = () => SetHumanGateAsync(store, taskId, false, cts.Token).GetAwaiter().GetResult();
+
+        bool mergeReady = await NewGateEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the flag is read fresh at the boundary");
+        (await StreamAsync(store, runId, cts.Token)).OfType<ReviewParked>().Should().BeEmpty();
+    }
+
+    /// <summary>Clearing it at the park does NOT release the park: only an answer given at the boundary does.</summary>
+    [Fact]
+    public async Task Clearing_the_gate_at_the_park_does_not_release_it_but_a_proceed_still_does()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token, humanGate: true);
+        (await NewGateEngine(store, CleanReview()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        await SetHumanGateAsync(store, taskId, false, cts.Token);
+
+        (await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token))
+            .Should().BeFalse("the run is still parked");
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+
+        (await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token))
+            .Should().BeTrue();
+    }
+
+    /// <summary>The owner's recorded override opens the pull request without stopping, because it is the answer.</summary>
+    [Fact]
+    public async Task Skipping_to_the_pull_request_from_an_earlier_park_does_not_stop_at_the_gate()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token, humanGate: true);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(
+                runId,
+                new ReviewParked(runId, "An earlier park.", Now),
+                new ReviewSkippedToPullRequest(runId, DomainId.New(), Now, "ship it", false, ["every review track"]));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        (await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token)).Should().BeTrue();
+    }
+
+    /// <summary>A task with both the gate and interactive mode stops once at this boundary, not twice.</summary>
+    [Fact]
+    public async Task A_task_with_the_gate_and_interactive_mode_stops_once_at_the_boundary_before_the_pull_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, interactiveMode: true, humanGate: true,
+            reviewStageComposition: ReviewStageComposition.AdversarialOnly);
+        (await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse(
+            "interactive mode's own build-done-to-review boundary");
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+        ScriptedExecutor review = new("Met.\n\nVERDICT: merge-ready");
+        (await NewGateEngine(store, review).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse("the gate");
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+
+        bool mergeReady = await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("one answer releases the gate and interactive mode's boundary alike");
+        List<ReviewParked> parks = [.. (await StreamAsync(store, runId, cts.Token)).OfType<ReviewParked>()];
+        parks.Should().HaveCount(2).And.ContainSingle(park => park.IsHumanGate);
+    }
+
+    /// <summary>
+    /// The moved-tip hole existed at interactive mode's own gates-to-pull-request park: commits made there
+    /// reached the pull request unread. A task with interactive mode and no gate is held to the same rule.
+    /// </summary>
+    [Fact]
+    public async Task A_proceed_at_interactive_modes_pull_request_park_over_a_moved_tip_parks_again_instead_of_opening()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, interactiveMode: true, reviewStageComposition: ReviewStageComposition.AdversarialOnly);
+        (await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+        (await NewGateEngine(store, new ScriptedExecutor("Met.\n\nVERDICT: merge-ready")).ReviewAsync(runId, taskId, cts.Token))
+            .Should().BeFalse("interactive mode's gates-to-pull-request park");
+        string reviewedTip = GitOutput(worktreePath, "rev-parse HEAD");
+        CommitDocOnlyChange(worktreePath);
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+
+        bool mergeReady = await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("nothing has read those commits");
+        List<ReviewParked> parks = [.. (await StreamAsync(store, runId, cts.Token)).OfType<ReviewParked>()];
+        parks.Should().HaveCount(3);
+        parks[1].HumanGateTipSha.Should().Be(reviewedTip, "interactive mode's own park records the tip it holds");
+        parks[2].IsHumanGate.Should().BeFalse("the task has no gate, so the park is interactive mode's own");
+        parks[2].IsInteractiveGate.Should().BeTrue();
+        parks[2].Reason.Should().Contain("moved from").And.Contain($"h9k review fixed {taskId}");
+    }
+
+    /// <summary>
+    /// A merge-ready resolve at the gate over a moved tip runs the gates on that tip, dispatches no review
+    /// session, records the settlement as Settled rather than Clean, and opens the pull request.
+    /// </summary>
+    [Fact]
+    public async Task Merge_ready_at_the_gate_over_a_moved_tip_gates_the_tip_dispatches_no_review_and_settles_as_settled()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, humanGate: true);
+        (await NewGateEngine(store, CleanReview()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        CommitDocOnlyChange(worktreePath);
+        string movedTip = GitOutput(worktreePath, "rev-parse HEAD");
+        await ResolveParkAsync(store, runId, ReviewVerdict.MergeReady, "my own commits", cts.Token);
+
+        ScriptedExecutor after = new();
+        bool mergeReady = await NewGateEngine(store, after).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        after.Spawns.Should().BeEmpty("no review session is dispatched over a human's own merge-ready");
+        List<object> events = await StreamAsync(store, runId, cts.Token);
+        events.OfType<ReviewSettled>().Last().Settlement.Should().Be(
+            ReviewSettlement.Settled, "a human ended the loop, which is not a reviewer reading the tip");
+        events.OfType<VerificationPassed>().Last().HeadSha.Should().Be(movedTip, "the gates ran on the moved tip");
+        events.OfType<ReviewParked>().Should().ContainSingle("it opens the pull request without stopping at the gate again");
+    }
+
+    /// <summary>With uncommitted work in the worktree a merge-ready resolve opens nothing and commits nothing.</summary>
+    [Fact]
+    public async Task Merge_ready_at_the_gate_over_uncommitted_work_parks_again_and_commits_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, humanGate: true);
+        (await NewGateEngine(store, CleanReview()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        File.AppendAllText(Path.Combine(worktreePath, "Widget.cs"), "// unfinished\n");
+        string tipBefore = GitOutput(worktreePath, "rev-parse HEAD");
+        int gatesBefore = (await StreamAsync(store, runId, cts.Token)).OfType<VerificationPassed>().Count();
+        await ResolveParkAsync(store, runId, ReviewVerdict.MergeReady, "ship it", cts.Token);
+
+        bool mergeReady = await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+        GitOutput(worktreePath, "rev-parse HEAD").Should().Be(tipBefore, "nothing was committed on the person's behalf");
+        List<object> events = await StreamAsync(store, runId, cts.Token);
+        events.OfType<VerificationPassed>().Count().Should().Be(gatesBefore, "the gates did not run over unfinished work");
+        List<ReviewParked> parks = [.. events.OfType<ReviewParked>()];
+        parks.Should().HaveCount(2);
+        parks[1].IsHumanGate.Should().BeTrue();
+        parks[1].Reason.Should().Contain("uncommitted work").And.Contain("Widget.cs");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails details = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        details.State.Should().Be(RunState.ReviewParked);
+        details.ParkedIsHumanGate.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A hand fix at the gate: the gates run over the person's commits, a review pass reads them as it reads a
+    /// fix session's even though the loop had converged clean, and the run stops at the gate again with a
+    /// fresh tip. A gated run without interactive mode takes no other stop on the way back.
+    /// </summary>
+    [Fact]
+    public async Task A_hand_fix_at_the_gate_is_gated_and_read_by_a_review_pass_and_stops_at_the_gate_again()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, humanGate: true);
+        (await NewGateEngine(store, CleanReview()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+
+        CommitDocOnlyChange(worktreePath);
+        string handTip = GitOutput(worktreePath, "rev-parse HEAD");
+        (await RunReviewFixedAsync(store, taskId, noChange: null, cts.Token)).Should().Be(ExitCodes.Ok);
+
+        ScriptedExecutor reread = new(
+            "The notes are fine.\n\nVERDICT: merge-ready", "Nothing to add.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewGateEngine(store, reread).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the run stops at the gate again before any pull request opens");
+        reread.Spawns.Should().NotBeEmpty("a review pass reads the person's commits however review ended before");
+        List<object> events = await StreamAsync(store, runId, cts.Token);
+        events.OfType<ReviewFixDispatched>().Should().BeEmpty("no fix session ran");
+        events.OfType<ReviewDispatched>().Last().Cycle.Should().BeGreaterThan(
+            1, "a new review cycle read the person's commits, rather than the settle short-circuit taking the earlier clean ending");
+        List<ReviewParked> parks = [.. events.OfType<ReviewParked>()];
+        parks.Should().HaveCount(2);
+        parks[1].IsHumanGate.Should().BeTrue();
+        parks[1].HumanGateTipSha.Should().Be(handTip, "the next settled review records a fresh tip");
+    }
+
+    /// <summary>
+    /// <c>h9k review resolve --needs-fixes</c> at the gate dispatches a fix session over the person's text,
+    /// after which the gates run, a review pass reads the fix even though a human had ended the loop earlier,
+    /// and the run stops at the gate again before any pull request opens.
+    /// </summary>
+    [Fact]
+    public async Task Needs_fixes_at_the_gate_dispatches_a_fix_over_the_text_is_re_read_and_stops_at_the_gate_again()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, humanGate: true);
+        await SeedParkedReviewAsync(store, runId, cts.Token);
+        await ResolveParkAsync(store, runId, ReviewVerdict.MergeReady, "fine", cts.Token);
+        (await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse(
+            "a human ended the loop earlier, and the run still stops at the gate");
+        await ResolveParkAsync(store, runId, ReviewVerdict.NeedsFixes, "rename the widget to Gadget", cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Renamed.\n\nRESOLUTION: fixed",
+            "The rename is fine.\n\nVERDICT: merge-ready",
+            "Nothing to add.\n\nVERDICT: merge-ready");
+        executor.OnSpawnByIndex[0] = () => CommitDocOnlyChange(worktreePath);
+        bool mergeReady = await NewGateEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the run stops at the gate again before any pull request opens");
+        executor.Spawns[0].Prompt.Should().Contain("rename the widget to Gadget");
+        executor.Spawns.Should().HaveCountGreaterThan(1, "a review pass read the fix, whatever ended the loop before");
+        List<object> events = await StreamAsync(store, runId, cts.Token);
+        events.OfType<ReviewFixDispatched>().Should().ContainSingle();
+        List<ReviewParked> parks = [.. events.OfType<ReviewParked>()];
+        parks.Should().HaveCount(3);
+        parks[2].IsHumanGate.Should().BeTrue();
+        parks[2].HumanGateTipSha.Should().Be(GitOutput(worktreePath, "rev-parse HEAD"));
+    }
+
+    /// <summary>Under composition none a fix's commits owe no review pass; the gates run and the run stops at the gate again.</summary>
+    [Fact]
+    public async Task A_hand_fix_at_the_gate_under_composition_none_is_gated_but_dispatches_no_review()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, humanGate: true, reviewStageComposition: ReviewStageComposition.None);
+        (await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        CommitDocOnlyChange(worktreePath);
+        string handTip = GitOutput(worktreePath, "rev-parse HEAD");
+        (await RunReviewFixedAsync(store, taskId, noChange: null, cts.Token)).Should().Be(ExitCodes.Ok);
+
+        ScriptedExecutor executor = new();
+        bool mergeReady = await NewGateEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+        executor.Spawns.Should().BeEmpty("composition none owes a fix's commits no review pass");
+        List<object> events = await StreamAsync(store, runId, cts.Token);
+        events.OfType<VerificationPassed>().Last().HeadSha.Should().Be(handTip, "the gates ran over the person's commits");
+        events.OfType<ReviewParked>().Last().HumanGateTipSha.Should().Be(handTip);
+    }
+
+    /// <summary>
+    /// <c>h9k review fixed</c> at the gate through the command's own rules: refused over uncommitted work,
+    /// over a tip still where the park left it, and with --no-change, which names the proceed verb.
+    /// </summary>
+    [Fact]
+    public async Task Review_fixed_at_the_gate_refuses_uncommitted_work_an_unmoved_tip_and_no_change()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, humanGate: true);
+        (await NewGateEngine(store, CleanReview()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+
+        Func<Task> unmoved = () => RunReviewFixedAsync(store, taskId, noChange: null, cts.Token);
+        await unmoved.Should().ThrowAsync<DomainConflictException>()
+            .WithMessage("*still at*the tip this park recorded*").WithMessage($"*h9k review proceed {taskId}*");
+
+        Func<Task> noChange = () => RunReviewFixedAsync(store, taskId, noChange: "nothing to do", cts.Token);
+        await noChange.Should().ThrowAsync<DomainConflictException>()
+            .WithMessage($"*no finding is waiting*h9k review proceed {taskId}*");
+
+        File.AppendAllText(Path.Combine(worktreePath, "Widget.cs"), "// edited\n");
+        Func<Task> dirty = () => RunReviewFixedAsync(store, taskId, noChange: null, cts.Token);
+        await dirty.Should().ThrowAsync<DomainConflictException>().WithMessage("*uncommitted work*Widget.cs*");
+
+        (await StreamAsync(store, runId, cts.Token)).OfType<ReviewHumanFixApplied>().Should().BeEmpty(
+            "a refusal records nothing");
+    }
+
+    /// <summary>
+    /// A launch of the product stood up at the gate is stopped and recorded before the gates or any session
+    /// start in the worktree again, and a launch on a run that never had a gate is left to the sweep.
+    /// </summary>
+    [Fact]
+    public async Task A_launch_still_up_when_the_run_leaves_the_gate_is_stopped_and_recorded_before_anything_else()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, humanGate: true);
+        (await NewGateEngine(store, CleanReview()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        Guid launchId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new LocalLaunchStarted(
+                runId, launchId, taskId, Guid.NewGuid(), worktreePath, [], Walker: null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+        (await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token)).Should().BeTrue();
+
+        LocalLaunchStopped stopped = (await StreamAsync(store, runId, cts.Token)).OfType<LocalLaunchStopped>()
+            .Should().ContainSingle().Subject;
+        stopped.LaunchId.Should().Be(launchId);
+        stopped.Reason.Should().Be(LocalLaunchStopReason.LeftTheHumanGate);
+    }
+
+    private static async Task SetHumanGateAsync(DocumentStore store, Guid taskId, bool on, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+        session.Events.Append(taskId, TaskDecider.Revise(
+            task!, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now,
+            task!.AddedByOwnerId, humanGate: Optional<bool>.Of(on)));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private static async Task ResolveParkAsync(
+        DocumentStore store, Guid runId, ReviewVerdict verdict, string reason, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new ReviewParkResolved(runId, verdict, reason, Now, DomainId.New()));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+
     /// <summary>
     /// Rewrites this worktree's history so <paramref name="branch"/>'s tip no longer descends from
     /// whatever it did before — a fresh, unrelated root commit over the identical working-tree
@@ -1930,7 +2437,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     private async Task<(Guid TaskId, Guid RunId, string WorktreePath, Guid ProjectId)> SeedVerifiedRunWithTestGateAsync(
         DocumentStore store, CancellationToken cancellationToken, bool recordVerifyCommandsFingerprint = true,
         bool interactiveMode = false, ReviewStageComposition? reviewStageComposition = null,
-        bool seedOpeningReviewSinceSha = false)
+        bool seedOpeningReviewSinceSha = false, bool humanGate = false)
     {
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
@@ -1975,7 +2482,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         TaskAggregate task = new();
         (task, object[] lifecycle) = TaskSeed.Start(
             TaskDecider.Add(taskId, projectId, "Review me before the PR", ["reviewed"],
-                TaskType.Chore, null, null, null, Now, node.OwnerId),
+                TaskType.Chore, null, null, null, Now, node.OwnerId, humanGate: humanGate),
             node.OwnerId, Now);
         var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
         if (interactiveMode)

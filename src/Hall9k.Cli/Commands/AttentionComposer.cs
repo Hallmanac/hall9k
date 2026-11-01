@@ -1200,7 +1200,9 @@ internal static class AttentionComposer
         // property of the task) checked first: it is never a dispute or a cap/budget park, so none
         // of the refinements below apply — h9k review proceed is the lever, with h9k review resolve
         // named alongside it for whenever the human wants to redirect the boundary instead.
-        run.ParkedIsInteractiveGate
+        run.ParkedIsHumanGate
+            ? $"h9k review brief {id}, then h9k review proceed {id} to approve it (or h9k review resolve {id} --needs-fixes \"…\" or h9k review fixed {id} to change it, h9k review resolve {id} --merge-ready --reason \"…\" to open it over your own commits, or h9k task abandon {id} then h9k task add --evolved-from {id} to discard it)"
+            : run.ParkedIsInteractiveGate
             // h9k review fixed is named without claiming this particular park is the one it
             // applies to (task: a human at the wheel takes the fix role herself): only the
             // review-verdict-to-fix boundary takes it, and which of the four boundaries this park

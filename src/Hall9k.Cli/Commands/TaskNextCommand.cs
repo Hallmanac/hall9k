@@ -110,7 +110,8 @@ public sealed class TaskNextCommand : Hall9kAsyncCommand<TaskNextCommand.Setting
         RunDetails? recorded = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         TaskNextRun folded = new(
             run.State, run.ReviewPhase, run.ReviewCycle, run.ParkedFromReviewPhase, run.ParkedIsInteractiveGate,
-            recorded is not null && OwnersSessionIsActive(recorded));
+            recorded is not null && OwnersSessionIsActive(recorded),
+            run.ParkedIsHumanGate);
         CloseoutObservation? closeout = null;
         if (row.State == LifecycleState.Delivered && CloseoutObservations.IsCloseoutState(run.State))
         {
@@ -335,7 +336,7 @@ public sealed class TaskNextCommand : Hall9kAsyncCommand<TaskNextCommand.Setting
     {
         if (run.State != RunState.ReviewParked
             || !run.ParkedIsInteractiveGate
-            || InteractiveBoundaryChoices.LeversFor(run.ParkedFromReviewPhase) is not { } levers)
+            || InteractiveBoundaryChoices.LeversFor(run.ParkedFromReviewPhase, run.ParkedIsHumanGate) is not { } levers)
         {
             return;
         }
@@ -369,6 +370,7 @@ internal sealed record TaskNextFacts(
     bool ChallengeRequired = false);
 
 /// <summary>The parts of a folded run stream the answer reads.</summary>
+/// <param name="ParkedIsHumanGate">Whether the park is the task's human gate, which has its own choices whatever phase it was recorded from.</param>
 /// <param name="ActiveSessionIsOwners">
 /// Whether the session the run records as active is the owner's own registered one (an interactive
 /// session named as <c>RunDetails.RegisteredInteractiveSessionName</c>), as opposed to a delegated
@@ -380,7 +382,8 @@ internal sealed record TaskNextRun(
     int ReviewCycle,
     ReviewPhase ParkedFromReviewPhase,
     bool ParkedIsInteractiveGate,
-    bool ActiveSessionIsOwners = false);
+    bool ActiveSessionIsOwners = false,
+    bool ParkedIsHumanGate = false);
 
 /// <summary>The run state closeout last recorded, with what that state carries and when it was recorded.</summary>
 internal sealed record CloseoutObservation(RunState State, string Detail, DateTimeOffset RecordedAt);

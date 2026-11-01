@@ -180,6 +180,25 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             + "revised in the same call")]
         public bool ClearInteractiveMode { get; init; }
 
+        [CommandOption("--human-gate")]
+        [Description(
+            "Put a human gate on this task: its run stops once, after automated review has settled and "
+            + "before its GitHub pull request opens, so you can read a short briefing (h9k review brief), "
+            + "walk and run the branch, and then approve (h9k review proceed), change (h9k review resolve "
+            + "--needs-fixes, or commit by hand and h9k review fixed), or discard it (h9k task abandon, then "
+            + "h9k task add --evolved-from). Works on any live task whose pull request has not opened, not "
+            + "only a Draft, and, like --queue-first, may be the only thing revised in the call. A pr-review "
+            + "task and a spike refuse it: they open no pull request of their own")]
+        public bool HumanGate { get; init; }
+
+        [CommandOption("--clear-human-gate")]
+        [Description(
+            "Take the human gate off this task. A run still in review then opens its pull request without "
+            + "stopping; a run already parked at the gate stays parked until you answer it with h9k review "
+            + "proceed or h9k review resolve, because clearing the flag does not by itself release a park. "
+            + "Refused once the pull request is open, where there is no boundary left to hold")]
+        public bool ClearHumanGate { get; init; }
+
         [CommandOption("--kind <KIND>")]
         [Description(
             "Change a spike's own kind — research, experiment, or prototype (task: a spike is a run, "
@@ -272,6 +291,12 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         {
             throw new DomainValidationException(
                 "--queue-first and --clear-queue-first say opposite things; pass one.");
+        }
+
+        if (settings.HumanGate && settings.ClearHumanGate)
+        {
+            throw new DomainValidationException(
+                "--human-gate and --clear-human-gate say opposite things; pass one.");
         }
 
         if (settings.AcceptReducedReview && settings.ReviewStageComposition is null)
@@ -420,9 +445,15 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 ? Optional<bool>.Of(false)
                 : Optional<bool>.None;
 
+        Optional<bool> humanGate = settings.HumanGate
+            ? Optional<bool>.Of(true)
+            : settings.ClearHumanGate
+                ? Optional<bool>.Of(false)
+                : Optional<bool>.None;
+
         if (namesCurrentEpic && task.EpicId is { } currentEpic && objective.IsBlank() && criteria.Count == 0
             && agentContext.IsBlank() && !dependencies.HasValue && type.IsBlank() && model.IsBlank()
-            && settings.Effort is null
+            && settings.Effort is null && !humanGate.HasValue
             && !queuePriority.HasValue && settings.ReviewStageComposition is null
             && !settings.ClearInteractiveMode && settings.CloseLinkedIssue is null)
         {
@@ -466,7 +497,8 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             // 'default' parses to Unknown, which clears the override, the same idiom --model uses.
             effort: settings.Effort is { } effort
                 ? Optional<AgentEffort>.Of(EffortInput.Parse("--effort", effort))
-                : Optional<AgentEffort>.None);
+                : Optional<AgentEffort>.None,
+            humanGate: humanGate);
 
         session.Events.Append(taskId, revised);
         await session.SaveChangesAsync(cancellationToken);
@@ -479,7 +511,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         // h9k task start): a call that touched only a marker gets its own confirmation, since
         // "Draft X revised" and "Next: h9k task publish" are both wrong for a task that already
         // left Draft.
-        bool markerFieldsOnly = (revised.QueuePriority.HasValue || revised.ClearInteractiveMode)
+        bool markerFieldsOnly = (revised.QueuePriority.HasValue || revised.ClearInteractiveMode || revised.HumanGate.HasValue)
             && !revised.Objective.HasValue && !revised.AcceptanceCriteria.HasValue
             && !revised.AgentContext.HasValue && !revised.BlockedBy.HasValue && !revised.Type.HasValue
             && !revised.Model.HasValue && !revised.EpicId.HasValue && !revised.Effort.HasValue;
@@ -491,7 +523,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             && !revised.Objective.HasValue && !revised.AcceptanceCriteria.HasValue
             && !revised.AgentContext.HasValue && !revised.BlockedBy.HasValue && !revised.Type.HasValue
             && !revised.Model.HasValue && !revised.EpicId.HasValue && !revised.QueuePriority.HasValue
-            && !revised.ClearInteractiveMode && !revised.Effort.HasValue;
+            && !revised.ClearInteractiveMode && !revised.Effort.HasValue && !revised.HumanGate.HasValue;
         if (spikeFieldsOnly && task.State != TaskState.Draft)
         {
             AnsiConsole.MarkupLine($"[blue]Spike {shortId} revised[/]: {string.Join(", ", Changed(revised))}.");
@@ -511,6 +543,13 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             {
                 AnsiConsole.MarkupLine(
                     $"[blue]Task {shortId}'s interactive-mode flag cleared[/] — its run stops parking at phase boundaries from here on.");
+            }
+
+            if (revised.HumanGate.HasValue)
+            {
+                AnsiConsole.MarkupLine(revised.HumanGate.Value
+                    ? $"[blue]Task {shortId} now has a human gate[/]: its run stops once after automated review settles and before the pull request opens; h9k review brief {shortId} prints the briefing there."
+                    : $"[blue]Task {shortId}'s human gate cleared[/]: a run still in review opens its pull request without stopping; a run already parked at the gate stays parked until you answer it.");
             }
 
             return ExitCodes.Ok;
@@ -758,6 +797,11 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         if (revised.ClearInteractiveMode)
         {
             yield return "interactive-mode flag cleared";
+        }
+
+        if (revised.HumanGate.HasValue)
+        {
+            yield return revised.HumanGate.Value ? "human gate set" : "human gate cleared";
         }
 
         if (revised.CloseLinkedIssue.HasValue)

@@ -162,6 +162,25 @@ public sealed class AttentionSurfaceTests
     }
 
     [Fact]
+    public void A_human_gate_park_leads_with_the_briefing_and_offers_every_outcome_without_naming_interactive_mode()
+    {
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.ReviewParked, sessionProcessId: null);
+        parked.ParkedReason = "This task has a human gate: automated review has settled.";
+        parked.ParkedIsInteractiveGate = true;
+        parked.ParkedIsHumanGate = true;
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
+
+        TaskStatusRow row = StatusFixtures.Compose(task, parked);
+
+        string id = Hall9k.Cli.Commands.TaskListCommand.ShortId(task.Id);
+        row.Attention.Lever.Should().StartWith($"h9k review brief {id}")
+            .And.Contain($"h9k review proceed {id}").And.Contain($"h9k review fixed {id}")
+            .And.Contain($"h9k task add --evolved-from {id}")
+            .And.NotContain("clear-interactive-mode").And.NotContainEquivalentOf("interactive mode");
+    }
+
+    [Fact]
     public void A_pr_review_tasks_park_never_advises_the_needs_fixes_form_the_platform_refuses()
     {
         // Mirrors ReviewResolveCommand's own refusal guard for a pr-review task: it reviews
