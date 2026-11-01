@@ -1,4 +1,6 @@
+using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
+using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Idea.Rendering;
@@ -9,8 +11,10 @@ using Hall9k.Domain.Features.Project.Rendering;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Rendering;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -43,7 +47,8 @@ public sealed record ProjectHomeRenderSweepResult(
 /// and the next sweep tries again.
 /// </para>
 /// </summary>
-public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<ProjectHomeRenderEngine> logger)
+public sealed class ProjectHomeRenderEngine(
+    IDocumentStore store, ILogger<ProjectHomeRenderEngine> logger, LocalFleetProvider? fleets = null)
 {
     public async Task<ProjectHomeRenderSweepResult> PollOnceAsync(CancellationToken cancellationToken)
     {
@@ -175,6 +180,7 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
 
                 projectsInspected++;
 
+                NoteRenderContext noteContext = new();
                 HashSet<string> failedTaskShortIds = [];
                 HashSet<string> liveTaskDirectoryNames = [];
                 HashSet<string> archivedTaskDirectoryNames = [];
@@ -212,7 +218,12 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                     string directoryName = TaskDocumentRenderer.DirectoryName(task);
                     (archived ? archivedTaskDirectoryNames : liveTaskDirectoryNames).Add(directoryName);
 
-                    switch (RenderTask(tasksRoot, archivedTasksRoot, task, archived, project.Name, epicJiraReferences))
+                    // Notes are marked against this node's own identity, so the node and the fleet are read
+                    // here, once per project and only when some task has notes to mark.
+                    NoteRendering? notes = task.Notes.Count == 0
+                        ? null
+                        : await NoteRenderingAsync(query, task, project.Id, noteContext, cancellationToken);
+                    switch (RenderTask(tasksRoot, archivedTasksRoot, task, archived, project.Name, epicJiraReferences, notes))
                     {
                         case RenderOutcome.Written:
                             tasksRendered++;
@@ -566,9 +577,56 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
         task.CurrentRunId is { } currentRunId
         && (!currentRunStates.TryGetValue(currentRunId, out RunState? currentRunState) || currentRunState.IsLive);
 
+    /// <summary>The node and fleet one project's notes are marked against, each read at most once per project.</summary>
+    private sealed class NoteRenderContext
+    {
+        public bool NodeRead { get; set; }
+        public Guid NodeId { get; set; }
+        public bool FleetRead { get; set; }
+        public LocalFleet? Fleet { get; set; }
+    }
+
+    /// <summary>A task's own notes, marked and ready to render, with the fleet the author labels read.</summary>
+    private sealed record NoteRendering(IReadOnlyList<TaskNoteView> Views, LocalFleet? Fleet);
+
+    private async Task<NoteRendering?> NoteRenderingAsync(
+        IQuerySession query, TaskDetails task, Guid projectId, NoteRenderContext context,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!context.NodeRead)
+            {
+                string machineName = Environment.MachineName;
+                context.NodeId = (await query.Query<NodeDetails>()
+                    .Where(candidate => candidate.MachineName == machineName)
+                    .Take(1)
+                    .ToListAsync(cancellationToken)).FirstOrDefault()?.Id ?? Guid.Empty;
+                context.NodeRead = true;
+            }
+
+            if (!context.FleetRead && fleets is not null && task.Notes.Any(entry => entry.IsReplicated))
+            {
+                context.Fleet = await fleets.GetAsync(projectId, cancellationToken);
+                context.FleetRead = true;
+            }
+
+            // An unreadable fleet is null, which holds every replicated note: the fail-closed reading.
+            IReadOnlyList<TaskNoteView> views = TaskNoteInjection.Classify(
+                task.Id, task.Notes, [], context.NodeId, context.Fleet?.NodeIds);
+            return new NoteRendering(views, context.Fleet);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "notes.md could not be marked for task {TaskId}; a future sweep retries it", DomainId.Short(task.Id));
+            return null;
+        }
+    }
+
     private RenderOutcome RenderTask(
         string tasksRoot, string archivedTasksRoot, TaskDetails task, bool archived, string projectName,
-        IReadOnlyDictionary<Guid, string?> epicJiraReferences)
+        IReadOnlyDictionary<Guid, string?> epicJiraReferences, NoteRendering? notes)
     {
         try
         {
@@ -579,9 +637,10 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
             string rendered = TaskDocumentRenderer.Render(task, projectName, epicJiraReference);
             string targetRoot = archived ? archivedTasksRoot : tasksRoot;
             string alternateRoot = archived ? tasksRoot : archivedTasksRoot;
-            bool changed = HomeEntryWriter.Write(
-                targetRoot, task.Id, directoryName, "task.md", rendered, alternateRoots: [alternateRoot]).Changed;
-            return changed ? RenderOutcome.Written : RenderOutcome.Unchanged;
+            HomeEntryWriteResult written = HomeEntryWriter.Write(
+                targetRoot, task.Id, directoryName, "task.md", rendered, alternateRoots: [alternateRoot]);
+            bool notesChanged = notes is not null && WriteNotes(written.DirectoryPath, task, notes);
+            return written.Changed || notesChanged ? RenderOutcome.Written : RenderOutcome.Unchanged;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -590,6 +649,34 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 DomainId.Short(task.Id), projectName);
             return RenderOutcome.Failed;
         }
+    }
+
+    /// <summary>
+    /// Writes <c>notes.md</c> beside <c>task.md</c>, only when its bytes differ. A file of that name
+    /// without the generated marker is somebody's own: it is left exactly as it is and reported.
+    /// </summary>
+    private bool WriteNotes(string taskDirectory, TaskDetails task, NoteRendering notes)
+    {
+        string path = Path.Combine(taskDirectory, TaskNotesDocument.FileName);
+        string rendered = TaskNotesDocument.Render(
+            task.Id, notes.Views, entry => TaskNotesDocument.Author(entry, notes.Fleet));
+        string? current = File.Exists(path) ? File.ReadAllText(path) : null;
+        if (current == rendered)
+        {
+            return false;
+        }
+
+        if (current is not null && !current.Contains(TaskNotesDocument.GeneratedMarker, StringComparison.Ordinal))
+        {
+            logger.LogWarning(
+                "{Path} is not this platform's own notes render, so it was left as it is and task {TaskId}'s "
+                + "notes were not written there",
+                path, DomainId.Short(task.Id));
+            return false;
+        }
+
+        File.WriteAllText(path, rendered);
+        return true;
     }
 
     /// <summary>
