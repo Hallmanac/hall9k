@@ -416,13 +416,12 @@ public static class ClaudeSettingsFile
     /// Claude Code's own flag checks for it, so each rule needs something of ours standing in for
     /// those checks. For <c>git diff</c> and <c>git log</c> there are two such things, one for each
     /// way a spelling can go wrong. The git read-only guard (<see cref="GitReadOnlyGuardRoutes"/>)
-    /// reads the command text and refuses the flags that write or read outside the checkout or run
-    /// a configured program, for those two subcommands only. It cannot see what git does with the
-    /// checkout's own contents, so the <c>env</c> block below also sets
-    /// <c>safe.bareRepository=explicit</c> for the session, which makes git refuse a repository it
-    /// finds laid out inside the checkout rather than run the configuration that repository
-    /// carries. A rule for any further git command would have neither: the guard does not look at
-    /// that command's flags.
+    /// reads the command text and refuses the flags that write or read outside the checkout, plus
+    /// the two that name a configured program, for those two subcommands only. It cannot see what
+    /// git does with the checkout's own contents, so the <c>env</c> block below also sets
+    /// <c>safe.bareRepository=explicit</c> for the session, which keeps git to the checkout's own
+    /// repository. A rule for any further git command would have neither: the guard does not look
+    /// at that command's flags.
     /// </para>
     /// <para>
     /// <b>A session with gate commands does not get that setting.</b> A QA session builds and runs
@@ -527,9 +526,8 @@ public static class ClaudeSettingsFile
     /// <summary>
     /// The three <c>env</c> entries that give a session git's <c>safe.bareRepository=explicit</c>
     /// through the environment's own config variables, leading comma included so it splices after
-    /// the last entry already in the block. Git then refuses to work inside a bare repository it
-    /// discovers on its own, which is how a repository laid out inside the checkout's files would
-    /// otherwise be adopted along with the configuration it carries. The checkout itself is an
+    /// the last entry already in the block. Git then works only in a bare repository that is named
+    /// explicitly, which keeps it to the checkout's own repository. The checkout itself is an
     /// ordinary linked worktree and is unaffected.
     /// </summary>
     private const string PrReviewBareRepositoryEnvJson =
