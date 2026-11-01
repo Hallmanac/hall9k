@@ -132,6 +132,9 @@ public static class OperatingSettingsRendering
         nameof(RoleEffortSettings.ReviewVerify) or nameof(RoleEffortSettings.ReviewFinalFullPass)
             or nameof(RoleEffortSettings.SecurityReview) =>
             "whatever --effort-review itself resolves to",
+        // The challenge's floor of high holds under a node-wide effort of any value, so the generic
+        // fallthrough would tell an operator the node-wide effort moves it when it does not.
+        nameof(RoleEffortSettings.Challenge) => "high, the challenge's own floor, whatever the node-wide effort says",
         _ => "the node-wide effort above, or the model's own default when that is not set either",
     };
 
@@ -265,6 +268,10 @@ public static class OperatingSettingsRendering
         // 6be68ee2, finding 1, phase one).
         nameof(RoleModelSettings.SecurityPreflight) =>
             $"{AgentModel.SecurityPreflightDefault}, the pre-flight's own floor",
+        // The draft challenge's own floor, the courier precedent again: unset, a challenge still never
+        // runs on the node's default model, so the stated fallthrough names its own constant.
+        nameof(RoleModelSettings.Challenge) =>
+            $"{AgentModel.ChallengeDefault}, the challenge's own floor, whatever default-model says",
         _ => "the platform default",
     };
 

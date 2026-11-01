@@ -52,6 +52,14 @@ public sealed record AgentRole
     /// before any permission scoping to a real checkout exists.
     /// </summary>
     public static readonly AgentRole SecurityPreflight = new("SecurityPreflight");
+    /// <summary>
+    /// The independent challenge of a draft (<c>h9k task challenge</c>): one headless session that tests
+    /// the draft's claims against the code before it publishes. Its own role, and not
+    /// <see cref="Refinement"/> reused, because it has a floor of its own (<c>DaemonOptions.ResolveChallengeModel</c>
+    /// and <c>ResolveChallengeEffort</c>) that must hold on a node whose default model or node-wide effort
+    /// is cheaper, while refinement itself follows those.
+    /// </summary>
+    public static readonly AgentRole Challenge = new("Challenge");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly AgentRole Unknown = new("");
 

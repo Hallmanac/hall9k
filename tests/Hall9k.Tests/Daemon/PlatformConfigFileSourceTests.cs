@@ -141,6 +141,7 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
                 s.EffortByRole.Refinement = "low";
                 s.EffortByRole.Publication = "medium";
                 s.EffortByRole.Courier = "high";
+                s.EffortByRole.Challenge = "xhigh";
             },
             CancellationToken.None);
         ConfigurationBuilder builder = new();
@@ -163,11 +164,12 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
             (nameof(RoleEffortDefaults.Refinement), bound.EffortByRole.Refinement),
             (nameof(RoleEffortDefaults.Publication), bound.EffortByRole.Publication),
             (nameof(RoleEffortDefaults.Courier), bound.EffortByRole.Courier),
+            (nameof(RoleEffortDefaults.Challenge), bound.EffortByRole.Challenge),
         ];
         roles.Select(role => role.Value).Should().Equal(
-            "medium", "high", "xhigh", "low", "medium", "xhigh", "high", "xhigh", "low", "medium", "high");
+            "medium", "high", "xhigh", "low", "medium", "xhigh", "high", "xhigh", "low", "medium", "high", "xhigh");
         new RoleEffortSettings().AsPairs().Select(pair => pair.Role).Should().BeEquivalentTo(
-            roles.Select(role => role.Role), "the report and the daemon name the same eleven slots");
+            roles.Select(role => role.Role), "the report and the daemon name the same twelve slots");
     }
 
     /// <summary>

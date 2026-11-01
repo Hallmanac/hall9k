@@ -181,6 +181,18 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "text before any worktree or permission scoping to a real checkout exists.")]
         public string? ModelSecurityPreflight { get; init; }
 
+        [CommandOption("--model-challenge <MODEL>")]
+        [Description(
+            "This node's model for the Challenge role: the independent session h9k task challenge runs on a "
+            + "draft, which tests the draft's claims against the code and reports a verdict. Its own role, "
+            + "not a narrower knob under --model-refinement, and a draft's own model does not move it. Unlike "
+            + "most --model-<role> options, 'default' here does not clear to the platform default: this "
+            // The model id carries a bracketed context suffix, which help markup would read as a style tag, so the
+            // brackets are doubled here; a test pins this literal to AgentModel.ChallengeDefault.
+            + "session's own floor beneath a project's --model and this setting is claude-opus-5-5[[1m]], "
+            + "whatever --default-model says, so a node with a cheaper default model still challenges on it.")]
+        public string? ModelChallenge { get; init; }
+
         [CommandOption("--effort-build <low|medium|high|xhigh>")]
         [Description(
             "This node's reasoning effort for the Build role, the session that writes the feature. It sits above the node-wide --effort and below a "
@@ -264,6 +276,14 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "model's own default.")]
         public string? EffortSecurityPreflight { get; init; }
 
+        [CommandOption("--effort-challenge <low|medium|high|xhigh>")]
+        [Description(
+            "This node's reasoning effort for the Challenge role, the independent session h9k task challenge "
+            + "runs on a draft. It sits below a project's (h9k project set --effort) own value and above a floor "
+            + "of high; the node-wide --effort and a draft's own effort do not move it. Accepts low, medium, high "
+            + "or xhigh; 'default' clears it, falling back to high.")]
+        public string? EffortChallenge { get; init; }
+
         /// <summary>Every per-role effort option, paired with where its value lands, so validation, the no-op check and the write all walk one list.</summary>
         internal IReadOnlyList<RoleEffortOption> RoleEfforts =>
         [
@@ -286,6 +306,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             new("--effort-refinement", "effort (refinement)", EffortRefinement, (roles, value) => roles.Refinement = value),
             new("--effort-publication", "effort (publication)", EffortPublication, (roles, value) => roles.Publication = value),
             new("--effort-courier", "effort (courier)", EffortCourier, (roles, value) => roles.Courier = value),
+            new("--effort-challenge", "effort (challenge)", EffortChallenge, (roles, value) => roles.Challenge = value),
         ];
 
         [CommandOption("--max-compliance-review-cycles <N>")]
@@ -565,7 +586,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.OrchestratorModel is null && settings.OrchestratorEffort is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null && settings.ModelSecurityReview is null
-            && settings.ModelSecurityPreflight is null
+            && settings.ModelSecurityPreflight is null && settings.ModelChallenge is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
             && settings.ModelPublication is null && settings.ModelCourier is null
             && settings.MaxComplianceReviewCycles is null
@@ -604,7 +625,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.OrchestratorModel is null && settings.OrchestratorEffort is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null && settings.ModelSecurityReview is null
-            && settings.ModelSecurityPreflight is null
+            && settings.ModelSecurityPreflight is null && settings.ModelChallenge is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
             && settings.ModelPublication is null && settings.ModelCourier is null
             && settings.InteractiveClaimStaleAfterDays is null
@@ -915,6 +936,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         ApplyModel("model (refinement)", settings.ModelRefinement, value => operating.ModelByRole.Refinement = value, changed);
         ApplyModel("model (publication)", settings.ModelPublication, value => operating.ModelByRole.Publication = value, changed);
         ApplyModel("model (courier)", settings.ModelCourier, value => operating.ModelByRole.Courier = value, changed);
+        ApplyModel("model (challenge)", settings.ModelChallenge, value => operating.ModelByRole.Challenge = value, changed);
 
         if (settings.MessagePollActiveMin is { } activeMin)
         {
