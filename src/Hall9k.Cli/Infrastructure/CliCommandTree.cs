@@ -1939,6 +1939,26 @@ public static class CliCommandTree
                     + "claim against anything external, and the platform records what its own channels can see.")
                 .WithExample("task", "log-interaction", "28b19893", "--party", "\"another agent session\"", "--summary", "\"Shared this run's worktree path with it\"")
                 .WithExample("task", "log-interaction", "28b19893", "--party", "\"the operator\"", "--summary", "\"Skip the workaround\"", "--human-directed", "--reason", "\"Real bug\"");
+            task.AddCommand<TaskNoteCommand>("note")
+                .WithDescription(
+                    "Leave a short note on a task for the sessions that work it next: a seam that is not where "
+                    + "the brief says, a test that only passes with a certain setup. Works from a terminal, an "
+                    + "attended session and a dispatched session, on a task in any state; inside a dispatched "
+                    + "session it works on that session's own task and no other. At most 1,000 characters. "
+                    + "Build, follow-up and fix sessions on the task, and on the other tasks in its epic, find it "
+                    + "in their prompt; review sessions are given none. A claim meant to outlive the task belongs "
+                    + "in h9k learn instead. A note is permanent and public, recorded in the project's shared "
+                    + "ledger, so it never holds secrets, credentials, personal data, customer details, or "
+                    + "another project's name.")
+                .WithExample("task", "note", "28b19893", "\"The projection rebuilds lazily, so a test must force a rebuild\"");
+            task.AddCommand<TaskNotesCommand>("notes")
+                .WithDescription(
+                    "Print a task's notes for a person, newest first with each note's id, time, author, session, "
+                    + "source and provenance mark, then the notes of the other tasks in its epic in this project. "
+                    + "Notes the trust rule keeps out of every prompt (a note replicated from outside your fleet, "
+                    + "or from a node nobody observed) are shown here, marked as held. Refused inside a dispatched "
+                    + "session: a session receives its notes through its prompt.")
+                .WithExample("task", "notes", "28b19893");
             task.AddCommand<TaskRunLocalCommand>("run-local")
                 .WithDescription(
                     "Stand this task's branch up locally, in the review worktree it already has, by the "

@@ -5,7 +5,7 @@ namespace Hall9k.Cli.Infrastructure;
 /// <summary>
 /// What a command's own <c>CommandSettings</c> means to a session running inside a dispatched run's
 /// own worktree (task: a dispatched session cannot drive the project's own lifecycle). Exactly one
-/// of the three applies to every command this binary registers, and <c>DispatchedSessionTreeTests</c>
+/// of the four applies to every command this binary registers, and <c>DispatchedSessionTreeTests</c>
 /// walks the live tree to prove none was left out.
 /// </summary>
 internal enum DispatchedSessionAccess
@@ -23,6 +23,18 @@ internal enum DispatchedSessionAccess
     /// business calling on its own: the orchestrator or a person owns it.
     /// </summary>
     Refused,
+
+    /// <summary>
+    /// Refused when <see cref="Hall9k.Domain.Features.Run.DispatchedRunEnvironment.RunIdVariable"/> is
+    /// set, in every dispatched session, review or not, and for a reason that is not the lifecycle
+    /// rule: a read whose output a session is meant to receive through its prompt instead, or not at
+    /// all. <c>h9k task notes</c> is how a held-back note or one past the cap would reach a session that
+    /// is not meant to see it, and <c>h9k logs</c> prints a session's own transcript, with its
+    /// <c>h9k task note</c> calls and its closing block. A new session kind is refused by default, so
+    /// the rule needs no role vocabulary and no list of review spawn sites. A plain terminal and an
+    /// attended session are unaffected.
+    /// </summary>
+    PersonOnly,
 }
 
 /// <summary>
@@ -31,7 +43,7 @@ internal enum DispatchedSessionAccess
 /// Spectre's <c>CommandContext</c> before a command's <c>ExecuteAsync</c> ever runs. The verb string
 /// alongside each entry is the exact <c>h9k</c> command line it names, quoted back in a refusal.
 /// <para>
-/// Read-only verbs (<c>show</c>, <c>list</c>, <c>status</c>, <c>logs</c>, <c>decide list</c>/<c>show</c>,
+/// Read-only verbs (<c>show</c>, <c>list</c>, <c>status</c>, <c>decide list</c>/<c>show</c>,
 /// <c>learn list</c>/<c>show</c>, <c>messages</c>, <c>doctor</c>, and every plain read under
 /// <c>project</c>, <c>owner</c>, <c>connection</c>, <c>config</c>, <c>daemon</c>, and
 /// <c>orchestrator</c> — <c>project show</c>/<c>list</c>/<c>members</c>/<c>prompt-addendum
@@ -41,7 +53,9 @@ internal enum DispatchedSessionAccess
 /// prompts and skills point at several of them
 /// (independent pre-PR review, cycle 1: a wholesale block on those nouns had refused reads the
 /// platform itself tells a dispatched session to run).
-/// Allowed verbs (<c>learn record</c>/<c>retire</c>/<c>distill</c>, <c>decide record</c> — which already
+/// Two reads are person-only (<see cref="DispatchedSessionAccess.PersonOnly"/>): <c>task notes</c> and
+/// <c>logs</c>.
+/// Allowed verbs (<c>task note</c>, <c>learn record</c>/<c>retire</c>/<c>distill</c>, <c>decide record</c> — which already
 /// carries its own attendance refusal (Decisions Log, <c>DecisionDecider</c>) — the task-lifecycle reporting verbs
 /// <c>register-session</c>, <c>verify</c>, <c>deliver</c>, <c>handback</c>, <c>release</c>,
 /// <c>log-interaction</c>, <c>write-jira</c>, <c>pr reply</c>, <c>pr reply-guard</c>,
@@ -77,7 +91,7 @@ internal static class DispatchedSessionCommandClassification
         {
             // ---- top level ----
             [typeof(StatusCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "status"),
-            [typeof(LogsCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "logs"),
+            [typeof(LogsCommand.Settings)] = (DispatchedSessionAccess.PersonOnly, "logs"),
             [typeof(DoctorCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "doctor"),
             [typeof(MessagesCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "messages"),
             [typeof(InstallCommand.Settings)] = (DispatchedSessionAccess.Refused, "install"),
@@ -110,6 +124,11 @@ internal static class DispatchedSessionCommandClassification
             [typeof(TaskWriteJiraCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task write-jira"),
             [typeof(TaskLinkIssueCommand.Settings)] = (DispatchedSessionAccess.Refused, "task link-issue"),
             [typeof(TaskLogInteractionCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task log-interaction"),
+            // Writing a note is a dispatched session's own legitimate act, on its own task only (the verb
+            // itself refuses any other); reading notes is for a person, since a session receives them
+            // through its prompt.
+            [typeof(TaskNoteCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task note"),
+            [typeof(TaskNotesCommand.Settings)] = (DispatchedSessionAccess.PersonOnly, "task notes"),
             [typeof(TaskRunLocalCommand.Settings)] = (DispatchedSessionAccess.Refused, "task run-local"),
             [typeof(TaskAbandonCommand.Settings)] = (DispatchedSessionAccess.Refused, "task abandon"),
             [typeof(TaskRetryCommand.Settings)] = (DispatchedSessionAccess.Refused, "task retry"),

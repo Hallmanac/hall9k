@@ -96,6 +96,16 @@ public sealed class ClaudeExecutor(
         {
             environment.Add(new(DispatchedRunEnvironment.TaskIdVariable, taskId.ToString()));
         }
+
+        // The session's own id and name, so h9k task note can record which session wrote a note. On a
+        // resume the session is the one being resumed; SessionId then only names this leg's artifacts.
+        environment.Add(new(
+            DispatchedRunEnvironment.SessionIdVariable, (request.ResumeSessionId ?? request.SessionId).ToString()));
+        if (request.SessionName.IsNotBlank())
+        {
+            environment.Add(new(DispatchedRunEnvironment.SessionNameVariable, request.SessionName));
+        }
+
         SpawnedProcess spawned = processManager.Spawn(new ProcessSpawnRequest(
             command, request.WorktreePath, environment, promptFile, streamFile, standardErrorFile));
 

@@ -40,4 +40,15 @@ public static class DispatchedRunEnvironment
     /// with no task of their own, and the interceptor's message degrades gracefully when it is unset.
     /// </summary>
     public const string TaskIdVariable = "HALL9K_DISPATCHED_TASK_ID";
+
+    /// <summary>
+    /// The id of the Claude Code session the process is, stamped beside <see cref="RunIdVariable"/> at
+    /// the same two spawn sites so <c>h9k task note</c> can record which session wrote a note. On a
+    /// resumed session it is the session being resumed, not the dispatch's own id. Absent from an
+    /// attended session and a plain terminal, which therefore record no session.
+    /// </summary>
+    public const string SessionIdVariable = "HALL9K_DISPATCHED_SESSION_ID";
+
+    /// <summary>The session's name, stamped and read exactly as <see cref="SessionIdVariable"/> is.</summary>
+    public const string SessionNameVariable = "HALL9K_DISPATCHED_SESSION_NAME";
 }

@@ -6,7 +6,9 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Infrastructure;
 
 /// <summary>
-/// Refuses a lifecycle-changing verb before it reaches the store when this process is itself a
+/// Refuses a lifecycle-changing verb (<see cref="DispatchedSessionAccess.Refused"/>), or a read a session is meant
+/// to receive through its prompt instead (<see cref="DispatchedSessionAccess.PersonOnly"/>), before it reaches the
+/// store when this process is itself a
 /// dispatched run's own headless session (task: a dispatched session cannot drive the project's own
 /// lifecycle; decision 13f11af2). <see cref="Hall9k.Daemon.Execution.ClaudeExecutor.SpawnAsync"/>
 /// and <c>Hall9k.Cli.Commands.HeadlessLaunch.SpawnDetached</c> are the only two places that ever stamp
@@ -42,7 +44,7 @@ internal sealed class DispatchedSessionInterceptor(Func<string, string?> environ
     {
         if (!DispatchedSessionCommandClassification.BySettingsType.TryGetValue(
                 settings.GetType(), out (DispatchedSessionAccess Access, string Verb) classification)
-            || classification.Access != DispatchedSessionAccess.Refused)
+            || classification.Access is not (DispatchedSessionAccess.Refused or DispatchedSessionAccess.PersonOnly))
         {
             return;
         }
@@ -58,10 +60,14 @@ internal sealed class DispatchedSessionInterceptor(Func<string, string?> environ
             ? "a dispatched session working inside this task's own worktree"
             : $"a dispatched session working inside task {taskId}'s own worktree";
 
-        throw new DomainBusinessRuleException(
-            $"h9k {classification.Verb} is refused: this process is run {runId}, {whereClause}, and a "
-            + "dispatched session cannot drive this task's — or another task's or idea's — own lifecycle "
-            + "(decision 13f11af2). The orchestrator or a person owns this call; state the need in your "
-            + "closing summary instead of retrying it.");
+        throw new DomainBusinessRuleException(classification.Access == DispatchedSessionAccess.PersonOnly
+            ? $"h9k {classification.Verb} is refused: this process is run {runId}, {whereClause}, and this "
+              + "command is for a person at a terminal. A session receives its task notes through its prompt, "
+              + "not by reading them back, and it does not read run transcripts. Work from the prompt you were "
+              + "given; state the need in your closing summary instead of retrying it."
+            : $"h9k {classification.Verb} is refused: this process is run {runId}, {whereClause}, and a "
+              + "dispatched session cannot drive this task's — or another task's or idea's — own lifecycle "
+              + "(decision 13f11af2). The orchestrator or a person owns this call; state the need in your "
+              + "closing summary instead of retrying it.");
     }
 }

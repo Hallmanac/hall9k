@@ -63,6 +63,22 @@ public sealed class DispatchedSessionTreeTests
     }
 
     /// <summary>
+    /// A session receives its task notes through its prompt, so reading them back and reading a
+    /// transcript (which prints a session's own note calls and closing block) are person-only; writing
+    /// a note stays a dispatched session's own legitimate act.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(Hall9k.Cli.Commands.TaskNotesCommand.Settings), "task notes", "PersonOnly")]
+    [InlineData(typeof(Hall9k.Cli.Commands.LogsCommand.Settings), "logs", "PersonOnly")]
+    [InlineData(typeof(Hall9k.Cli.Commands.TaskNoteCommand.Settings), "task note", "Allowed")]
+    public void The_note_verbs_and_logs_are_classified_as_the_notes_rule_needs(
+        Type settingsType, string verb, string access)
+    {
+        DispatchedSessionCommandClassification.BySettingsType[settingsType]
+            .Should().Be((Enum.Parse<DispatchedSessionAccess>(access), verb));
+    }
+
+    /// <summary>
     /// Runs one printed example through the shipped tree, stopping the instant Spectre has bound
     /// and validated its settings — the same technique <see cref="CommandTreeHelpTests.Parse"/>
     /// uses to prove an example is runnable, repurposed here to capture which settings CLR type the
