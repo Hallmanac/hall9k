@@ -165,7 +165,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + $"courier's own floor beneath a project's --model and this setting is {AgentModel.CourierDefault}, "
             + "cheap by design, so clearing this override still leaves a courier running on a "
             + "deliberately inexpensive model rather than falling through to the same tier a build or "
-            + "review session runs on.")]
+            + "review session runs on. It also moves the lesson picker (--lesson-picker), which resolves "
+            + "its model exactly as the courier does for the same project and node.")]
         public string? ModelCourier { get; init; }
 
         [CommandOption("--model-security-preflight <MODEL>")]
@@ -249,7 +250,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [Description(
             "This node's reasoning effort for the Courier role, delivering a project's orchestrator feed to its live orchestrator session. It sits above the node-wide --effort and below a "
             + "project's (h9k project set --effort) and a task's (h9k task revise --effort) own value. Accepts low, "
-            + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the model's own default.")]
+            + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the model's own default. "
+            + "It also moves the lesson picker (--lesson-picker), which resolves its effort exactly as the courier does, "
+            + "and a task's own effort never moves either.")]
         public string? EffortCourier { get; init; }
 
         [CommandOption("--effort-security-preflight <low|medium|high|xhigh>")]
@@ -481,6 +484,22 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "lessons and three essays are each a prompt nobody reads. A lesson is never cut mid-claim: "
             + "one that will not fit whole is held back whole and counted.")]
         public int? LessonPromptMaxCharacters { get; init; }
+
+        [CommandOption("--lesson-picker <off|shadow|on>")]
+        [Description(
+            "What this node does with the lesson picker, a small one-turn session with no tools that reads a "
+            + "task and the lessons this node may put in a prompt and picks the ones most relevant to it, once "
+            + "before the task's first build (LessonPickerMode, default shadow). off: no picker session runs and "
+            + "nothing is recorded. shadow: the pick runs and is recorded on the task (h9k task show prints it) "
+            + "while every prompt stays byte-identical to the one composed with the setting off, so the pick can "
+            + "be compared against newest-first before anyone relies on it. on: the picked set also goes into the "
+            + "build, follow-up, fix, rebase and gate-repair prompts and the conformance review pass, while the "
+            + "adversarial and Verify review passes keep newest-first; a failed or empty pick falls back to "
+            + "newest-first and records why. The picker runs on the courier's model and effort for the project "
+            + "(--model-courier, --effort-courier). Read fresh at every prompt composition, so a change is in "
+            + "force at the next one with no daemon restart; a set picked under shadow never reaches a prompt "
+            + "after a change to on.")]
+        public string? LessonPicker { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -532,13 +551,14 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         // InviteExpiryHours: h9k node invite/h9k project invite read the file fresh at mint time;
         // ReleaseChannel and ReleaseCheckIntervalHours: the release lookup and the daemon's release
         // loop read the file fresh at each check;
-        // the two lesson-prompt caps: LessonPromptFeed reads the file fresh at every prompt
-        // composition), so a call touching only these, in any combination, gets the "already in
+        // the two lesson-prompt caps and the lesson picker setting: LessonPromptFeed reads the file
+        // fresh at every prompt composition), so a call touching only these, in any combination, gets the "already in
         // force" note below rather than the daemon-restart one every other setting here needs.
         bool onlyImmediateEffectSettingsChanged =
             (settings.InteractiveClaimStaleAfterDays is not null || settings.InviteExpiryHours is not null
                 || settings.ReleaseChannel is not null || settings.ReleaseCheckIntervalHours is not null
-                || settings.LessonPromptMaxLessons is not null || settings.LessonPromptMaxCharacters is not null)
+                || settings.LessonPromptMaxLessons is not null || settings.LessonPromptMaxCharacters is not null
+                || settings.LessonPicker is not null)
             && settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.Effort is null && settings.RoleEfforts.All(option => option.Input is null)
@@ -564,7 +584,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         else
         {
             AnsiConsole.MarkupLineInterpolated(
-                $"[dim]Written to {Hall9kDatabase.ConfigFile} — a running daemon picks this up on its next start (h9k daemon stop, then h9k daemon start); h9k config show prints the effective settings. (--interactive-claim-stale-after-days, --invite-expiry-hours, --release-channel and --release-check-interval-hours, if you set any of them, are already in force: each is read fresh from the file, with no daemon restart involved.)[/]");
+                $"[dim]Written to {Hall9kDatabase.ConfigFile} — a running daemon picks this up on its next start (h9k daemon stop, then h9k daemon start); h9k config show prints the effective settings. (--interactive-claim-stale-after-days, --invite-expiry-hours, --release-channel, --release-check-interval-hours, --lesson-prompt-max-lessons, --lesson-prompt-max-characters and --lesson-picker, if you set any of them, are already in force: each is read fresh from the file, with no daemon restart involved.)[/]");
         }
 
         return ExitCodes.Ok;
@@ -597,7 +617,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.AutoPrReviewMintHold is null && settings.SessionContainment is null
             && settings.InviteExpiryHours is null && settings.ReleaseChannel is null
             && settings.ReleaseCheckIntervalHours is null
-            && settings.LessonPromptMaxLessons is null && settings.LessonPromptMaxCharacters is null)
+            && settings.LessonPromptMaxLessons is null && settings.LessonPromptMaxCharacters is null
+            && settings.LessonPicker is null)
         {
             throw new DomainValidationException(
                 "Nothing to change — pass at least one setting, e.g. --max-concurrent-task-runs 2. "
@@ -793,6 +814,17 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
                 + "h9k learn distill.");
         }
 
+        // Refused rather than coerced, naming all three words: a typo here would otherwise be written
+        // to the file and then read back as shadow, which is a setting nobody asked for.
+        if (settings.LessonPicker is { } lessonPicker
+            && !LessonPickerMode.FromInput(lessonPicker).IsWellFormed)
+        {
+            throw new DomainValidationException(
+                $"--lesson-picker must be one of {string.Join(", ", LessonPickerMode.Settable.Select(mode => $"\"{mode.Value}\""))}: "
+                + "off runs no picker session and records nothing, shadow picks and records while every prompt "
+                + "stays as it was, and on also puts the picked lessons into the prompts that may carry them.");
+        }
+
         if (settings.LessonPromptMaxCharacters is { } maxCharacters
             && (maxCharacters < 1 || maxCharacters > LessonInjectionCaps.MaxConfigurableCharacters))
         {
@@ -954,6 +986,12 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             operating.LessonPromptMaxCharacters = lessonPromptMaxCharacters;
             changed.Add($"lesson-prompt-max-characters = {lessonPromptMaxCharacters}");
+        }
+
+        if (settings.LessonPicker is { } lessonPickerValue)
+        {
+            operating.LessonPicker = LessonPickerMode.FromInput(lessonPickerValue).Value;
+            changed.Add($"lesson-picker = {operating.LessonPicker}");
         }
 
         if (settings.MaxComplianceReviewCycles is { } complianceCap)

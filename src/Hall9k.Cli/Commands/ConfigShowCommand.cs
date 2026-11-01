@@ -174,6 +174,11 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
             "lesson-prompt-max-lessons/-characters",
             $"{lessonCaps.MaxLessons} / {lessonCaps.MaxCharacters} ({lessonCapsOrigin})".EscapeMarkup());
 
+        // The lesson picker, read fresh by every prompt composition for the same reason, and resolved
+        // through the one function the composition itself uses, so a hand-edited word nobody recognizes
+        // shows as the shadow it behaves as, and says so.
+        table.AddRow("lesson-picker", LessonPickerDisplay(configured).EscapeMarkup());
+
         AnsiConsole.Write(table);
 
         foreach (string line in await SpendLinesAsync(report, cancellationToken))
@@ -184,6 +189,22 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
         AnsiConsole.MarkupLine(
             "\n[dim]Change a setting:[/] h9k config set --max-concurrent-task-runs 2");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The lesson-picker row: the mode a composition would act on, and where it came from. A word nobody
+    /// recognizes shows as the shadow it behaves as, with the word named, rather than as though the file
+    /// had said shadow.
+    /// </summary>
+    internal static string LessonPickerDisplay(OperatingSettings configured)
+    {
+        LessonPickerMode mode = LessonPickerMode.Resolve(configured.LessonPicker);
+        string origin = configured.LessonPicker is null
+            ? "default"
+            : LessonPickerMode.FromInput(configured.LessonPicker).IsWellFormed
+                ? "config file"
+                : $"config file value '{configured.LessonPicker}' is not off, shadow or on, so shadow applies";
+        return $"{mode.Value} ({origin})";
     }
 
     /// <summary>
