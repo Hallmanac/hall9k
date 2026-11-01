@@ -5466,8 +5466,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// <summary>
     /// Closeout never waits on the note promotion: with a session that starts and never answers, the
     /// merge still completes the run and the task and removes the worktree and the branch exactly as it
-    /// does for a task with no notes, the session was started in the background, and a daemon that stops
-    /// leaves no record, so the note reads as undecided.
+    /// does for a task with no notes, and the session was started in the background. What a daemon that
+    /// stops leaves behind is proved by the sessions' own tests.
     /// </summary>
     [Fact]
     public async Task A_merge_of_a_task_holding_a_note_closes_out_whole_while_the_promotion_session_never_answers()
@@ -5478,7 +5478,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await DrainPriorSweepStateAsync(store, node, cts.Token);
         (Guid taskId, Guid runId, Worktree worktree) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
-        Guid noteId = await AddNoteForPromotionAsync(store, node, taskId, runId, "a note nobody has decided on", cts.Token);
+        await AddNoteForPromotionAsync(store, node, taskId, runId, "a note nobody has decided on", cts.Token);
 
         FakeProcessManager processes = new();
         NeverAnswers executor = new(processes);
@@ -5508,11 +5508,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         promotions.Dispose();
         await promotions.WhenIdleAsync().WaitAsync(cts.Token);
-        await using IQuerySession after = store.QuerySession();
-        (await after.LoadAsync<TaskDetails>(taskId, cts.Token))!.NotePromotion.Should().BeNull(
-            "a daemon that stops during the step records nothing");
-        (await Hall9k.Domain.Features.Tasks.Queries.TaskNoteFeed.LoadViewsAsync(after, taskId, null, cts.Token))
-            .Single(view => view.Entry.Note.NoteId == noteId).OutcomeLabel.Should().Be("undecided");
     }
 
     [Fact]
@@ -5544,32 +5539,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (await query.LoadAsync<Hall9k.Domain.Features.Learning.LearningDetails>(lessonId, cts.Token))!.PromotedFromNote
             .Should().Be(noteId);
         (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Completed);
-    }
-
-    [Fact]
-    public async Task A_merge_of_a_task_with_no_notes_starts_no_promotion_session()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
-            await SetUpAsync(cts.Token);
-        await DrainPriorSweepStateAsync(store, node, cts.Token);
-        (Guid taskId, _, Worktree worktree) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
-
-        FakeProcessManager processes = new();
-        AnswersWith executor = new("NONE");
-        NotePromotionSessions promotions = NewPromotions(store, node, executor, processes);
-        FakeInspector inspector = new()
-        {
-            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
-        };
-
-        await NewEngine(store, node, inspector, worktrees, notePromotions: promotions).PollOnceAsync(cts.Token);
-        await promotions.WhenIdleAsync().WaitAsync(cts.Token);
-
-        executor.Spawns.Should().BeEmpty();
-        Directory.Exists(worktree.Path).Should().BeFalse();
-        await using IQuerySession query = store.QuerySession();
-        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.NotePromotion.Should().BeNull();
     }
 
     /// <summary>

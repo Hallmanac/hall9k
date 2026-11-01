@@ -71,7 +71,7 @@ public sealed class LearningShowCommand : Hall9kAsyncCommand<LearningShowCommand
                 : "on a task this lesson names no id for";
             AnsiConsole.MarkupLine(
                 $"[dim]Promoted from[/] note {sourceNote} {noteTask} "
-                + "[dim](a closeout step copied it and rewrote it as this claim; the note's text is read with h9k task notes)[/]");
+                + "[dim](a closeout step cut this claim from it; the note's text is read with h9k task notes)[/]");
         }
 
         if (learning.RetireReason is { } reason)

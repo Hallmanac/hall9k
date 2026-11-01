@@ -35,6 +35,7 @@ public sealed record NotePromotionVerdict(
                 _ when !NotePromotionClaim.IsPrintable(keep.Claim) => NoteDropReason.ClaimUnprintable,
                 _ when !NotePromotionClaim.IsGroundedIn(keep.Claim, textById.GetValueOrDefault(keep.NoteId, string.Empty)) =>
                     NoteDropReason.ClaimNotFromNote,
+                // The ceiling is NotePromotionLimits.MaxKept; this type holds exactly that many kept notes.
                 _ when keptId is not null => NoteDropReason.OverCeiling,
                 _ => null,
             };
