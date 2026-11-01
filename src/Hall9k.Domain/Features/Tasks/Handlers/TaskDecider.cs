@@ -41,7 +41,9 @@ public static class TaskDecider
         TaskOrigin? origin = null,
         ExternalReference? secondaryExternalReference = null,
         SpikeKind? spikeKind = null,
-        string? exitCriterion = null)
+        string? exitCriterion = null,
+        bool humanGate = false,
+        Guid? evolvedFromTaskId = null)
     {
         if (projectId == Guid.Empty)
         {
@@ -83,6 +85,7 @@ public static class TaskDecider
         string? normalizedComposition = VetReviewStageComposition(
             reviewStageComposition, reviewStageCompositionAcknowledged, "--review-stage-composition");
         RefuseCompositionOnPrReview(type, normalizedComposition);
+        RefuseHumanGateWithoutPullRequest(type, humanGate);
         StackedEdgeDeclaration stackedOn = VetStackedEdge(
             id, stackedOnTaskId, stackedOnPullRequestNumber, dependencies, type);
         // Same closed vocabulary Publish and SetPreApproved are held to, refused the same way: a
@@ -107,7 +110,34 @@ public static class TaskDecider
             SecondaryExternalReference: secondaryExternalReference,
             SpikeKind: spikeKind,
             ExitCriterion: exitCriterion.IsNotBlank() ? exitCriterion!.Trim() : null,
-            InitialScope: ReplicationScope.Fleet);
+            InitialScope: ReplicationScope.Fleet,
+            HumanGate: humanGate,
+            EvolvedFromTaskId: evolvedFromTaskId);
+    }
+
+    /// <summary>
+    /// A human gate holds a run before its GitHub pull request opens, so a task that never opens
+    /// one of its own has nothing for it to hold: a pr-review task reviews someone else's pull
+    /// request read-only, and a spike's branch is never shipped. Refused rather than recorded and
+    /// ignored, because a flag that silently does nothing tells its owner a stop exists that never
+    /// happens. Public for the same reason <see cref="VetModel"/> is: <c>h9k task add</c> prompts for
+    /// the objective between reading its options and reaching this decider.
+    /// </summary>
+    public static void RefuseHumanGateWithoutPullRequest(TaskType type, bool humanGate)
+    {
+        if (!humanGate)
+        {
+            return;
+        }
+
+        if (type == TaskType.PrReview || type == TaskType.Spike)
+        {
+            string what = type == TaskType.PrReview ? "pr-review task" : "spike";
+            throw new DomainValidationException(
+                $"A {what} opens no pull request of its own, so a human gate has nothing to stop in front of. "
+                + "Drop --human-gate; the gate is for a build task whose finished branch would otherwise open a "
+                + "GitHub pull request without anyone having read it first.");
+        }
     }
 
     /// <summary>
@@ -790,7 +820,8 @@ public static class TaskDecider
         Optional<SpikeKind> spikeKind = default,
         Optional<string> exitCriterion = default,
         Optional<TaskConstraints?> constraints = default,
-        Optional<AgentEffort> effort = default)
+        Optional<AgentEffort> effort = default,
+        Optional<bool> humanGate = default)
     {
         // Both markers are scheduling/mode facts, not part of the readiness contract, so they
         // are the two exceptions Revise's own Draft-only gate carves out (task 45136b29 for
@@ -800,7 +831,7 @@ public static class TaskDecider
         // still on, or the task has already reached Done with its pull request open — neither
         // ordinary exit door has an active interactive claim left to hand back or release, and
         // nothing else can turn the flag off).
-        bool onlyMarkerFieldsChanging = (queuePriority.HasValue || clearInteractiveMode)
+        bool onlyMarkerFieldsChanging = (queuePriority.HasValue || clearInteractiveMode || humanGate.HasValue)
             && !objective.HasValue && !acceptanceCriteria.HasValue && !agentContext.HasValue
             && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue
             && !reviewStageComposition.HasValue && !stackedOnTaskId.HasValue
@@ -817,7 +848,7 @@ public static class TaskDecider
             && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue
             && !queuePriority.HasValue && !reviewStageComposition.HasValue && !clearInteractiveMode
             && !stackedOnTaskId.HasValue && !stackedOnPullRequestNumber.HasValue && !closeLinkedIssue.HasValue
-            && !effort.HasValue;
+            && !effort.HasValue && !humanGate.HasValue;
         bool spikePublishedRevisionAllowed = onlySpikeFieldsChanging
             && task.Type == TaskType.Spike && task.State == TaskState.Published;
 
@@ -831,8 +862,8 @@ public static class TaskDecider
                     var state when state.IsAssigned =>
                         $"Dequeue it, then return it to Draft: h9k task dequeue {task.Id} && h9k task draft {task.Id}.",
                     _ => "A task that has already run gets a new task, not a rewritten contract. "
-                        + "h9k task revise --queue-first and --clear-interactive-mode are the two "
-                        + "exceptions, and each still needs something left to change.",
+                        + "h9k task revise --queue-first, --clear-interactive-mode, --human-gate and "
+                        + "--clear-human-gate are the exceptions, and each still needs something left to change.",
                 });
         }
 
@@ -848,15 +879,27 @@ public static class TaskDecider
             // marker-only revisions and both can be passed in the same call, so the refusal names
             // whichever combination is actually in play rather than assuming queuePriority is the
             // only one present whenever it is set at all.
-            string doNothingDescription = (queuePriority.HasValue, clearInteractiveMode) switch
+            string doNothingDescription = (queuePriority.HasValue, clearInteractiveMode, humanGate.HasValue) switch
             {
-                (true, true) => "a priority marker and the interactive-mode flag would both do nothing.",
-                (true, false) => "a priority marker would do nothing.",
+                (true, true, _) => "a priority marker and the interactive-mode flag would both do nothing.",
+                (true, false, _) => "a priority marker would do nothing.",
+                (false, false, true) => "the human gate would do nothing.",
                 _ => "the interactive-mode flag would do nothing.",
             };
             throw new DomainConflictException(
                 $"Task {task.Id} is {task.State.Value} — nothing here will ever run again, so "
                 + doNothingDescription);
+        }
+
+        // The human gate holds a run before its pull request opens, so it can be set or cleared on any
+        // live task until that pull request exists; after that there is no boundary left to hold.
+        if (humanGate.HasValue && task.PullRequestUrl.IsNotBlank())
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id}'s pull request is already open ({task.PullRequestUrl}), so a human gate "
+                + "has no boundary left to hold: the gate stops a run before the pull request opens. "
+                + "Review it on GitHub, or use h9k task revise --clear-interactive-mode and the ordinary "
+                + "review levers for a follow-up.");
         }
 
         if (objective.HasValue && objective.Value.IsBlank())
@@ -942,6 +985,9 @@ public static class TaskDecider
         // identically and this avoids a nullable-to-non-nullable assignment warning.
         TaskType effectiveType = type.Value ?? task.Type;
         RefuseCompositionOnPrReview(effectiveType, normalizedComposition.Value);
+        // The effective gate after this revision, for the same reason: revising a gated task to
+        // pr-review or spike in one call, or gating one that already is, both strand the flag.
+        RefuseHumanGateWithoutPullRequest(effectiveType, humanGate.HasValue ? humanGate.Value : task.HumanGate);
 
         // Vetted against the sets this revision LEAVES BEHIND, not the ones it arrived with: a
         // revision that rewrites the dependency set and declares a stacked edge in one call must
@@ -962,14 +1008,14 @@ public static class TaskDecider
             && !queuePriority.HasValue && !normalizedComposition.HasValue && !clearInteractiveMode
             && !stackedOn.TaskId.HasValue && !stackedOn.PullRequestNumber.HasValue
             && !closeLinkedIssueForEvent.HasValue && !spikeKind.HasValue && !exitCriterion.HasValue
-            && !constraints.HasValue && !effort.HasValue)
+            && !constraints.HasValue && !effort.HasValue && !humanGate.HasValue)
         {
             throw new DomainValidationException(
                 "A revision needs something to revise. Pass --objective, --criteria, --context, " +
                 "--type, --model, --effort, --blocked-by, --clear-dependencies, --epic, --clear-epic, " +
                 "--stacked-on, --stacked-on-pull-request, --clear-stacked-on, --queue-first, " +
                 "--clear-queue-first, --review-stage-composition, --clear-interactive-mode, " +
-                "--close-linked-issue, --kind, --exit-criterion, or a budget option.");
+                "--close-linked-issue, --kind, --exit-criterion, --human-gate, --clear-human-gate, or a budget option.");
         }
 
         Optional<Run.ReviewStageComposition?> compositionForEvent = normalizedComposition.HasValue
@@ -995,7 +1041,8 @@ public static class TaskDecider
             spikeKind,
             normalizedExitCriterion,
             constraints,
-            effort);
+            effort,
+            humanGate);
     }
 
     /// <summary>What a revision records about the stacked edge, in both its forms.</summary>

@@ -98,7 +98,14 @@ public sealed record TaskRevised(
     /// <see cref="AgentEffort.Unknown"/> clears it so the levels beneath decide again. Draft-only like
     /// <see cref="Model"/>.
     /// </summary>
-    Optional<AgentEffort> Effort = default)
+    Optional<AgentEffort> Effort = default,
+    /// <summary>
+    /// Absent leaves the human gate alone; present sets it or clears it
+    /// (<see cref="TaskAggregate.HumanGate"/>). A scheduling-style fact, not part of the readiness
+    /// contract, so <see cref="Handlers.TaskDecider.Revise"/> carves it out of Draft-only the way it
+    /// does <see cref="QueuePriority"/>: settable on any live task whose pull request has not opened.
+    /// </summary>
+    Optional<bool> HumanGate = default)
 {
     /// <summary>
     /// Whether this revision touched something a draft challenge reads and judges: the objective, the acceptance
