@@ -130,7 +130,20 @@ public sealed record TaskAdded(
     /// <see cref="TaskAggregate.Apply(TaskAdded)"/> reads that as the honest legacy default instead
     /// of guessing at a fleet-era intent nobody recorded.
     /// </summary>
-    ReplicationScope? InitialScope = null)
+    ReplicationScope? InitialScope = null,
+    /// <summary>
+    /// Whether this task's run stops after automated review has settled and before its GitHub pull
+    /// request opens, so its owner can read a short briefing and approve, change, or discard it from
+    /// inside hall9k (see <see cref="TaskAggregate.HumanGate"/>). False on every task added before
+    /// the field existed, which is the honest reading: nobody asked for a stop.
+    /// </summary>
+    bool HumanGate = false,
+    /// <summary>
+    /// The task this one evolved from when it was minted by <c>h9k task add --evolved-from</c>, the
+    /// discard outcome of the human gate: a fresh draft over the same objective and criteria, with
+    /// the lineage recorded so <c>h9k task show</c> can name it. Null on every other task.
+    /// </summary>
+    Guid? EvolvedFromTaskId = null)
 {
     /// <summary>
     /// What this event granted, whichever build wrote it — the same one home for the

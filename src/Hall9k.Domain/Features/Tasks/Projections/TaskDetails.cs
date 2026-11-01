@@ -368,6 +368,12 @@ public sealed class TaskDetails
     }
     /// <summary>See <see cref="TaskAggregate.InteractiveModeEnabled"/>: same recorded, task-level fact, read off this projection.</summary>
     public bool InteractiveModeEnabled { get; set; }
+
+    /// <summary>See <see cref="TaskAggregate.HumanGate"/>: same recorded, task-level fact, read off this projection.</summary>
+    public bool HumanGate { get; set; }
+
+    /// <summary>See <see cref="TaskAggregate.EvolvedFromTaskId"/>.</summary>
+    public Guid? EvolvedFromTaskId { get; set; }
     /// <summary>
     /// Whether the current claim's <see cref="Events.TaskClaimed"/> recorded a human's deliberate
     /// override of unmet dependency edges — <c>h9k task start --acknowledge-unmet-dependencies</c>
@@ -736,6 +742,8 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved,
         Origin = @event.Data.Origin,
         Scope = @event.Data.InitialScope ?? ReplicationScope.Team,
+        HumanGate = @event.Data.HumanGate,
+        EvolvedFromTaskId = @event.Data.EvolvedFromTaskId,
     };
 
     /// <summary>
@@ -898,6 +906,11 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         if (@event.Data.ReviewStageComposition.HasValue)
         {
             view.ReviewStageComposition = @event.Data.ReviewStageComposition.Value;
+        }
+
+        if (@event.Data.HumanGate.HasValue)
+        {
+            view.HumanGate = @event.Data.HumanGate.Value;
         }
 
         if (@event.Data.CloseLinkedIssue.HasValue)

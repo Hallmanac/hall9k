@@ -293,6 +293,20 @@ public sealed class TaskAggregate
     public bool InteractiveModeEnabled { get; private set; }
 
     /// <summary>
+    /// Whether this task's run stops once, after automated review has settled and before its GitHub
+    /// pull request opens, for its owner to read a short briefing, walk and run the branch, and then
+    /// approve, change, or discard it (<c>h9k task add --human-gate</c>). Deliberately not
+    /// <see cref="InteractiveModeEnabled"/>: that flag parks at every phase boundary and changes
+    /// prompts and closeout, while this one wants exactly one stop. Settable and clearable on any
+    /// live task whose pull request has not opened; no project or node default exists, because a
+    /// default that is on is the bottleneck the gate is built to avoid.
+    /// </summary>
+    public bool HumanGate { get; private set; }
+
+    /// <summary>The task this one was minted from by <c>h9k task add --evolved-from</c>, or null.</summary>
+    public Guid? EvolvedFromTaskId { get; private set; }
+
+    /// <summary>
     /// The latest handoff note the holding node left for whoever holds this task next (idea
     /// 202383dc, item 3) — the note's own source of truth, mirrored from
     /// <see cref="Events.TaskHandoffNoted"/>. Only ever the most recent one: a new note replaces
@@ -1313,6 +1327,8 @@ public sealed class TaskAggregate
         StackedOnPullRequestNumber = @event.StackedOnPullRequestNumber;
         SpikeKind = @event.SpikeKind ?? Hall9k.Domain.Features.Tasks.SpikeKind.Unknown;
         ExitCriterion = @event.ExitCriterion;
+        HumanGate = @event.HumanGate;
+        EvolvedFromTaskId = @event.EvolvedFromTaskId;
 
         // Non-narrowing: a replicated stream can apply this event after a scope-widening event
         // for the same task already landed (independent pre-PR review, idea 19489eff, cycle 11,
@@ -1455,6 +1471,11 @@ public sealed class TaskAggregate
         if (@event.QueuePriority.HasValue)
         {
             QueuePriorityMarked = @event.QueuePriority.Value;
+        }
+
+        if (@event.HumanGate.HasValue)
+        {
+            HumanGate = @event.HumanGate.Value;
         }
 
         if (@event.ReviewStageComposition.HasValue)
