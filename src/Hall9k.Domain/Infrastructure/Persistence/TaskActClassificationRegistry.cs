@@ -96,6 +96,14 @@ public static class TaskActClassificationRegistry
         [typeof(CloseoutTriageDispatched)] = TaskActClassification.Conditional,
         [typeof(CloseoutTriageRecorded)] = TaskActClassification.Conditional,
 
+        // A draft's independent challenge: the running node's record of its own session and the outcome that
+        // opens the publish gate. Conditional for the CloseoutTriageRecorded reason, a sender that holds
+        // nothing must not be able to open the gate or close a running challenge on a task it does not hold,
+        // and both are pre-assignment capable (EventReplicationInbox.PreAssignmentCapableConditionalTypes)
+        // because a draft is usually unassigned and its creator's verdict on it must still apply.
+        [typeof(DraftChallengeDispatched)] = TaskActClassification.Conditional,
+        [typeof(DraftChallengeRecorded)] = TaskActClassification.Conditional,
+
         // The pull-request review pre-flight's own park (idea 6be68ee2, finding 1, phase one)
         // clears the current claim and assignment unconditionally, the identical shape
         // TaskInteractiveClaimUnassigned and TaskRequeued give a member's own give-back — a forged

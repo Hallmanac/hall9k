@@ -1384,6 +1384,8 @@ public sealed class TaskAggregate
     // the criteria were retyped identically (Optional carries that distinction).
     public void Apply(TaskRevised @event)
     {
+        RevisedSinceChallengeVerdict |= LatestChallengeVerdict is not null;
+
         if (@event.Objective.HasValue)
         {
             Objective = @event.Objective.Value ?? string.Empty;
@@ -2586,6 +2588,52 @@ public sealed class TaskAggregate
     // only the daemon's adoption asks, so it is projected onto TaskDetails and deliberately not
     // applied here.
     public void Apply(WorkItemPublicationDispatched @event) => PublicationSessionDispatched = true;
+
+    /// <summary>
+    /// True from the moment <c>h9k task challenge</c> was run on this node until the daemon dispatches the
+    /// session or records the challenge as failed. The request is node-scoped, so on any other node this stays
+    /// false and its <c>h9k task show</c> says nothing about it.
+    /// </summary>
+    public bool ChallengeRequested { get; private set; }
+
+    /// <summary>The session of a challenge dispatched and not yet recorded, or null when none is running.</summary>
+    public Guid? RunningChallengeSessionId { get; private set; }
+
+    /// <summary>The newest recorded challenge outcome, verdict or failure: what <c>h9k task show</c> prints.</summary>
+    public DraftChallengeRecorded? LatestChallengeOutcome { get; private set; }
+
+    /// <summary>
+    /// The newest recorded challenge that produced a verdict, which is all the publish gate reads: a newer verdict
+    /// replaces an older one, and a failure replaces nothing.
+    /// </summary>
+    public DraftChallengeRecorded? LatestChallengeVerdict { get; private set; }
+
+    /// <summary>
+    /// Whether the draft was revised after <see cref="LatestChallengeVerdict"/> landed, in stream order: the one
+    /// fact the gate and <c>h9k task show</c> share. Revising is how a verdict gets applied, so it is what
+    /// lets a <c>publish as revised</c> holding a must through.
+    /// </summary>
+    public bool RevisedSinceChallengeVerdict { get; private set; }
+
+    public void Apply(DraftChallengeRequested @event) => ChallengeRequested = true;
+
+    public void Apply(DraftChallengeDispatched @event)
+    {
+        ChallengeRequested = false;
+        RunningChallengeSessionId = @event.SessionId;
+    }
+
+    public void Apply(DraftChallengeRecorded @event)
+    {
+        ChallengeRequested = false;
+        RunningChallengeSessionId = null;
+        LatestChallengeOutcome = @event;
+        if (@event.IsVerdict)
+        {
+            LatestChallengeVerdict = @event;
+            RevisedSinceChallengeVerdict = false;
+        }
+    }
 
     public void Apply(WorkItemPublicationCompleted @event)
     {

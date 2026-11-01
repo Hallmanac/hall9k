@@ -128,6 +128,7 @@ public static class OrchestratorFeedDescription
 
             // ─── Task state changes ────────────────────────────────────────────────────────────────
             TaskPublished => "published and ready to assign",
+            DraftChallengeRecorded challenged => ChallengeLine(challenged),
             // A claim a person made by hand (h9k task drive, h9k task start) carries Guid.Empty as its
             // node id — the sentinel TaskAggregate.IsInteractiveClaim reads, deliberately naming no
             // node at all — so these two arms come first: shortening that sentinel would print
@@ -350,6 +351,16 @@ public static class OrchestratorFeedDescription
         string id = $"node {DomainId.Short(nodeId)}";
         return labels.LabelForNodeId(nodeId) is { } label ? $"{id} ({label})" : id;
     }
+
+    /// <summary>
+    /// How a draft challenge ended: the verdict with its counts, or the failure reason from the closed list.
+    /// Nothing the session wrote is on the event, so nothing of it can be here.
+    /// </summary>
+    private static string ChallengeLine(DraftChallengeRecorded recorded) =>
+        recorded.IsVerdict
+            ? $"challenge verdict: {recorded.Verdict.Phrase} ({recorded.MustCount} must, {recorded.ShouldCount} should, "
+              + $"{recorded.ParkCount} park); read it with h9k task show"
+            : $"challenge ended with no verdict: {recorded.Failure.Description}; challenge again with h9k task challenge";
 
     /// <summary>
     /// How an evaluation ended, in the recommendation word and the assessment's path alone: the

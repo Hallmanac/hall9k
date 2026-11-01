@@ -320,6 +320,13 @@ public static class RunPaths
         Path.Combine(runDirectory, $"closeout-triage-{threadSetKeyHash}-{sessionId:N}.md");
 
     /// <summary>
+    /// The report a draft challenge session writes (<c>h9k task challenge</c>), the one file in the session's own
+    /// directory (<see cref="GlobalDirectory"/>) whose closing block carries the verdict. Derived from the session
+    /// id alone, so no event has to carry a machine path: <c>h9k task show</c> and the daemon both compute it.
+    /// </summary>
+    public static string ChallengeReportFile(Guid sessionId) => Path.Combine(GlobalDirectory(sessionId), "challenge-report.md");
+
+    /// <summary>
     /// One review cycle's merged findings: every lens's verified findings under its own
     /// heading (log #59), written by the daemon when the cycle's last pass lands. This is the
     /// document the fix session is handed and the one a park points a human at, so the name

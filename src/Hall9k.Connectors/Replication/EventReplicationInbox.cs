@@ -2001,6 +2001,10 @@ public sealed class EventReplicationInbox(
         typeof(TaskPrivacySet),
         typeof(TaskRevised),
         typeof(TaskAbandoned),
+        // A draft's challenge: dispatched and recorded by the draft's own creator while it is still
+        // unassigned, which is where the gate reads the verdict.
+        typeof(DraftChallengeDispatched),
+        typeof(DraftChallengeRecorded),
     };
 
     /// <summary>

@@ -75,6 +75,48 @@ public sealed class TaskDetails
     /// </summary>
     public AgentModel? PublicationSessionModel { get; set; }
     public DateTimeOffset? PublicationRequestedAt { get; set; }
+
+    /// <summary>
+    /// True from <c>h9k task challenge</c> until the daemon dispatches the session or records a failure. The
+    /// request is node-scoped, so it is only ever true on the node where the verb ran.
+    /// </summary>
+    public bool ChallengeRequested { get; set; }
+
+    /// <summary>When the request was made, or null when none is waiting.</summary>
+    public DateTimeOffset? ChallengeRequestedAt { get; set; }
+
+    /// <summary>The challenge session dispatched and not yet recorded, which also names the directory its report and transcript are in.</summary>
+    public Guid? RunningChallengeSessionId { get; set; }
+
+    /// <summary>The node that dispatched it.</summary>
+    public Guid? RunningChallengeNodeId { get; set; }
+
+    /// <summary>When it was dispatched.</summary>
+    public DateTimeOffset? RunningChallengeDispatchedAt { get; set; }
+
+    /// <summary>The model the running challenge was dispatched on.</summary>
+    public AgentModel? RunningChallengeModel { get; set; }
+
+    /// <summary>The effort the running challenge was dispatched at.</summary>
+    public AgentEffort? RunningChallengeEffort { get; set; }
+
+    /// <summary>The newest recorded challenge outcome, a verdict or a failure: what <c>h9k task show</c> prints.</summary>
+    public DraftChallengeRecorded? LatestChallengeOutcome { get; set; }
+
+    /// <summary>The newest recorded challenge that produced a verdict, the one the publish gate reads.</summary>
+    public DraftChallengeRecorded? LatestChallengeVerdict { get; set; }
+
+    /// <summary>Whether the draft was revised after <see cref="LatestChallengeVerdict"/> landed.</summary>
+    public bool RevisedSinceChallengeVerdict { get; set; }
+
+    /// <summary>The reason the publisher gave for publishing past the challenge gate; null when the gate asked for nothing.</summary>
+    public string? ChallengeSkipReason { get; set; }
+
+    /// <summary>When the challenge was skipped (the publish itself).</summary>
+    public DateTimeOffset? ChallengeSkippedAt { get; set; }
+
+    /// <summary>Who gave the reason (the publisher).</summary>
+    public Guid? ChallengeSkippedByOwnerId { get; set; }
     /// <summary>Who asked. It is what tells a node whether an outstanding publication is its owner's work to do.</summary>
     public Guid? PublicationRequestedByOwnerId { get; set; }
     /// <summary>How the last publication session ended, in words — kept because "no link" alone teaches nobody.</summary>
@@ -737,6 +779,15 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.UntrackedAttestedByOwnerId = @event.Data.UntrackedAttested ? @event.Data.PublishedByOwnerId : null;
         view.PreApproval = @event.Data.EffectivePreApproval;
         view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
+        // Set unconditionally for the reason the untracked attestation above is: a task republished after a
+        // skipped publish must stop rendering the first publish's reason.
+        view.ChallengeSkipReason = @event.Data.ChallengeSkipReason;
+        view.ChallengeSkippedAt = @event.Data.ChallengeSkipReason is null
+            ? null
+            : @event.Data.PublishedAt;
+        view.ChallengeSkippedByOwnerId = @event.Data.ChallengeSkipReason is null
+            ? null
+            : @event.Data.PublishedByOwnerId;
         if (@event.Data.CloseLinkedIssue.HasValue)
         {
             view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value;
@@ -762,6 +813,8 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     // the criteria were retyped identically.
     public void Apply(IEvent<TaskRevised> @event, TaskDetails view)
     {
+        view.RevisedSinceChallengeVerdict |= view.LatestChallengeVerdict is not null;
+
         if (@event.Data.Objective.HasValue)
         {
             view.Objective = @event.Data.Objective.Value ?? string.Empty;
@@ -1758,6 +1811,42 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.PublicationSessionNodeId = @event.Data.NodeId;
         view.PublicationSessionDispatchedAt = @event.Data.DispatchedAt;
         view.PublicationSessionModel = @event.Data.Model;
+    }
+
+    // A draft challenge is a side errand like the publication above: it moves no state. What it moves is the
+    // standing the daemon's challenge loop and the publish gate read, and what h9k task show tells the human.
+    public void Apply(IEvent<DraftChallengeRequested> @event, TaskDetails view)
+    {
+        view.ChallengeRequested = true;
+        view.ChallengeRequestedAt = @event.Data.RequestedAt;
+    }
+
+    public void Apply(IEvent<DraftChallengeDispatched> @event, TaskDetails view)
+    {
+        view.ChallengeRequested = false;
+        view.ChallengeRequestedAt = null;
+        view.RunningChallengeSessionId = @event.Data.SessionId;
+        view.RunningChallengeNodeId = @event.Data.NodeId;
+        view.RunningChallengeDispatchedAt = @event.Data.DispatchedAt;
+        view.RunningChallengeModel = @event.Data.Model;
+        view.RunningChallengeEffort = @event.Data.Effort;
+    }
+
+    public void Apply(IEvent<DraftChallengeRecorded> @event, TaskDetails view)
+    {
+        view.ChallengeRequested = false;
+        view.ChallengeRequestedAt = null;
+        view.RunningChallengeSessionId = null;
+        view.RunningChallengeNodeId = null;
+        view.RunningChallengeDispatchedAt = null;
+        view.RunningChallengeModel = null;
+        view.RunningChallengeEffort = null;
+        view.LatestChallengeOutcome = @event.Data;
+        if (@event.Data.IsVerdict)
+        {
+            view.LatestChallengeVerdict = @event.Data;
+            view.RevisedSinceChallengeVerdict = false;
+        }
     }
 
     public void Apply(IEvent<WorkItemPublicationSessionStarted> @event, TaskDetails view)
