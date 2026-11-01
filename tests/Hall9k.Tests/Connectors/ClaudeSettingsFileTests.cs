@@ -281,7 +281,7 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
     }
 
     [Fact]
-    public void A_session_without_gate_commands_refuses_a_repository_found_inside_the_checkout()
+    public void A_session_without_gate_commands_keeps_git_to_the_checkouts_own_repository()
     {
         using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
             TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));

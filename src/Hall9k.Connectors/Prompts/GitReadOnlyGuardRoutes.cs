@@ -19,7 +19,10 @@ namespace Hall9k.Connectors.Prompts;
 /// <c>-O&lt;orderfile&gt;</c> flag, alone or bundled after other short flags, reads a file named
 /// outside the checkout too.</item>
 /// <item>a program: <c>--ext-diff</c> and <c>--show-signature</c> hand the output to a program
-/// that configuration names, so the program is not the checkout's to choose.</item>
+/// that configuration names, so the program is not the checkout's to choose. These are the two
+/// flags the guard refuses by name, and no more than that: it does not claim to be the complete
+/// list of ways git consults a configured helper. The program itself comes from the node's
+/// configuration, never from the command.</item>
 /// </list>
 /// and <see cref="ClaudeSettingsFile.PrReviewAllowedTools"/>'s prefix rules (<c>Bash(git
 /// diff:*)</c>, <c>Bash(git log:*)</c>) allow any of them through: a prefix rule matches the command
@@ -54,11 +57,11 @@ public static class GitReadOnlyGuardRoutes
 
     /// <summary>
     /// <c>--output</c> is the only flag either subcommand has for this (there is no short form),
-    /// spelled with <c>=</c>, a space, or as the command's last token — the three ways an operator
-    /// or an injected session would write it.
+    /// spelled with <c>=</c>, a space, as the command's last token, or directly before a shell
+    /// operator — the ways an operator or an injected session would write it.
     /// </summary>
     private static readonly Regex OutputFlag = new(
-        @"--output(=|\s|$)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+        @"--output(?:=|\s|$|[;&|()<>])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
     /// <c>--no-index</c> is the one flag that forces the filesystem-diff mode this guard also has
@@ -69,13 +72,18 @@ public static class GitReadOnlyGuardRoutes
         @"--no-index\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
-    /// <c>--ext-diff</c> and <c>--show-signature</c>, the two long flags that run a program named by
-    /// configuration. Git accepts neither abbreviated (verified: <c>--ext</c> and <c>--show-s</c>
-    /// are rejected), and <c>--no-ext-diff</c>, which turns the program off, must keep running, so
-    /// the flag has to start its word rather than merely end in the name.
+    /// <c>--ext-diff</c> and <c>--show-signature</c>, the two long flags the guard refuses by name
+    /// because they run a program named by configuration. They are not the only route to such a
+    /// program, and this pattern makes no claim to cover the others. Git accepts neither
+    /// abbreviated (verified: <c>--ext</c> and <c>--show-s</c> are rejected), and
+    /// <c>--no-ext-diff</c>, which turns the program off, must keep running, so the flag has to
+    /// start its word rather than merely end in the name. The flag ends where the word does, so
+    /// the lookahead refuses it before a shell operator as well (<c>--ext-diff|head</c>), and
+    /// accepts only a following character that cannot extend the flag's own name (independent
+    /// pre-PR review, cycle 5, both lenses).
     /// </summary>
     private static readonly Regex ProgramRunningFlag = new(
-        @"(?:^|\s)--(?:ext-diff|show-signature)(?=[=\s]|$)",
+        @"(?:^|\s)--(?:ext-diff|show-signature)(?![\w-])",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
@@ -114,7 +122,7 @@ public static class GitReadOnlyGuardRoutes
     /// dots sit directly against a ref name rather than a path separator.
     /// </summary>
     private static readonly Regex ParentDirectorySegment = new(
-        @"(?:^|[\\/\s])\.\.(?:[\\/\s]|$)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+        @"(?:^|[\\/\s])\.\.(?:[\\/\s;&|()<>]|$)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
     /// Whether this command reaches <c>git diff</c> or <c>git log</c> in a way that escapes the

@@ -207,6 +207,7 @@ public sealed class GitReadOnlyGuardTests
     [InlineData("git diff --stat")]
     [InlineData("git diff origin/main...HEAD -- src/Foo.cs")]
     [InlineData("git diff --no-ext-diff origin/main...HEAD")]
+    [InlineData("git diff --no-ext-diff|head")]
     [InlineData("git log -SOrder --oneline")]
     [InlineData("git log -S'Order book' --oneline")]
     [InlineData("git log -1 --format='Orders --ext-diff --show-signature'")]
@@ -284,6 +285,13 @@ public sealed class GitReadOnlyGuardTests
     [InlineData("git diff '--ext-diff' HEAD~1")]
     [InlineData("git diff --ext\\\n-diff HEAD~1")]
     [InlineData("git log -p -'O'orderfile")]
+    [InlineData("git diff --ext-diff|head")]
+    [InlineData("git log --show-signature;echo done")]
+    [InlineData("git log -1 --show-signature&&echo done")]
+    [InlineData("git diff \"--ext-diff\"|head")]
+    [InlineData("(git log --show-signature)")]
+    [InlineData("git diff --ext-diff>/dev/null")]
+    [InlineData("git diff --output|cat")]
     public void A_flag_that_runs_a_program_or_reads_an_order_file_is_refused(string command) =>
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
 
