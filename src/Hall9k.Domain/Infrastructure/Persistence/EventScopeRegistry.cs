@@ -55,6 +55,8 @@ public static class EventScopeRegistry
         // The task's one lesson pick: lesson ids and counts, no session text. It travels so a node that
         // picks up the task's later laps composes with the same set, and an older peer skips the type.
         [typeof(LessonPickRecorded)] = EventScope.ProjectScoped,
+        // A short note a task's sessions leave each other: it travels exactly as far as its task.
+        [typeof(TaskNoteRecorded)] = EventScope.ProjectScoped,
         // The closeout triage of a driven task's unresolved threads (task: analysis-only closeout): the
         // dispatch and the counts of its outcome are team-visible facts about the task, like the
         // evaluator's; the report's prose stays in a file on the running node.

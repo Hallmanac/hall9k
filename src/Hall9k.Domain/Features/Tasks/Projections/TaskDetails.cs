@@ -2,6 +2,8 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Notes;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
@@ -522,6 +524,12 @@ public sealed class TaskDetails
     /// names reaches that prompt.
     /// </summary>
     public LessonPickRecorded? LessonPick { get; set; }
+    /// <summary>
+    /// Every note recorded on this task (<see cref="TaskNoteRecorded"/>), oldest first, one entry per
+    /// note id. Read by nothing except the prompt read, <c>h9k task notes</c> and the project-home
+    /// render sweep: no surface a review session reaches prints it.
+    /// </summary>
+    public List<TaskNoteEntry> Notes { get; set; } = [];
     /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByNodeId"/>'s own doc — mirrored for <c>h9k task show</c> and <c>h9k status</c> (idea 202383dc, item 5).</summary>
     public Guid? PendingTakeRequestedByNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByOwnerId"/>'s own doc.</summary>
@@ -1283,6 +1291,23 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     /// <summary>Appends to <see cref="TaskDetails.TrackerReassignments"/>; the task aggregate itself has nothing to change, since no rule reads a tracker reassignment.</summary>
     public void Apply(IEvent<TrackerAssignmentReassigned> @event, TaskDetails view) =>
         view.TrackerReassignments.Add(@event.Data);
+
+    /// <summary>
+    /// Appends a note, once per note id: a replicated duplicate or a closing block read twice changes
+    /// nothing. The recording node is read off the event here, so every append site pre-stamps it
+    /// (this projection is Inline; <see cref="EventRecordingNode.StampAtAppend"/>). The task aggregate
+    /// has nothing to change, since no rule reads a note.
+    /// </summary>
+    public void Apply(IEvent<TaskNoteRecorded> @event, TaskDetails view)
+    {
+        if (view.Notes.Any(entry => entry.Note.NoteId == @event.Data.NoteId))
+        {
+            return;
+        }
+
+        view.Notes.Add(new TaskNoteEntry(
+            @event.Data, EventRecordingNode.Of(@event), ReplicatedSender.Of(@event), ReplicatedSender.OriginOf(@event)));
+    }
 
     /// <summary>Keeps the first <see cref="LessonPickRecorded"/> only; the task aggregate has nothing to change, since no rule reads a lesson pick.</summary>
     public void Apply(IEvent<LessonPickRecorded> @event, TaskDetails view) =>

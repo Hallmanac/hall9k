@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -750,6 +751,46 @@ public sealed class EventReplicationInboxTaskActGateTests
         {
             check.MayAct.Should().Be(gate == EventReplicationInbox.TaskActVerdict.Allowed);
         }
+    }
+
+    /// <summary>
+    /// A note changes nothing about who controls a task, so a Member-role sender's note applies on every
+    /// receiving node whoever holds the task, and never holds up that member's later acts on it. Driven
+    /// with a Member-role sender because an owner-role sender skips the gate altogether.
+    /// </summary>
+    [Fact]
+    public void A_task_note_is_classified_member_safe()
+    {
+        TaskActClassificationRegistry.TryClassificationOf(typeof(TaskNoteRecorded))
+            .Should().Be(TaskActClassification.MemberSafe);
+    }
+
+    [Theory]
+    [InlineData("held-by-owner")]
+    [InlineData("assigned-to-owner")]
+    [InlineData("unassigned")]
+    [InlineData("assigned-to-another-member")]
+    public void A_members_task_note_applies_whoever_holds_or_is_assigned_the_task(string situation)
+    {
+        Guid taskId = DomainId.New();
+        Guid memberNodeId = DomainId.New();
+        TaskAggregate task = situation switch
+        {
+            "held-by-owner" => HeldByOwnerTask(taskId),
+            "assigned-to-owner" => AssignedToOwnerTask(taskId),
+            "assigned-to-another-member" => AssignedToMemberTask(taskId),
+            _ => PublishedUnassignedTask(taskId),
+        };
+        TaskNoteRecorded note = new(
+            taskId, DomainId.New(), "a note from a teammate",
+            new RecordedProvenance(Guid.NewGuid(), DomainId.New(), taskId, HumanAttendance.Unattended),
+            TaskNoteSource.Verb, Now);
+
+        EventReplicationInbox.TaskActVerdict verdict = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassificationRegistry.TryClassificationOf(typeof(TaskNoteRecorded))!.Value,
+            typeof(TaskNoteRecorded), note, task, MemberSender(memberNodeId), memberNodeId, memberNodeId);
+
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed);
     }
 
     private static EventReplicationInbox.TaskActVerdict EvaluateAssigneeSet(

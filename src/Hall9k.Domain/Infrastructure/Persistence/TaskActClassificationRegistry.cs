@@ -90,6 +90,13 @@ public static class TaskActClassificationRegistry
         // a later prompt carries, so a sender that holds nothing must not be able to forge one.
         [typeof(LessonPickRecorded)] = TaskActClassification.Conditional,
 
+        // A note changes nothing about who controls the task and decides no later act, so any current
+        // project member's note applies on every receiving node whoever holds the task: Conditional
+        // would drop a teammate's note on a task someone else holds, and hold it (queueing that
+        // teammate's later acts behind it) on an unassigned one. Safe because the trust rule holds a
+        // note from outside the reader's fleet out of every prompt.
+        [typeof(TaskNoteRecorded)] = TaskActClassification.MemberSafe,
+
         // Closeout's triage of a driven task's threads: the running node's record of its own session,
         // and its outcome names a file on that node's disk, so a sender that holds nothing must not
         // be able to forge either (the same reasoning the evaluator's two events carry).
