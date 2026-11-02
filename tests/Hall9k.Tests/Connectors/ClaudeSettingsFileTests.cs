@@ -147,9 +147,9 @@ public sealed class ClaudeSettingsFileTests
 public sealed class ClaudeSettingsFileBuildForPrReviewTests
 {
     /// <summary>
-    /// A pr-review checkout is a standalone clone with no remote, so <c>gh pr view &lt;n&gt;</c> and the other
-    /// number-addressed reads have no repository to resolve the number in unless the session's environment
-    /// names it. This is the setting that makes those four <c>gh</c> reads work there.
+    /// A pr-review checkout is a standalone clone with no remote, so a bare pull request number has no
+    /// repository to resolve in unless the environment names it. The session cannot run <c>gh</c> itself, but
+    /// the setting is still carried for a process it starts that does.
     /// </summary>
     [Fact]
     public void The_named_repository_is_set_as_gh_repo_so_gh_reads_work_in_a_checkout_with_no_remote()
@@ -162,8 +162,6 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
         named.RootElement.GetProperty("env").GetProperty("GH_REPO").GetString().Should().Be("owner/repo");
         unnamed.RootElement.GetProperty("env").TryGetProperty("GH_REPO", out _).Should().BeFalse(
             "a session with no named repository leaves the variable unset rather than setting it blank");
-        ClaudeSettingsFile.PrReviewAllowedTools.Should().Contain(
-            ["Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr checks:*)", "Bash(gh issue view:*)"]);
     }
 
     [Fact]
@@ -319,10 +317,34 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
         string[] allow = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
             .EnumerateArray().Select(element => element.GetString()!)];
 
-        allow.Should().Contain(["Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(gh pr view:*)",
-            "Bash(gh pr diff:*)", "Bash(gh pr checks:*)", "Bash(gh issue view:*)"]);
-        allow.Should().NotContain(rule => rule.Contains("gh api", StringComparison.Ordinal),
-            "gh api is refused by the deny list even for a read; deny beats allow");
+        allow.Should().Contain(["Glob", "Bash(git diff:*)", "Bash(git log:*)"]);
+        allow.Should().NotContain(rule => rule.Contains("gh", StringComparison.Ordinal) && rule.StartsWith("Bash(", StringComparison.Ordinal),
+            "a pr-review session reads GitHub only through what the daemon gathered for it");
+    }
+
+    /// <summary>
+    /// Least privilege for a read-only review: it holds no credential it does not need, so the allow list names
+    /// no <c>gh</c> command and the deny list refuses all of them, while the human review lap, which shares
+    /// <see cref="ClaudeSettingsFile.ReviewLapDeniedTools"/> and keeps its <c>gh</c> reads, is left exactly as it was.
+    /// </summary>
+    [Fact]
+    public void No_gh_command_is_allowed_every_one_is_denied_and_the_review_laps_own_list_is_unchanged()
+    {
+        ClaudeSettingsFile.PrReviewAllowedTools.Should().NotContain(rule => rule.StartsWith("Bash(gh", StringComparison.Ordinal));
+        ClaudeSettingsFile.PrReviewDeniedTools.Should().Contain("Bash(gh:*)");
+        ClaudeSettingsFile.PrReviewDeniedTools.Should().BeEquivalentTo(
+            [.. ClaudeSettingsFile.ReviewLapDeniedTools, "Bash(gh:*)", "Bash(claude:*)"]);
+
+        ClaudeSettingsFile.ReviewLapDeniedTools.Should().Equal(
+            "Bash(git push:*)",
+            "Bash(gh pr create:*)", "Bash(gh pr review:*)", "Bash(gh pr comment:*)", "Bash(gh pr edit:*)",
+            "Bash(gh pr merge:*)", "Bash(gh pr close:*)", "Bash(gh pr reopen:*)", "Bash(gh pr ready:*)",
+            "Bash(gh pr lock:*)", "Bash(gh pr unlock:*)", "Bash(gh pr revert:*)", "Bash(gh pr update-branch:*)",
+            "Bash(gh issue create:*)", "Bash(gh issue comment:*)", "Bash(gh issue edit:*)",
+            "Bash(gh issue close:*)", "Bash(gh issue reopen:*)", "Bash(gh issue lock:*)",
+            "Bash(gh issue unlock:*)", "Bash(gh issue delete:*)", "Bash(gh issue transfer:*)",
+            "Bash(gh issue pin:*)", "Bash(gh issue unpin:*)", "Bash(gh issue develop:*)",
+            "Bash(gh api:*)", "Bash(h9k pr approve:*)", "Bash(h9k pr request-changes:*)");
     }
 
     [Fact]
@@ -375,6 +397,7 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
 
         deny.Should().Contain(ClaudeSettingsFile.ReviewLapDeniedTools);
         deny.Should().Contain("Bash(gh api:*)");
+        deny.Should().Contain("Bash(gh:*)", "every gh command is refused, reads included");
         deny.Should().Contain("Bash(claude:*)",
             "the owner's own user settings allow claude:*, and a flag-file deny is the only thing " +
             "that beats a user-level allow under dontAsk (verified: claude --version ran without it)");
