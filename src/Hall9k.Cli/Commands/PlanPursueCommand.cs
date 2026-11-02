@@ -39,7 +39,8 @@ public sealed class PlanPursueCommand : Hall9kAsyncCommand<PlanPursueCommand.Set
         [CommandOption("--epic-title <TITLE>")]
         [Description(
             "Create one epic with this title and put every cut draft in it. Refused unless the report proposes two or more tasks. "
-            + "A plain epic only; a solution epic stays with h9k epic add")]
+            + "In a project that belongs to an open solution it is a solution epic, as h9k epic add makes: one copy in each member "
+            + "project this node holds, sharing one key, with the drafts in this project's copy. Elsewhere it is a plain project epic")]
         public string? EpicTitle { get; init; }
 
         [CommandOption("--no-existing-item")]
@@ -98,12 +99,6 @@ public sealed class PlanPursueCommand : Hall9kAsyncCommand<PlanPursueCommand.Set
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        Guid? epicId = settings.EpicTitle.IsNotBlank()
-            ? DomainId.New()
-            : null;
-        EpicAdded? epic = epicId is { } newEpic
-            ? EpicDecider.Add(newEpic, project.Id, settings.EpicTitle ?? string.Empty, now, context.OwnerId)
-            : null;
 
         // Each draft is what `h9k task add --from-idea <idea> --objective "<objective>"` creates: the whole note as context, the
         // discovery workspace beneath it, the idea's provenance, and no criteria (refinement writes them). The context names the
@@ -123,7 +118,7 @@ public sealed class PlanPursueCommand : Hall9kAsyncCommand<PlanPursueCommand.Set
             IdeaTaskCut cut = IdeaDecider.CutTask(idea, taskId, objective, now, context.OwnerId);
             TaskAdded added = TaskDecider.Add(
                 taskId, project.Id, cut.Objective, acceptanceCriteria: [], TaskType.Parse(null), draftContext, constraints: null,
-                externalReference: null, now, context.OwnerId, model: null, blockedBy: null, sourceIdeaId: idea.Id, epicId: epicId);
+                externalReference: null, now, context.OwnerId, model: null, blockedBy: null, sourceIdeaId: idea.Id, epicId: null);
 
             // The attestation, asked of each draft the way its publish would ask it, so a combination the publish would refuse is
             // refused here, before anything is cut.
@@ -136,9 +131,11 @@ public sealed class PlanPursueCommand : Hall9kAsyncCommand<PlanPursueCommand.Set
             drafts.Add((added, cut));
         }
 
-        // The things that can move while the report was read and the drafts built are read fresh, immediately before the save. The
-        // idea is read at a stream version, and the cuts are appended expecting that version plus themselves, so a conclude, archive,
-        // or move that commits after this read rolls the whole save back instead of being cut over.
+        // The things that can move while the report was read and the drafts built are read fresh, immediately before the save. Only
+        // the plan and idea streams are fenced: the idea is read at a stream version, and the cuts are appended expecting that
+        // version plus themselves, so a conclude, archive, or move that commits after this read rolls the whole save back instead of
+        // being cut over. The project and solution records are read fresh but not fenced, so a purge or a solution close that lands
+        // between that read and the save is not caught (h9k epic add has the same window).
         StreamState ideaFence = await session.Events.FetchStreamStateAsync(ideaId, cancellationToken)
             ?? throw new DomainNotFoundException($"No idea {ideaId}.");
         IdeaAggregate freshIdea = await session.Events.AggregateStreamAsync<IdeaAggregate>(
@@ -148,11 +145,26 @@ public sealed class PlanPursueCommand : Hall9kAsyncCommand<PlanPursueCommand.Set
             ?? throw new DomainNotFoundException($"Plan {plan.Id} names project {plan.ProjectId}, which is not registered here.");
         RefuseIdea(freshIdea, plan, freshProject);
 
-        PlanDraftsCut pursued = PlanDecider.Pursue(
-            plan, [.. drafts.Select(draft => draft.Added.Id)], epicId, recordsNoExistingItem, recordsUntracked, context.OwnerId, now);
-        if (epic is not null)
+        // The epic is planned against the project and solution records as just read, and only now: a solution epic is one copy per
+        // held member, which the closed-solution refusal and the purge check read fresh (not fenced, as noted above), and a refusal
+        // here has staged nothing. The drafts join this project's copy, so the epic id reaches them after they were built and vetted.
+        IReadOnlyList<EpicAdded> epicCopies = [];
+        SolutionEpicAddition? addition = null;
+        EpicAdded? epic = null;
+        if (settings.EpicTitle.IsNotBlank())
         {
-            session.Events.StartStream<EpicAggregate>(epic.Id, epic);
+            addition = await SolutionEpicAddition.PlanAsync(session, freshProject, settings.EpicTitle, context.OwnerId, cancellationToken);
+            epicCopies = addition?.Copies
+                ?? [EpicDecider.Add(DomainId.New(), freshProject.Id, settings.EpicTitle, now, context.OwnerId)];
+            epic = epicCopies.Single(copy => copy.ProjectId == freshProject.Id);
+            drafts = [.. drafts.Select(draft => (draft.Added with { EpicId = epic.Id }, draft.Cut))];
+        }
+
+        PlanDraftsCut pursued = PlanDecider.Pursue(
+            plan, [.. drafts.Select(draft => draft.Added.Id)], epic?.Id, recordsNoExistingItem, recordsUntracked, context.OwnerId, now);
+        foreach (EpicAdded copy in epicCopies)
+        {
+            session.Events.StartStream<EpicAggregate>(copy.Id, copy);
         }
 
         foreach ((TaskAdded added, IdeaTaskCut _) in drafts)
@@ -191,7 +203,11 @@ public sealed class PlanPursueCommand : Hall9kAsyncCommand<PlanPursueCommand.Set
             AnsiConsole.MarkupLine($"  {TaskListCommand.ShortId(added.Id)}  {ExternalText.OneLineMarkup(added.Objective)}");
         }
 
-        if (epic is not null)
+        if (addition is not null && epic is not null)
+        {
+            PrintSolutionEpic(addition, epic);
+        }
+        else if (epic is not null)
         {
             AnsiConsole.MarkupLine($"[dim]  in epic {TaskListCommand.ShortId(epic.Id)}: {ExternalText.OneLineMarkup(epic.Title)}[/]");
         }
@@ -207,6 +223,16 @@ public sealed class PlanPursueCommand : Hall9kAsyncCommand<PlanPursueCommand.Set
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>What <c>h9k epic add</c> prints for a solution epic: the reference the drafts joined by, the copies, and any member left without one.</summary>
+    private static void PrintSolutionEpic(SolutionEpicAddition addition, EpicAdded own)
+    {
+        string key = own.SolutionEpicKey ?? string.Empty;
+        string reference = EpicIdResolver.ReferenceOf(own.Id, key);
+        AnsiConsole.MarkupLineInterpolated(
+            $"[dim]  in solution epic {reference}: {ExternalText.OneLine(own.Title)} (this project's copy)[/]");
+        addition.PrintMemberNotes("  ");
     }
 
     /// <summary>The refusals that depend on the idea and its project, asked twice: once up front, and again fresh just before the save.</summary>

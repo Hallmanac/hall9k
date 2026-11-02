@@ -2430,7 +2430,9 @@ public static class CliCommandTree
                     + "the gate, the report is missing or unreadable or says stop, the idea is no longer Captured or has moved to "
                     + "another project, the project is archived or scheduled for purge, or, on a project whose publish asks for a "
                     + "tracker attestation, neither --no-existing-item nor --untracked is given. --epic-title puts every draft in "
-                    + "one new epic. Refused inside a dispatched session.")
+                    + "one new epic; in a project that belongs to an open solution that epic is a solution epic, with a copy in each "
+                    + "other member project this node holds (as h9k epic add makes), and the drafts join this project's copy. A "
+                    + "solution that is closed refuses the pursue, with nothing cut. Refused inside a dispatched session.")
                 .WithExample("plan", "pursue", "5e9a13c2")
                 .WithExample("plan", "pursue", "5e9a13c2", "--epic-title", "\"Sharper discovery\"", "--no-existing-item");
             plan.AddCommand<PlanStopCommand>("stop")
