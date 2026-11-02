@@ -4,6 +4,7 @@ using Hall9k.Connectors.Orchestrator;
 using Hall9k.Connectors.Replication;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
@@ -243,11 +244,38 @@ public sealed class OrchestratorFeedCommand : Hall9kAsyncCommand<OrchestratorFee
         }
 
         IReadOnlyList<TaskDetails> tasks = await session.LoadManyAsync<TaskDetails>(cancellationToken, taskIds);
+
+        // A blocker this node has no task for is named on its dependent's heading, because the
+        // dependency sweep records nothing for it and so no item ever would (UnknownBlocker).
+        Guid[] blockerIds =
+        [
+            .. tasks.Where(task => task.State == TaskState.Blocked).SelectMany(task => task.UnmetDependencies).Distinct(),
+        ];
+        HashSet<Guid> knownBlockers = blockerIds.Length == 0
+            ? []
+            : [.. await session.Query<TaskListItem>()
+                .Where(task => task.Id.IsOneOf(blockerIds))
+                .Select(task => task.Id)
+                .ToListAsync(cancellationToken)];
+
         return tasks.ToDictionary(
             task => task.Id,
-            task => $"{TaskListCommand.ShortId(task.Id)}  "
-                + TaskListCommand.Truncate(ExternalText.OneLine(task.Objective), 90));
+            task => Heading(
+                task,
+                task.State == TaskState.Blocked
+                    ? UnknownBlocker.Among(task.UnmetDependencies, knownBlockers)
+                    : []));
     }
+
+    /// <summary>
+    /// One group's heading: the short id and objective, then the unknown-blocker sentence when the
+    /// task is waiting on a blocker this node has no record of. The sentence names the blocker by
+    /// short id alone; its objective is not known here and is never guessed.
+    /// </summary>
+    internal static string Heading(TaskDetails task, IReadOnlyList<Guid> unknownBlockerIds) =>
+        $"{TaskListCommand.ShortId(task.Id)}  "
+        + TaskListCommand.Truncate(ExternalText.OneLine(task.Objective), 90)
+        + (UnknownBlocker.Line(unknownBlockerIds) is { } line ? $"  ({line})" : string.Empty);
 
     /// <summary>
     /// The named project, or the only one there is. Unlike <c>h9k orchestrator project</c>, which

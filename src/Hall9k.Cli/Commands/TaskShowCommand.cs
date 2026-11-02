@@ -609,6 +609,10 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                     + (isStackParent ? " [blue]— stacked on this[/]" : string.Empty));
             }
 
+            // No unknown-blocker sentence here: this screen's "Waiting on" row already carries it
+            // (PublishedFacts), and saying it under the list too printed it twice. The teammate
+            // screen below has no such row, so it prints the sentence itself.
+
             // Recorded on the current claim's own TaskClaimed (task 8a56af78-h9k, extended by
             // task 0ac72cb8-h9k to h9k task drive's own claim too): a human warned about the
             // still-open blocker(s) above chose to claim this task anyway, either with
@@ -964,6 +968,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                     + $"{ExternalText.OneLineMarkup(dependency.Objective)} "
                     + $"({TaskStatusComposer.State(dependency).Markup})");
             }
+
+            WriteUnknownBlockers(details, dependencies);
         }
 
         IReadOnlyList<RunListItem> runs = await session.Query<RunListItem>()
@@ -990,6 +996,25 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         AnsiConsole.MarkupLine(
             "\n[dim]This is a teammate's task, so only what is recorded about it is shown here: what "
             + "happens next is its owner's call.[/]");
+    }
+
+    /// <summary>
+    /// The still-unmet blockers of a Blocked task that this node has no task for, under the list
+    /// that could not name them (<see cref="UnknownBlocker"/>). The list loads only tasks this node
+    /// has, so without this line such a blocker would simply be missing from it.
+    /// </summary>
+    private static void WriteUnknownBlockers(TaskDetails details, IReadOnlyList<TaskDependency> dependencies)
+    {
+        if (details.State != TaskState.Blocked)
+        {
+            return;
+        }
+
+        HashSet<Guid> known = [.. dependencies.Select(dependency => dependency.Id)];
+        if (UnknownBlocker.Line(UnknownBlocker.Among(details.UnmetDependencies, known)) is { } line)
+        {
+            AnsiConsole.MarkupLine($"  [yellow]{line.EscapeMarkup()}[/]");
+        }
     }
 
     /// <summary>

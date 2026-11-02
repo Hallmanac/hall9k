@@ -103,6 +103,11 @@ namespace Hall9k.Cli.Commands;
 /// by owner id alone resolves the way <see cref="OwnerRootFingerprintResolver"/> resolves it for the
 /// commands. An owner absent from it reads as one this node has never heard of.
 /// </param>
+/// <param name="UnknownBlockers">
+/// For each Blocked task with at least one, the unmet blockers this node has no task for
+/// (<see cref="UnknownBlocker"/>), keyed by task id. The dependency sweep records nothing for such a
+/// blocker, so this is how the board says the node does not know it.
+/// </param>
 /// <param name="CreatorFacts">
 /// The creator fact of each task whose creator decides ownership (no holder, no assignee), keyed by
 /// task id, read the way the commands read it (<see cref="TaskOwnerFactsReader.ReadCreatorsAsync"/>):
@@ -128,7 +133,8 @@ internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, ProjectMemberLabels>? ProjectMemberLabelsById = null,
     string? ViewerRoot = null,
     IReadOnlyDictionary<Guid, string>? OwnerRootsById = null,
-    IReadOnlyDictionary<Guid, OwnerRootFact>? CreatorFacts = null);
+    IReadOnlyDictionary<Guid, OwnerRootFact>? CreatorFacts = null,
+    IReadOnlyDictionary<Guid, IReadOnlyList<Guid>>? UnknownBlockers = null);
 
 /// <summary>
 /// The one truth about how a task reads. Every surface that shows a task — h9k status,
@@ -300,7 +306,41 @@ internal static class TaskStatusComposer
             projectMemberLabelsById,
             viewerRoot,
             ownerRootsById,
-            creatorFacts);
+            creatorFacts,
+            await ReadUnknownBlockersAsync(session, tasks, cancellationToken));
+    }
+
+    /// <summary>
+    /// The unmet blockers each Blocked task names that this node has no task for. Tasks already in
+    /// hand answer for themselves, so the board costs no query at all when every blocker is among
+    /// the rows it is showing; one row (h9k task show) asks the store about only the ids it cannot
+    /// place.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<Guid, IReadOnlyList<Guid>>> ReadUnknownBlockersAsync(
+        IQuerySession session, IReadOnlyList<TaskListItem> tasks, CancellationToken cancellationToken)
+    {
+        HashSet<Guid> known = [.. tasks.Select(task => task.Id)];
+        Guid[] unplaced =
+        [
+            .. tasks
+                .Where(task => task.State == TaskState.Blocked)
+                .SelectMany(task => task.UnmetDependencies)
+                .Distinct()
+                .Where(id => !known.Contains(id)),
+        ];
+        if (unplaced.Length > 0)
+        {
+            known.UnionWith(await session.Query<TaskListItem>()
+                .Where(task => task.Id.IsOneOf(unplaced))
+                .Select(task => task.Id)
+                .ToListAsync(cancellationToken));
+        }
+
+        return tasks
+            .Where(task => task.State == TaskState.Blocked)
+            .Select(task => (task.Id, Unknown: UnknownBlocker.Among(task.UnmetDependencies, known)))
+            .Where(entry => entry.Unknown.Count > 0)
+            .ToDictionary(entry => entry.Id, entry => entry.Unknown);
     }
 
     /// <summary>
@@ -455,7 +495,8 @@ internal static class TaskStatusComposer
             PublishedFacts.Compose(
                 task, state, held, heldByTracker, now, heldByLedgerHolder, context.OwnersByFingerprint,
                 context.ProjectMemberLabelsById?.GetValueOrDefault(task.ProjectId),
-                keepFingerprintBesideHeldByOwnerLabel),
+                keepFingerprintBesideHeldByOwnerLabel,
+                context.UnknownBlockers?.GetValueOrDefault(task.Id)),
             project,
             task.Objective,
             task.Type.Value,

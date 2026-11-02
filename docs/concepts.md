@@ -497,6 +497,13 @@ than silently unblocking (which would dispatch work whose premise died) or silen
 (which would lose it). Deadness is a question the dispatch sweep asks fresh every cycle, so a
 blocker put back to work by `h9k task retry` clears the hold on its own.
 
+A blocker this node has no record of is not treated as dead. The edge is a bare id and records no
+project, so a project this node has not joined, or events that have not arrived yet, look the same
+as a purged project. The sweep records the blocker as failed only when this node's own purge of the
+blocker's project destroyed it; otherwise the dependent stays `Blocked`, and `h9k status`,
+`h9k task show` and the orchestrator feed name the blocker as unknown, by short id only, and
+suggest asking the teammate whose node holds that project.
+
 The edge does double duty. "This could not start until that finished" is also a statement about
 relatedness, so the graph routes context: a dispatched run receives what its **immediate**
 blockers wrote at their own closeout, exactly one hop, no further. That is the "What your
