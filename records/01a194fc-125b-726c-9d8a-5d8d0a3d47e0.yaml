@@ -64,7 +64,3 @@ context: |-
   Not in this task: the epic flag on `h9k plan start` (B2), a settable round cap, a session creating drafts, adding a draft to a live plan, discovery and drafting phases (all B2, 80f1460d), a per-project prompt addendum for refinement, a plan-level title, plans on a project without skip-permissions, plan records that travel to other nodes, automatic retry of a failed session, task notes, Ralph loops, agent files, multi-vendor, and the coordination layer. A refinement that believes a draft should split ends with the question outcome, and a person answers by cancelling and starting a plan on the resulting drafts. No test spawns a real agent, creates a branch, or touches GitHub.
 
   Note to the orchestrator (decision 13f11af2), not to the build session: after this merges, regenerate the project recipes and adopt them, supersede the memory rule that criteria are walked before publishing as the brief directs, and move the challenge-before-publish rule onto `h9k plan start`. Confirm the Mac's `--model-refinement` and `--effort-refinement` are what you want before the first plan, since they fall through to the node defaults.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-11-02 01:00:47Z
