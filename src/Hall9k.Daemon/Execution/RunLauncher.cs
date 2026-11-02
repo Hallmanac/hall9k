@@ -790,7 +790,7 @@ public sealed class RunLauncher(
                 {
                     await CitedIssues.EnsureWrittenAsync(
                         processRunner, task.ExternalReference, task.AgentContext, project.RepositoryPath, runDirectory,
-                        logger, cancellationToken);
+                        CitedIssues.ReadBudget, logger, cancellationToken);
                 }
 
                 prompt = primarySession.BuildPrompt(new ReviewPersonaPromptRequest(
@@ -1278,9 +1278,15 @@ public sealed class RunLauncher(
             string? priorReport = priorReviewRunId is { } priorRunId
                 ? await ReadPriorReviewReportAsync(priorRunId, cancellationToken)
                 : null;
+            // The session cannot run gh, so what it learns of the pull request's description, and of the
+            // issues that description cites, is what the daemon puts in front of it here.
+            await CitedIssues.EnsureWrittenAsync(
+                processRunner, task.ExternalReference, task.AgentContext, project.RepositoryPath, runDirectory,
+                CitedIssues.ReadBudget, logger, cancellationToken);
             string prompt = MentionFollowUpPromptBuilder.Build(
                 facts.Repository, facts.Number, worktree.Path, baseBranch: baseBranch, comment: comment,
                 priorReport: priorReport, project: project,
+                pullRequestTitle: facts.Title, pullRequestBody: facts.Body, runDirectory: runDirectory,
                 // The drafted reply this session produces is written first-person as the owner, so
                 // the seam names their own voice skill when they have one (#193).
                 voiceSkill: (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))?.VoiceSkill,

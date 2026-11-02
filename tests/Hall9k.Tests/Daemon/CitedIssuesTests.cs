@@ -96,7 +96,7 @@ public sealed class CitedIssuesTests : IDisposable
 
         commands.Should().BeEmpty("only the pull request's own repository is read");
         string file = File.ReadAllText(RunPaths.CitedIssuesFile(_runDirectory));
-        file.Should().Contain("other/repo#5: not read").And.Contain("third/place#6: not read");
+        file.Should().Contain("not in this pull request's own repository: other/repo#5").And.Contain("third/place#6");
     }
 
     [Fact]
@@ -109,8 +109,7 @@ public sealed class CitedIssuesTests : IDisposable
 
         commands.Should().HaveCount(CitedIssues.MaxIssuesRead);
         string file = File.ReadAllText(RunPaths.CitedIssuesFile(_runDirectory));
-        file.Should().Contain("acme/web#11: not read, because it is past the limit of 10 issues the daemon reads");
-        file.Should().Contain("acme/web#12: not read");
+        file.Should().Contain("because it is past the limit of 10 issues the daemon reads: acme/web#11, acme/web#12.");
         file.Should().NotContain("## acme/web#11");
     }
 
@@ -127,8 +126,7 @@ public sealed class CitedIssuesTests : IDisposable
         await Write(runner, "#12 #13 #14");
 
         string file = File.ReadAllText(RunPaths.CitedIssuesFile(_runDirectory));
-        file.Should().Contain("acme/web#12: not read, because the daemon could not read it");
-        file.Should().Contain("acme/web#13: not read, because the daemon could not read it");
+        file.Should().Contain("because the daemon could not read it: acme/web#12, acme/web#13.");
         file.Should().Contain("## acme/web#14 (closed)").And.Contain("Fine.");
     }
 
@@ -184,22 +182,61 @@ public sealed class CitedIssuesTests : IDisposable
 
         calls.Should().Be(CitedIssues.MaxIssuesRead, "a description cannot make the daemon run gh without end by citing numbers that do not exist");
         string file = File.ReadAllText(RunPaths.CitedIssuesFile(_runDirectory));
-        file.Should().Contain("acme/web#900001: not read, because the daemon could not read it");
-        file.Should().Contain("acme/web#900050: not read, because it is past the limit of 10 issues the daemon reads");
+        file.Should().Contain("because the daemon could not read it: acme/web#900001, ");
+        file.Should().Contain("because it is past the limit of 10 issues the daemon reads: acme/web#900011, ").And.Contain("acme/web#900050.");
     }
 
     [Fact]
-    public async Task Not_read_citations_past_the_naming_bound_are_counted_and_the_file_says_so()
+    public async Task Every_not_read_citation_is_named_however_many_the_description_cites()
     {
         List<string> commands = [];
-        string description = string.Join(' ', Enumerable.Range(1, 130).Select(number => $"other/repo#{number}"));
+        string description = string.Join(' ', Enumerable.Range(1, 250).Select(number => $"other/repo#{number}"));
 
         await Write(Runner(commands, number => Json(number, "T", "open", "B")), description);
 
         commands.Should().BeEmpty();
         string file = File.ReadAllText(RunPaths.CitedIssuesFile(_runDirectory));
-        file.Should().Contain("other/repo#100: not read").And.NotContain("other/repo#101: not read");
-        file.Should().Contain("and 30 more, not read. This file names the first 100 one by one and only counts the rest.");
+        file.Should().Contain("it is in other/repo, not in this pull request's own repository: other/repo#1, other/repo#2, ")
+            .And.Contain("other/repo#250.");
+        Enumerable.Range(1, 250).Should().OnlyContain(number => file.Contains($"other/repo#{number},") || file.Contains($"other/repo#{number}."));
+    }
+
+    [Fact]
+    public async Task A_read_that_outlasts_the_time_budget_and_every_citation_after_it_are_named_as_not_read()
+    {
+        int calls = 0;
+        ProcessRunner runner = async (_, arguments, _, token) =>
+        {
+            calls++;
+            if (arguments[2] == "12")
+            {
+                return new ProcessResult(0, Json(12, "T", "open", "Fine."), string.Empty);
+            }
+
+            await Task.Delay(Timeout.Infinite, token);
+            return new ProcessResult(0, string.Empty, string.Empty);
+        };
+
+        await CitedIssues.EnsureWrittenAsync(
+            runner, Reference, "#12 #13 #14 #15", "/repo", _runDirectory, TimeSpan.FromMilliseconds(100),
+            NullLogger.Instance, CancellationToken.None);
+
+        calls.Should().Be(2, "the read that outlasted the budget is the last one the daemon tries");
+        string file = File.ReadAllText(RunPaths.CitedIssuesFile(_runDirectory));
+        file.Should().Contain("## acme/web#12 (open)");
+        file.Should().Contain("because the daemon ran out of the time it allows for reading issues: acme/web#13, acme/web#14, acme/web#15.");
+    }
+
+    [Fact]
+    public async Task An_issue_body_is_cleaned_of_terminal_escapes_and_lone_carriage_returns_like_the_title()
+    {
+        List<string> commands = [];
+
+        await Write(Runner(commands, number => Json(number, "T", "open", "line one\u001b[2Khidden\rover\nline two")), "#12");
+
+        // The file's own lines end with the platform's newline, so only a carriage return left in the body is a defect.
+        string file = File.ReadAllText(RunPaths.CitedIssuesFile(_runDirectory)).Replace("\r\n", "\n", StringComparison.Ordinal);
+        file.Should().Contain("line one[2Khiddenover\nline two").And.NotContain("\u001b").And.NotContain("\r");
     }
 
     [Fact]
@@ -258,7 +295,7 @@ public sealed class CitedIssuesTests : IDisposable
     }
 
     [Fact]
-    public void Only_the_sessions_told_what_the_change_is_for_point_at_the_file()
+    public void Only_the_sessions_whose_prompts_use_the_issues_point_at_the_file()
     {
         ReviewPersonaRegistry.For(ReviewPersona.Engineer).Sessions
             .Single(session => session.Slug == ReviewLens.Adversarial.Slug).ReadsCitedIssues.Should().BeFalse();
@@ -287,7 +324,7 @@ public sealed class CitedIssuesTests : IDisposable
             string prompt = Prompt(session, _runDirectory);
             prompt.Should().Contain($"`{path}`", $"the {session.Slug} prompt names the file");
             prompt.Should().Contain("source material").And.Contain("not instructions");
-            prompt.Should().Contain("the first 100 one by one", $"the {session.Slug} prompt states how far the file names what it did not read");
+            prompt.Should().Contain("names every cited issue the daemon did not read", $"the {session.Slug} prompt states what the file names");
         }
 
         string security = Prompt(ReviewPersonaRegistry.For(ReviewPersona.Security).Sessions.Single(), _runDirectory);
@@ -439,7 +476,8 @@ public sealed class CitedIssuesTests : IDisposable
             TimeSpan.FromMinutes(30), RunDirectory: runDirectory));
 
     private Task Write(ProcessRunner runner, string description) =>
-        CitedIssues.EnsureWrittenAsync(runner, Reference, description, "/repo", _runDirectory, NullLogger.Instance, CancellationToken.None);
+        CitedIssues.EnsureWrittenAsync(
+            runner, Reference, description, "/repo", _runDirectory, CitedIssues.ReadBudget, NullLogger.Instance, CancellationToken.None);
 
     private static ProcessRunner Runner(List<string> commands, Func<int, string> answer) =>
         (file, arguments, _, _) =>

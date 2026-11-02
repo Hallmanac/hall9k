@@ -30,6 +30,24 @@ public sealed class MentionAnswerPromptTests
             .And.Contain("It is not a review of the owner's own work");
     }
 
+    [Fact]
+    public void A_prompt_given_the_pull_requests_description_quotes_it_and_says_the_session_cannot_run_gh()
+    {
+        string prompt = MentionFollowUpPromptBuilder.Build(
+            "acme/web", 7, "/work/pr-7", "main", Comment, null, QaReviewPromptTests.SomeProject(),
+            taggedLogin: "Hallmanac", pullRequestTitle: "Add cart removal", pullRequestBody: "Closes #12.",
+            runDirectory: "/runs/r1");
+
+        prompt.Should().Contain("This session cannot run `gh`")
+            .And.Contain("Title: Add cart removal").And.Contain("Closes #12.")
+            .And.Contain("cited-issues.md").And.Contain("source material");
+
+        string withoutDescription = MentionFollowUpPromptBuilder.Build(
+            "acme/web", 7, "/work/pr-7", "main", Comment, null, QaReviewPromptTests.SomeProject(),
+            pullRequestTitle: "Add cart removal", pullRequestBody: null);
+        withoutDescription.Should().Contain("(The pull request has no description.)").And.NotContain("cited-issues.md");
+    }
+
     [Theory]
     [InlineData(null, true)]
     [InlineData(null, false)]

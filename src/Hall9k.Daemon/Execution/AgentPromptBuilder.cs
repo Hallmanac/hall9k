@@ -2596,7 +2596,6 @@ public static class AgentPromptBuilder
                     new Dictionary<string, string>
                     {
                         ["CitedIssuesPath"] = citedIssuesPath,
-                        ["MaxNamedNotRead"] = CitedIssues.MaxNamedNotRead.ToString(CultureInfo.InvariantCulture),
                     })
                 : string.Empty)
             + (guidance.Length > 0 ? "\n\n" + guidance : string.Empty));

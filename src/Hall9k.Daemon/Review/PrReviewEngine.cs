@@ -715,7 +715,7 @@ public sealed class PrReviewEngine(
         {
             await CitedIssues.EnsureWrittenAsync(
                 _gitHubReader, task.ExternalReference, task.AgentContext, project.RepositoryPath, runDirectory,
-                logger, cancellationToken);
+                CitedIssues.ReadBudget, logger, cancellationToken);
         }
 
         string prompt = personaSession.BuildPrompt(new ReviewPersonaPromptRequest(

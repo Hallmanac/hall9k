@@ -2394,7 +2394,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         commands.Should().Equal("gh issue view 7 --repo acme/web --json number,title,state,body");
         string file = RunPaths.CitedIssuesFile(runDirectory);
-        File.ReadAllText(file).Should().Contain("A coupon cannot be removed.").And.Contain("other/repo#3: not read");
+        File.ReadAllText(file).Should().Contain("A coupon cannot be removed.").And.Contain("not in this pull request's own repository: other/repo#3");
         executor.Requests.Should().ContainSingle("only the conformance lens is dispatched after the primary session");
         executor.Requests[0].Prompt.Should().Contain($"`{file}`").And.Contain("source material");
     }

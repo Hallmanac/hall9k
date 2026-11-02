@@ -18,8 +18,8 @@ namespace Hall9k.Daemon.Review;
 public sealed record CitedIssue(string? Repository, int Number);
 
 /// <summary>
-/// Gathers, for a review lens that is told the pull request's intent, the bodies of the issues that
-/// intent cites, and writes them into the run directory (<see cref="RunPaths.CitedIssuesFile"/>).
+/// Gathers, for a session whose prompt points at the file (a review lens told what the change is for, or a mention
+/// follow-up), the bodies of the issues the pull request's description cites, and writes them into the run directory (<see cref="RunPaths.CitedIssuesFile"/>).
 /// <para>
 /// A pr-review session is refused the <c>gh</c> tool (<c>ClaudeSettingsFile.PrReviewDeniedTools</c>),
 /// so the daemon does the reading it used to leave to <c>gh issue view</c>. It reads only issues in the
@@ -28,8 +28,10 @@ public sealed record CitedIssue(string? Repository, int Number);
 /// numbers that do not exist), and never reads their comments:
 /// a description is written by whoever opened the pull request, so what it cites is a stranger's choice
 /// of what the daemon fetches, and the limits keep that choice from being a way to make the daemon read
-/// arbitrarily much, or read a repository the project did not name. A cited issue the daemon cannot read,
-/// or one past the limit, is named in the file as not read, and the session still starts.
+/// arbitrarily much, or read a repository the project did not name. The reads also share one time budget
+/// (<see cref="ReadBudget"/>), because the launch that waits on them holds up every other claim on the node. A cited
+/// issue the daemon cannot read, or one past either limit, is named in the file as not read (every one of them,
+/// grouped by the reason), and the session still starts.
 /// </para>
 /// </summary>
 public static partial class CitedIssues
@@ -40,8 +42,14 @@ public static partial class CitedIssues
     /// </summary>
     public const int MaxIssuesRead = 10;
 
-    /// <summary>The most not-read citations the file names one by one; the rest are counted.</summary>
-    internal const int MaxNamedNotRead = 100;
+    /// <summary>
+    /// How long the daemon spends in total on the <c>gh</c> reads for one file. Each read has its own deadline
+    /// (<c>ExternalProcess.Deadline</c>), so without this a wedged <c>gh</c> and a description citing ten issues
+    /// would hold the launch for ten of them in a row, and a primary session's launch is awaited inside the dispatch loop,
+    /// where a wait holds every other claim on the node (see <c>DaemonOptions.LessonPickerTimeout</c>). Past it, the
+    /// issue being read and every one after it are named as not read.
+    /// </summary>
+    public static readonly TimeSpan ReadBudget = TimeSpan.FromSeconds(60);
 
     /// <summary>The longest issue body the file carries; the rest is cut and said to be.</summary>
     internal const int MaxBodyLength = 20_000;
@@ -156,9 +164,10 @@ public static partial class CitedIssues
     /// <param name="agentContext">The task's agent context. Only the pull request's own quoted title and description in it is scanned for citations, not a linked item's body or the operator's added context (<see cref="PullRequestDescription"/>).</param>
     /// <param name="repositoryPath">The project's repository path, which the runner finds the project's GitHub account by.</param>
     /// <param name="runDirectory">The run directory the file is written into.</param>
+    /// <param name="readBudget">The total time the <c>gh</c> reads may take (<see cref="ReadBudget"/>).</param>
     public static async Task EnsureWrittenAsync(
         ProcessRunner runner, string? externalReference, string? agentContext, string repositoryPath,
-        string runDirectory, ILogger logger, CancellationToken cancellationToken)
+        string runDirectory, TimeSpan readBudget, ILogger logger, CancellationToken cancellationToken)
     {
         string path = RunPaths.CitedIssuesFile(runDirectory);
         if (File.Exists(path))
@@ -169,7 +178,7 @@ public static partial class CitedIssues
         string content;
         try
         {
-            content = await ComposeAsync(runner, externalReference, agentContext, repositoryPath, logger, cancellationToken);
+            content = await ComposeAsync(runner, externalReference, agentContext, repositoryPath, readBudget, logger, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -194,7 +203,7 @@ public static partial class CitedIssues
 
     private static async Task<string> ComposeAsync(
         ProcessRunner runner, string? externalReference, string? agentContext, string repositoryPath,
-        ILogger logger, CancellationToken cancellationToken)
+        TimeSpan readBudget, ILogger logger, CancellationToken cancellationToken)
     {
         string? repository = GitHubPullRequestReference.RepositoryOfTask(externalReference);
         int ownNumber = GitHubPullRequestReference.TryParseCanonical(
@@ -205,6 +214,9 @@ public static partial class CitedIssues
         List<ReadIssue> read = [];
         List<NotReadIssue> notRead = [];
         int attempted = 0;
+        bool budgetSpent = false;
+        using CancellationTokenSource budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(readBudget);
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
         foreach (CitedIssue cited in Extract(PullRequestDescription(agentContext)))
         {
@@ -233,6 +245,10 @@ public static partial class CitedIssues
             {
                 notRead.Add(new NotReadIssue($"{named}#{cited.Number}", $"it is in {named}, not in this pull request's own repository"));
             }
+            else if (budgetSpent)
+            {
+                notRead.Add(new NotReadIssue($"{named}#{cited.Number}", BudgetSpentReason));
+            }
             else if (attempted >= MaxIssuesRead)
             {
                 notRead.Add(new NotReadIssue($"{named}#{cited.Number}", $"it is past the limit of {MaxIssuesRead} issues the daemon reads"));
@@ -241,20 +257,32 @@ public static partial class CitedIssues
             {
                 // Counted before the read, so an issue that fails to read still uses up its place.
                 attempted++;
-                ReadIssue? issue = await TryReadAsync(runner, repository, cited.Number, repositoryPath, logger, cancellationToken);
-                if (issue is null)
+                ReadIssue? issue = null;
+                try
                 {
-                    notRead.Add(new NotReadIssue($"{named}#{cited.Number}", "the daemon could not read it"));
+                    issue = await TryReadAsync(runner, repository, cited.Number, repositoryPath, logger, budget.Token);
+                }
+                catch (OperationCanceledException) when (budget.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    budgetSpent = true;
+                    logger.LogWarning("The time budget for reading cited issues ({Budget}) ran out at {Repository}#{Number}", readBudget, repository, cited.Number);
+                }
+
+                if (issue is not null)
+                {
+                    read.Add(issue);
                 }
                 else
                 {
-                    read.Add(issue);
+                    notRead.Add(new NotReadIssue($"{named}#{cited.Number}", budgetSpent ? BudgetSpentReason : "the daemon could not read it"));
                 }
             }
         }
 
         return Compose(read, notRead, wholeFileReason: null);
     }
+
+    private const string BudgetSpentReason = "the daemon ran out of the time it allows for reading issues";
 
     private sealed record ReadIssue(string Reference, string State, string Title, string Body);
 
@@ -323,9 +351,10 @@ public static partial class CitedIssues
 
         foreach (ReadIssue issue in read)
         {
-            string body = issue.Body.Length > MaxBodyLength
-                ? $"{issue.Body[..RelayedText.CutLength(issue.Body, MaxBodyLength)]}\n[cut: the body is longer than this file carries]"
-                : issue.Body;
+            string printable = RelayedText.Printable(issue.Body);
+            string body = printable.Length > MaxBodyLength
+                ? $"{printable[..RelayedText.CutLength(printable, MaxBodyLength)]}\n[cut: the body is longer than this file carries]"
+                : printable;
             string titled = $"Title: {RelayedText.OneLine(issue.Title).Trim()}\n\n{(body.IsBlank() ? "(the issue has no description)" : body)}";
             string fence = RelayedText.FenceFor(titled);
             file.AppendLine();
@@ -350,16 +379,10 @@ public static partial class CitedIssues
             file.AppendLine();
             file.AppendLine("The description cites these issues too. They are not read here, and you have no other way to read them.");
             file.AppendLine();
-            foreach (NotReadIssue issue in notRead.Take(MaxNamedNotRead))
+            // Every citation is named, grouped by the reason so that a description citing thousands stays a short file.
+            foreach (IGrouping<string, NotReadIssue> group in notRead.GroupBy(issue => issue.Reason))
             {
-                file.AppendLine($"- {issue.Reference}: not read, because {issue.Reason}.");
-            }
-
-            if (notRead.Count > MaxNamedNotRead)
-            {
-                file.AppendLine(
-                    $"- and {notRead.Count - MaxNamedNotRead} more, not read. This file names the first {MaxNamedNotRead} "
-                    + "one by one and only counts the rest.");
+                file.AppendLine($"- Not read, because {group.Key}: {string.Join(", ", group.Select(issue => issue.Reference))}.");
             }
         }
 

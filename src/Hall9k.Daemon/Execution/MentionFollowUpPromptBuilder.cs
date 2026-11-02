@@ -50,10 +50,21 @@ public static class MentionFollowUpPromptBuilder
     /// says this is an answer for the owner and not a review of their own work. Whatever this is, a
     /// prompt carrying no prior report never says a review already happened.
     /// </param>
+    /// <param name="pullRequestTitle">
+    /// The pull request's title as GitHub has it now. This session cannot run <c>gh</c>, so the
+    /// title and <paramref name="pullRequestBody"/> are the only way it learns what the pull request
+    /// says it is for; both are quoted whenever the title is given.
+    /// </param>
+    /// <param name="pullRequestBody">The pull request's description as GitHub has it now, or null when it has none.</param>
+    /// <param name="runDirectory">
+    /// The run directory <see cref="Review.CitedIssues.EnsureWrittenAsync"/> wrote the issues the description
+    /// cites into; when given, the prompt points at that file.
+    /// </param>
     public static string Build(
         string repository, int number, string worktreePath, string baseBranch,
         PullRequestMentionComment comment, string? priorReport, ProjectDetails project,
-        VoiceSkillName? voiceSkill = null, string? taggedLogin = null, bool ownPullRequest = false)
+        VoiceSkillName? voiceSkill = null, string? taggedLogin = null, bool ownPullRequest = false,
+        string? pullRequestTitle = null, string? pullRequestBody = null, string? runDirectory = null)
     {
         const string file = $"{TemplateDirectory}/build.md";
         StringBuilder prompt = new();
@@ -109,6 +120,25 @@ public static class MentionFollowUpPromptBuilder
         }
 
         prompt.AppendLine();
+        if (pullRequestTitle is not null)
+        {
+            prompt.AppendLine(PromptTemplates.Load(file, "pull-request-heading"));
+            prompt.AppendLine();
+            prompt.AppendLine(PromptTemplates.Load(file, "pull-request-body"));
+            prompt.AppendLine();
+            string description = pullRequestBody.IsBlank()
+                ? PromptTemplates.Load(file, "pull-request-no-description")
+                : pullRequestBody;
+            prompt.AppendLine(Block($"Title: {OneLine(pullRequestTitle)}\n\n{description}"));
+            prompt.AppendLine();
+            if (runDirectory is not null)
+            {
+                prompt.AppendLine(PromptTemplates.Load(
+                    file, "cited-issues", Params(("CitedIssuesPath", RunPaths.CitedIssuesFile(runDirectory)))));
+                prompt.AppendLine();
+            }
+        }
+
         prompt.AppendLine(PromptTemplates.Load(file, "working-arrangement-heading"));
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(
