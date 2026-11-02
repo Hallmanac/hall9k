@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
@@ -146,16 +147,18 @@ public static class TaskDependencyResolver
             string? held = null;
             bool lifted = false;
 
-            // A dependency id naming no TaskListItem at all — most likely a purged project's own
-            // task, hard-deleted regardless of what other projects' tasks still declare it as a
-            // blocker (ProjectPurgeEngine). There is no TaskDependency snapshot to ask
-            // StackedEdgeRules about (no state, no run, nothing that could ever reach closeout or
-            // Delivered), so this is unconditionally dead for either kind of edge — the same dead
-            // hold a Failed or Abandoned blocker gets, with its own remedy on the dependent's side
-            // rather than a lever the decider would refuse (independent pre-PR review, cycle 1,
-            // adversarial lens: this id was previously dropped silently by TaskDependencyQuery,
-            // leaving the dependent Blocked forever with no blocker even named).
-            foreach (Guid missingId in missingDependencyIds)
+            // A dependency id naming no TaskListItem on this node is failed only when this node's own
+            // purge record names it (PurgedTaskRecord): the task was destroyed here, so it can never
+            // reach closeout or Delivered, and the dependent gets the same dead hold a Failed or
+            // Abandoned blocker gets, with its own remedy on the dependent's side. Any other missing
+            // id proves nothing. The edge is a bare id that records no project, and a purge deletes
+            // the project's own record, so an unseen project (not registered or joined here, or its
+            // events not replicated yet) looks exactly like a purged one. TaskDependencyFailed is
+            // project-scoped, so recording it from a partial view would park the task for every node,
+            // and a node that does see the blocker would lift it again next cycle. Those ids record
+            // nothing and the dependent stays Blocked; the surfaces name them as unknown blockers.
+            IReadOnlySet<Guid> purgedHere = await PurgedHereAsync(session, missingDependencyIds, cancellationToken);
+            foreach (Guid missingId in missingDependencyIds.Where(purgedHere.Contains))
             {
                 string reason = MissingDependencyReason(task, missingId);
                 if (task.RecordedDependencyFailure(missingId) == reason)
@@ -242,6 +245,20 @@ public static class TaskDependencyResolver
 
         await session.SaveChangesAsync(cancellationToken);
         return new DependencyReevaluation(unblocked, parked, recovered);
+    }
+
+    /// <summary>The ids among <paramref name="ids"/> that this node's own purge destroyed.</summary>
+    private static async Task<IReadOnlySet<Guid>> PurgedHereAsync(
+        IDocumentSession session, IReadOnlyList<Guid> ids, CancellationToken cancellationToken)
+    {
+        if (ids.Count == 0)
+        {
+            return new HashSet<Guid>();
+        }
+
+        IReadOnlyList<PurgedTaskRecord> records = await session.LoadManyAsync<PurgedTaskRecord>(
+            cancellationToken, [.. ids]);
+        return records.Select(record => record.Id).ToHashSet();
     }
 
     /// <summary>

@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Trust;
@@ -409,6 +410,16 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
 
         if (taskIds.Length > 0)
         {
+            // The only evidence TaskDependencyResolver accepts that a missing blocker was purged
+            // rather than merely unseen on this node: a dependency edge records no project for its
+            // blocker and the project's own record is deleted above, so nothing else can tell the
+            // two apart. Stored in this same save, so a purge that rolls back leaves none behind,
+            // and a plain document so it never leaves this node.
+            foreach (Guid taskId in taskIds)
+            {
+                session.Store(new PurgedTaskRecord(taskId, project.Id, DateTimeOffset.UtcNow));
+            }
+
             session.QueueSqlCommand("delete from mt_doc_taskdetails where id = ANY(?)", taskIds);
             session.QueueSqlCommand("delete from mt_doc_tasklistitem where id = ANY(?)", taskIds);
         }

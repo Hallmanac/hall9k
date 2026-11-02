@@ -1676,7 +1676,9 @@ with a purge scheduled, naming the deadline and the cancel command. `project lis
 mark a purge-pending project with its deadline and the cancel command. A daemon sweep, alongside
 the closeout and auto-pr-review sweeps, checks for due purges on start and on its own poll
 interval, so a purge whose deadline passed while the daemon was down fires on the next start rather
-than never; it logs what it destroyed in numbers.
+than never; it logs what it destroyed in numbers. In the same save it records, on that node only,
+the id of every task it destroyed. That record never replicates, and it is the only evidence the
+dependency sweep accepts that a missing blocker was purged rather than merely unseen by this node.
 
 `project set` is where the verification gates, the agent model, parallelism, commit style,
 context links, skip-permissions, the Jira board binding, the backlog policy (`--backlog
