@@ -34,3 +34,7 @@ context: |-
 
   The courier line on `h9k status` now shows a failing or day-capped state with the streak count, next try and last reason. `h9k doctor` gains a courier section that warns on a streak of five or more, a spent day cap, or a feed item left undrained for over an hour. The docs describe the backoff, its resets and the new output.
   ```
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-11-02 22:35:07Z
