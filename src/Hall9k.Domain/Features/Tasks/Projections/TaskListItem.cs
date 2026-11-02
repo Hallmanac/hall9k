@@ -1,5 +1,6 @@
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Feedback;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
@@ -142,6 +143,18 @@ public sealed class TaskListItem
     /// dispatches for this task, mirroring <see cref="TaskAggregate.QueuePriorityMarked"/>.
     /// </summary>
     public bool QueuePriorityMarked { get; set; }
+
+    /// <summary>Mirrors <see cref="TaskAggregate.FeedbackStepHeld"/>: Blocked at its release point until the feedback step ends.</summary>
+    public bool FeedbackStepHeld { get; set; }
+
+    /// <summary>Mirrors <see cref="TaskAggregate.FeedbackStepBegun"/>.</summary>
+    public bool FeedbackStepBegun { get; set; }
+
+    /// <summary>How the step ended, or <see cref="FeedbackStepOutcome.Unknown"/> while it has not (mirrors <see cref="TaskAggregate.FeedbackStepResult"/>).</summary>
+    public FeedbackStepOutcome FeedbackStepOutcome { get; set; } = FeedbackStepOutcome.Unknown;
+
+    /// <summary>The sentence the step recorded with its outcome, a parked step's reason among them.</summary>
+    public string? FeedbackStepOutcomeReason { get; set; }
     /// <summary>
     /// The owner's standing pre-approval as a plain boolean — <see cref="PreApprovalMode.LegacyPreApproved"/>
     /// (<c>mode == On</c>), kept for the same reason the events keep it: it is the only record a
@@ -584,11 +597,31 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.DeadDependencyReasons = [];
         view.DependencyFailureReason = null;
         // Both halves of the hold, exactly as TaskAggregate.Apply(TaskAssigned) asks them.
-        view.State = view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view)
-            ? TaskState.Queued
-            : TaskState.Blocked;
+        view.FeedbackStepHeld = false;
+        if (view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view))
+        {
+            ReleaseOrHold(view, @event.Data.HoldForFeedbackStep);
+        }
+        else
+        {
+            view.State = TaskState.Blocked;
+        }
+
         // Mirrors TaskAggregate.Apply(TaskAssigned) — see PrReviewPreflightUnsafe's own doc.
         view.PrReviewPreflightUnsafe = false;
+    }
+
+    /// <summary>The twin of <see cref="TaskAggregate"/>'s own release-or-hold, asked at the same three doors.</summary>
+    private static void ReleaseOrHold(TaskListItem view, bool holdForFeedbackStep)
+    {
+        if (view.FeedbackStepHeld || (holdForFeedbackStep && !view.FeedbackStepBegun))
+        {
+            view.FeedbackStepHeld = true;
+            view.State = TaskState.Blocked;
+            return;
+        }
+
+        view.State = TaskState.Queued;
     }
 
     /// <summary>
@@ -638,6 +671,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.DeadDependencies = [];
         view.DeadDependencyReasons = [];
         view.DependencyFailureReason = null;
+        view.FeedbackStepHeld = false;
         view.State = TaskState.Published;
     }
 
@@ -677,7 +711,10 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
             return;
         }
 
-        view.UnmetDependencies = [.. @event.Data.RemainingDependencies];
+        // Only the blocker that closed out is removed, the way the aggregate removes it, rather than the set replaced with the
+        // snapshot the event carries: a task held for its feedback step stays Blocked with nothing left to wait for, so a late
+        // completion that was decided before a sibling finished would otherwise put that sibling back.
+        view.UnmetDependencies.Remove(@event.Data.DependencyId);
 
         // A blocker recorded as dead that finished anyway (someone retried it) stops being a
         // reason to hold the task for a human. What is left showing is the newest death this
@@ -689,6 +726,28 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         }
 
         if (view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view))
+        {
+            ReleaseOrHold(view, @event.Data.HoldForFeedbackStep);
+        }
+    }
+
+    /// <summary>The twin of <see cref="TaskAggregate.Apply(FeedbackStepStarted)"/>, carrying what a board row needs.</summary>
+    public void Apply(IEvent<FeedbackStepStarted> @event, TaskListItem view)
+    {
+        view.FeedbackStepBegun = true;
+        view.FeedbackStepOutcome = FeedbackStepOutcome.Unknown;
+        view.FeedbackStepOutcomeReason = null;
+    }
+
+    public void Apply(IEvent<FeedbackStepOutcomeRecorded> @event, TaskListItem view)
+    {
+        view.FeedbackStepBegun = true;
+        view.FeedbackStepOutcome = @event.Data.Outcome;
+        view.FeedbackStepOutcomeReason = @event.Data.Reason;
+        bool wasHeld = view.FeedbackStepHeld;
+        view.FeedbackStepHeld = false;
+        if (wasHeld && view.State == TaskState.Blocked
+            && view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view))
         {
             view.State = TaskState.Queued;
         }
@@ -728,7 +787,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         if (view.State == TaskState.Blocked && view.UnmetDependencies.Count == 0
             && !AwaitsRemoteStackedParent(view))
         {
-            view.State = TaskState.Queued;
+            ReleaseOrHold(view, @event.Data.HoldForFeedbackStep);
         }
         else if (view.State == TaskState.Queued && AwaitsRemoteStackedParent(view))
         {
@@ -1062,6 +1121,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.FollowUpBranch = null;
         view.RetryBranch = null;
         view.RetryPending = false;
+        view.FeedbackStepHeld = false;
         view.State = TaskState.Abandoned;
         // Mirrors TaskAggregate.Apply(TaskAbandoned): a dead end, so a marker set earlier in
         // this task's life must not survive to be read back.

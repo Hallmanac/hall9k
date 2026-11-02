@@ -1,6 +1,7 @@
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Feedback;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -837,7 +838,8 @@ public static class TaskDecider
         Optional<string> exitCriterion = default,
         Optional<TaskConstraints?> constraints = default,
         Optional<AgentEffort> effort = default,
-        Optional<bool> humanGate = default)
+        Optional<bool> humanGate = default,
+        Optional<bool?> feedbackStep = default)
     {
         // Both markers are scheduling/mode facts, not part of the readiness contract, so they
         // are the two exceptions Revise's own Draft-only gate carves out (task 45136b29 for
@@ -847,7 +849,7 @@ public static class TaskDecider
         // still on, or the task has already reached Done with its pull request open — neither
         // ordinary exit door has an active interactive claim left to hand back or release, and
         // nothing else can turn the flag off).
-        bool onlyMarkerFieldsChanging = (queuePriority.HasValue || clearInteractiveMode || humanGate.HasValue)
+        bool onlyMarkerFieldsChanging = (queuePriority.HasValue || clearInteractiveMode || humanGate.HasValue || feedbackStep.HasValue)
             && !objective.HasValue && !acceptanceCriteria.HasValue && !agentContext.HasValue
             && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue
             && !reviewStageComposition.HasValue && !stackedOnTaskId.HasValue
@@ -864,7 +866,7 @@ public static class TaskDecider
             && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue
             && !queuePriority.HasValue && !reviewStageComposition.HasValue && !clearInteractiveMode
             && !stackedOnTaskId.HasValue && !stackedOnPullRequestNumber.HasValue && !closeLinkedIssue.HasValue
-            && !effort.HasValue && !humanGate.HasValue;
+            && !effort.HasValue && !humanGate.HasValue && !feedbackStep.HasValue;
         bool spikePublishedRevisionAllowed = onlySpikeFieldsChanging
             && task.Type == TaskType.Spike && task.State == TaskState.Published;
 
@@ -897,6 +899,7 @@ public static class TaskDecider
             // only one present whenever it is set at all.
             string doNothingDescription = (queuePriority.HasValue, clearInteractiveMode, humanGate.HasValue) switch
             {
+                (false, false, false) when feedbackStep.HasValue => "the feedback step setting would do nothing.",
                 (true, true, _) => "a priority marker and the interactive-mode flag would both do nothing.",
                 (true, false, _) => "a priority marker would do nothing.",
                 (false, false, true) => "the human gate would do nothing.",
@@ -905,6 +908,13 @@ public static class TaskDecider
             throw new DomainConflictException(
                 $"Task {task.Id} is {task.State.Value} — nothing here will ever run again, so "
                 + doNothingDescription);
+        }
+
+        // The feedback step override is narrower than the marker fields beside it: it is let through Draft-only only for a task
+        // the step could still hold, because once it is held, released, or claimed the step has run or never will.
+        if (feedbackStep.HasValue)
+        {
+            FeedbackStepRules.RefuseOverrideNow(task);
         }
 
         // The human gate holds a run before its pull request opens, so it can be set or cleared on any
@@ -1024,14 +1034,14 @@ public static class TaskDecider
             && !queuePriority.HasValue && !normalizedComposition.HasValue && !clearInteractiveMode
             && !stackedOn.TaskId.HasValue && !stackedOn.PullRequestNumber.HasValue
             && !closeLinkedIssueForEvent.HasValue && !spikeKind.HasValue && !exitCriterion.HasValue
-            && !constraints.HasValue && !effort.HasValue && !humanGate.HasValue)
+            && !constraints.HasValue && !effort.HasValue && !humanGate.HasValue && !feedbackStep.HasValue)
         {
             throw new DomainValidationException(
                 "A revision needs something to revise. Pass --objective, --criteria, --context, " +
                 "--type, --model, --effort, --blocked-by, --clear-dependencies, --epic, --clear-epic, " +
                 "--stacked-on, --stacked-on-pull-request, --clear-stacked-on, --queue-first, " +
                 "--clear-queue-first, --review-stage-composition, --clear-interactive-mode, " +
-                "--close-linked-issue, --kind, --exit-criterion, --human-gate, --clear-human-gate, or a budget option.");
+                "--close-linked-issue, --kind, --exit-criterion, --human-gate, --clear-human-gate, --feedback-step, or a budget option.");
         }
 
         Optional<Run.ReviewStageComposition?> compositionForEvent = normalizedComposition.HasValue
@@ -1058,7 +1068,8 @@ public static class TaskDecider
             normalizedExitCriterion,
             constraints,
             effort,
-            humanGate);
+            humanGate,
+            FeedbackStep: feedbackStep);
     }
 
     /// <summary>What a revision records about the stacked edge, in both its forms.</summary>
@@ -1344,7 +1355,8 @@ public static class TaskDecider
         DateTimeOffset assignedAt,
         Guid assignedByOwnerId,
         string? assignedOwnerRootFingerprint = null,
-        Optional<Guid?> placedOnNodeId = default)
+        Optional<Guid?> placedOnNodeId = default,
+        bool projectTakesFeedbackStep = false)
     {
         if (task.State != TaskState.Published)
         {
@@ -1388,7 +1400,8 @@ public static class TaskDecider
             assignedAt,
             assignedByOwnerId,
             assignedOwnerRootFingerprint,
-            placedOnNodeId);
+            placedOnNodeId,
+            FeedbackStepRules.Holds(task, projectTakesFeedbackStep));
     }
 
     /// <summary>
@@ -1571,7 +1584,7 @@ public static class TaskDecider
     /// is the only unblocking path there is: no weaker completion signal exists to abuse.
     /// </summary>
     public static TaskDependencyCompleted DependencyCompleted(
-        TaskAggregate task, Guid dependencyId, DateTimeOffset completedAt)
+        TaskAggregate task, Guid dependencyId, DateTimeOffset completedAt, bool projectTakesFeedbackStep = false)
     {
         if (!AwaitsDependency(task, dependencyId))
         {
@@ -1583,7 +1596,8 @@ public static class TaskDecider
             task.Id,
             dependencyId,
             [.. task.UnmetDependencies.Where(id => id != dependencyId)],
-            completedAt);
+            completedAt,
+            FeedbackStepRules.Holds(task, projectTakesFeedbackStep));
     }
 
     /// <summary>Whether that blocker's death is already recorded on this task.</summary>
@@ -1693,6 +1707,7 @@ public static class TaskDecider
         TaskAggregate task, Guid nodeId, Guid ownerId, Guid runId, DateTimeOffset claimedAt,
         string? ownerRootFingerprint = null, string? resumesBranch = null)
     {
+        FeedbackStepRules.RefuseClaimWhileHeld(task, "claimed");
         if (task.State != TaskState.Queued)
         {
             throw new DomainConflictException(
@@ -2037,6 +2052,7 @@ public static class TaskDecider
         bool dependencyOverrideAcknowledged = false, bool dependencyOverrideCarriedForward = false,
         string? ownerRootFingerprint = null, string? resumesBranch = null)
     {
+        FeedbackStepRules.RefuseClaimWhileHeld(task, "claimed");
         if (task.State == TaskState.Blocked)
         {
             if (!dependencyOverrideAcknowledged)
@@ -2113,6 +2129,7 @@ public static class TaskDecider
         bool dependencyOverrideCarriedForward = false, bool interactiveMode = false,
         string? ownerRootFingerprint = null, string? resumesBranch = null)
     {
+        FeedbackStepRules.RefuseClaimWhileHeld(task, "started");
         if (task.State == TaskState.Blocked)
         {
             if (!dependencyOverrideAcknowledged)

@@ -30,6 +30,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// onto the project's base from there (the same distinction <c>StackedParentVerdict.ParentMergedElsewhere</c>
 /// exists for).
 /// </param>
+/// <param name="HoldForFeedbackStep">Whether the task is held for its feedback step instead of released when this observation is the one that lets it go; see <see cref="TaskAssigned"/>.</param>
 /// <param name="Url">The pull request's own URL as the provider reported it, or blank when there is none to report.</param>
 /// <param name="LinkedWorkItem">
 /// The issue or tracker item this pull request says it closes, or null when it names none — which
@@ -49,4 +50,5 @@ public sealed record RemoteStackedParentObserved(
     string Url,
     ExternalReference? LinkedWorkItem,
     string Detail,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    bool HoldForFeedbackStep = false);

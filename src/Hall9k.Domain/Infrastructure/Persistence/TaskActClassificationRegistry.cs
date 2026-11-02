@@ -123,6 +123,16 @@ public static class TaskActClassificationRegistry
         [typeof(DraftRefinementDispatched)] = TaskActClassification.Conditional,
         [typeof(DraftRefinementRecorded)] = TaskActClassification.Conditional,
 
+        // The feedback step's own events: the owner's running node records them about a task it holds, and the outcome moves
+        // the task out of its hold, so a sender that holds nothing must not be able to start, end, or release one. Once the step
+        // has begun, the node that began it may carry it to its end even after a person unassigned or reassigned the task
+        // (EventReplicationInbox.IsTheRunningFeedbackStepsNode), since that is exactly when the step ends without acting.
+        [typeof(FeedbackStepStarted)] = TaskActClassification.Conditional,
+        [typeof(FeedbackCheckDispatched)] = TaskActClassification.Conditional,
+        [typeof(FeedbackCheckRecorded)] = TaskActClassification.Conditional,
+        [typeof(FeedbackStepRefinementBegun)] = TaskActClassification.Conditional,
+        [typeof(FeedbackStepOutcomeRecorded)] = TaskActClassification.Conditional,
+
         // The pull-request review pre-flight's own park (idea 6be68ee2, finding 1, phase one)
         // clears the current claim and assignment unconditionally, the identical shape
         // TaskInteractiveClaimUnassigned and TaskRequeued give a member's own give-back — a forged

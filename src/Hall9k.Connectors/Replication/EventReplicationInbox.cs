@@ -2011,6 +2011,31 @@ public sealed class EventReplicationInbox(
     };
 
     /// <summary>
+    /// The feedback step's own acts after it began, which only the node that began it ever appends. A person may unassign or
+    /// reassign the task while the step runs, and the step then ends without acting, so the assignment the general conditional
+    /// rule reads no longer names that node's root by the time its acts arrive: judged that way, its ending would be held behind
+    /// an unassigned task or refused on a reassigned one, and every peer would read the step as running for good.
+    /// </summary>
+    private static readonly IReadOnlySet<Type> FeedbackStepActsOfTheRunningNode = new HashSet<Type>
+    {
+        typeof(FeedbackCheckDispatched),
+        typeof(FeedbackCheckRecorded),
+        typeof(FeedbackStepRefinementBegun),
+        typeof(FeedbackStepOutcomeRecorded),
+    };
+
+    /// <summary>
+    /// Whether <paramref name="originNodeId"/> is the node that began <paramref name="task"/>'s still-running feedback step,
+    /// vouched for by <paramref name="sender"/>'s root, and that root is the owner the step was begun for. Anyone else is judged
+    /// by the general conditional rule, so a sender with no part in the step is still refused.
+    /// </summary>
+    internal static bool IsTheRunningFeedbackStepsNode(TaskAggregate? task, SenderResolution sender, Guid originNodeId) =>
+        task is { FeedbackStepRunning: true, FeedbackStep: { } started }
+        && started.NodeId == originNodeId
+        && sender.FleetNodeIds.Contains(started.NodeId)
+        && (started.QueuedForOwnerFingerprint is null || started.QueuedForOwnerFingerprint == sender.RootFingerprint);
+
+    /// <summary>
     /// Whether a <see cref="TaskHolderReleased"/> from <paramref name="originNodeId"/> reached a task
     /// that another node now holds. A task with no holder has nothing for the release to wipe, so it
     /// applies as ever; so does one from the node the holder names.
@@ -2205,6 +2230,10 @@ public sealed class EventReplicationInbox(
                     },
                     _ => Refuse(originNodeId, senderNodeId),
                 };
+
+            case TaskActClassification.Conditional when FeedbackStepActsOfTheRunningNode.Contains(eventType)
+                && IsTheRunningFeedbackStepsNode(task, sender, originNodeId):
+                return TaskActVerdict.Allowed;
 
             case TaskActClassification.Conditional:
             {

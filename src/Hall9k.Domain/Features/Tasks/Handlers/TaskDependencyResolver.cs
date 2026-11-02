@@ -1,6 +1,8 @@
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Feedback;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using JasperFx.Events;
@@ -131,6 +133,11 @@ public static class TaskDependencyResolver
             (IReadOnlyList<TaskDependency> dependencies, IReadOnlyList<Guid> missingDependencyIds) =
                 await TaskDependencyQuery.LoadWithMissingAsync(session, task.UnmetDependencies, cancellationToken);
 
+            // The project's feedback step setting, read where the project is at hand and recorded on the event that releases the
+            // task, so every node's sweep decides the hold the same way. A project that cannot be read holds nothing.
+            bool projectTakesFeedbackStep = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
+                is { TakesFeedbackStep: true };
+
             // A purge can hard-delete this candidate's own stream between the aggregate read
             // above and the appends below; Marten's unfenced Append silently starts a brand-new
             // stream rather than failing when the target is gone, which would leave a stray
@@ -218,7 +225,8 @@ public static class TaskDependencyResolver
                 // unchanged for a plain edge).
                 if (!StackedEdgeRules.Blocks(task, dependency))
                 {
-                    TaskDependencyCompleted completed = TaskDecider.DependencyCompleted(task, dependency.Id, now);
+                    TaskDependencyCompleted completed = TaskDecider.DependencyCompleted(
+                        task, dependency.Id, now, projectTakesFeedbackStep);
                     session.Events.Append(task.Id, completed);
                     task.Apply(completed);
                     continue;

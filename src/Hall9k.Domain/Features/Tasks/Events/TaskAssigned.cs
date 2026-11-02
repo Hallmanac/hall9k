@@ -43,6 +43,12 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// this the same way it rewrites <see cref="AssignedOwnerId"/>, so the old node stands down without
 /// a second command.
 /// </param>
+/// <param name="HoldForFeedbackStep">
+/// Whether this event, were it the one that releases the task, leaves it Blocked and held for its feedback step instead of
+/// Queued: the project's setting or the task's own override said the task takes the step, it has blockers, and its step has
+/// not begun. Recorded on the event, resolved by the caller that saw the project, so the aggregate replays to the same answer
+/// on every node. False on every event written before the step existed.
+/// </param>
 public sealed record TaskAssigned(
     Guid Id,
     Guid AssignedOwnerId,
@@ -50,4 +56,5 @@ public sealed record TaskAssigned(
     DateTimeOffset AssignedAt,
     Guid AssignedByOwnerId,
     string? AssignedOwnerRootFingerprint = null,
-    Optional<Guid?> PlacedOnNodeId = default);
+    Optional<Guid?> PlacedOnNodeId = default,
+    bool HoldForFeedbackStep = false);

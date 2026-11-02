@@ -1,6 +1,7 @@
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Feedback;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Tasks;
@@ -305,6 +306,70 @@ public sealed class TaskAggregate
 
     /// <summary>The task this one was minted from by <c>h9k task add --evolved-from</c>, or null.</summary>
     public Guid? EvolvedFromTaskId { get; private set; }
+
+    /// <summary>
+    /// This task's own override of whether it takes the feedback step: true or false overrides the project's setting
+    /// either way, null follows it. A scheduling fact like <see cref="QueuePriorityMarked"/>, outside the readiness contract.
+    /// </summary>
+    public bool? FeedbackStepOverride { get; private set; }
+
+    /// <summary>
+    /// Whether the task is held at its release point for its feedback step: Blocked with nothing left to wait for, until the
+    /// step has ended. The one fact the claim doors, the dependency sweep, and the surfaces ask. Cleared by any outcome and by a
+    /// dequeue, so a person taking the task out of the queue ends the hold.
+    /// </summary>
+    public bool FeedbackStepHeld { get; private set; }
+
+    /// <summary>
+    /// Whether the feedback step has begun for this task, which stays true for good: nothing starts a second step, whether
+    /// the first released, requeued, or parked the task, and whether the task is queued again by the step or by a person.
+    /// </summary>
+    public bool FeedbackStepBegun { get; private set; }
+
+    /// <summary>What the step recorded when it began: who the task was queued for and where it was placed, which the requeue restores. Null before it begins.</summary>
+    public FeedbackStepStarted? FeedbackStep { get; private set; }
+
+    /// <summary>The check session dispatched and not yet recorded, or null.</summary>
+    public Guid? RunningFeedbackCheckSessionId { get; private set; }
+
+    /// <summary>The check's newest dispatch, which says where and on what it ran.</summary>
+    public FeedbackCheckDispatched? LatestFeedbackCheckDispatch { get; private set; }
+
+    /// <summary>The check's newest recorded outcome, or null when none has ended.</summary>
+    public FeedbackCheckRecorded? LatestFeedbackCheck { get; private set; }
+
+    /// <summary>The plan that refines the task for the step, or null when the check released it or the step has not got that far.</summary>
+    public Guid? FeedbackStepPlanId { get; private set; }
+
+    /// <summary>How the step ended, or null while it has not.</summary>
+    public FeedbackStepOutcomeRecorded? FeedbackStepResult { get; private set; }
+
+    /// <summary>Whether the step is running: begun, and no outcome recorded.</summary>
+    public bool FeedbackStepRunning => FeedbackStepBegun && FeedbackStepResult is null;
+
+    /// <summary>
+    /// Whether leaving the hold now would be the go the task's release point owes it: Blocked, with no unmet dependency and no
+    /// remote stacked parent still to wait for. The question every door asks, kept in one place.
+    /// </summary>
+    private bool NothingLeftToWaitFor => _unmetDependencies.Count == 0 && !AwaitsRemoteStackedParent;
+
+    /// <summary>
+    /// Lands a task at its release point: held for the step when the step applies and has not begun (or is already holding
+    /// it), Queued otherwise. The three doors that move a task from Blocked to Queued, <see cref="Apply(TaskAssigned)"/>,
+    /// <see cref="Apply(TaskDependencyCompleted)"/>, and <see cref="Apply(RemoteStackedParentObserved)"/>, all end here, so a
+    /// hold cannot be bypassed by whichever of them happens to be last.
+    /// </summary>
+    private void ReleaseOrHold(bool holdForFeedbackStep)
+    {
+        if (FeedbackStepHeld || (holdForFeedbackStep && !FeedbackStepBegun))
+        {
+            FeedbackStepHeld = true;
+            State = TaskState.Blocked;
+            return;
+        }
+
+        State = TaskState.Queued;
+    }
 
     /// <summary>
     /// The latest handoff note the holding node left for whoever holds this task next (idea
@@ -1485,6 +1550,11 @@ public sealed class TaskAggregate
             HumanGate = @event.HumanGate.Value;
         }
 
+        if (@event.FeedbackStep.HasValue)
+        {
+            FeedbackStepOverride = @event.FeedbackStep.Value;
+        }
+
         if (@event.ReviewStageComposition.HasValue)
         {
             ReviewStageComposition = @event.ReviewStageComposition.Value;
@@ -1586,9 +1656,15 @@ public sealed class TaskAggregate
         // while what GitHub last said about that pull request is a fact about the world, and
         // discarding it here would re-block a child whose parent is demonstrably open until the
         // next sweep looked again.
-        State = _unmetDependencies.Count == 0 && !AwaitsRemoteStackedParent
-            ? TaskState.Queued
-            : TaskState.Blocked;
+        FeedbackStepHeld = false;
+        if (NothingLeftToWaitFor)
+        {
+            ReleaseOrHold(@event.HoldForFeedbackStep);
+        }
+        else
+        {
+            State = TaskState.Blocked;
+        }
 
         // A fresh assignment answers the pre-flight's own park card (PrReviewPreflightUnsafe's own
         // doc): the next dispatch always runs a fresh pre-flight rather than trusting the stale
@@ -1667,6 +1743,9 @@ public sealed class TaskAggregate
         _deadDependencyReasons.Clear();
         DependencyFailureReason = null;
         _acknowledgedUnmetDependencyIds.Clear();
+        // Taking the task out of the queue ends the hold: a held task is Blocked with nothing to wait for, and a person who
+        // dequeues it (or the daemon, for a revision) is the one who decides what happens to it next.
+        FeedbackStepHeld = false;
         State = TaskState.Published;
     }
 
@@ -1701,9 +1780,9 @@ public sealed class TaskAggregate
         // child can stand on a pull request another install owns). The two halves are asked
         // together here and in Apply(TaskAssigned) and Apply(RemoteStackedParentObserved), which
         // are the only three places the Blocked -> Queued door exists.
-        if (_unmetDependencies.Count == 0 && !AwaitsRemoteStackedParent)
+        if (NothingLeftToWaitFor)
         {
-            State = TaskState.Queued;
+            ReleaseOrHold(@event.HoldForFeedbackStep);
         }
     }
 
@@ -1762,9 +1841,9 @@ public sealed class TaskAggregate
         // live question the four give-back doors are documented for refusing: those ask on every
         // give-back regardless of whether anything moved, while this fires only when an observation
         // actually changed the answer.
-        if (State == TaskState.Blocked && _unmetDependencies.Count == 0 && !AwaitsRemoteStackedParent)
+        if (State == TaskState.Blocked && NothingLeftToWaitFor)
         {
-            State = TaskState.Queued;
+            ReleaseOrHold(@event.HoldForFeedbackStep);
         }
         else if (State == TaskState.Queued && AwaitsRemoteStackedParent)
         {
@@ -2738,6 +2817,52 @@ public sealed class TaskAggregate
         }
     }
 
+    public void Apply(FeedbackStepStarted @event)
+    {
+        FeedbackStepBegun = true;
+        FeedbackStep = @event;
+        FeedbackStepResult = null;
+        FeedbackStepPlanId = null;
+        RunningFeedbackCheckSessionId = null;
+    }
+
+    public void Apply(FeedbackCheckDispatched @event)
+    {
+        RunningFeedbackCheckSessionId = @event.SessionId;
+        LatestFeedbackCheckDispatch = @event;
+    }
+
+    public void Apply(FeedbackCheckRecorded @event)
+    {
+        // An outcome for a session that is not the one running arrived late and says nothing about the running one.
+        if (@event.SessionId is { } recorded && RunningFeedbackCheckSessionId is { } running && recorded != running)
+        {
+            return;
+        }
+
+        RunningFeedbackCheckSessionId = null;
+        LatestFeedbackCheck = @event;
+    }
+
+    public void Apply(FeedbackStepRefinementBegun @event) => FeedbackStepPlanId = @event.PlanId;
+
+    public void Apply(FeedbackStepOutcomeRecorded @event)
+    {
+        FeedbackStepBegun = true;
+        FeedbackStepResult = @event;
+        RunningFeedbackCheckSessionId = null;
+
+        // Any outcome recorded while the hold still stands ends it, and the task goes Blocked to Queued when nothing else still
+        // holds it, so a step can never end with a Blocked task nothing is left to free. A remote parent that went back to waiting
+        // while the step ran keeps it Blocked, and the ordinary door releases it later because the step has begun and no longer holds.
+        bool wasHeld = FeedbackStepHeld;
+        FeedbackStepHeld = false;
+        if (wasHeld && State == TaskState.Blocked && NothingLeftToWaitFor)
+        {
+            State = TaskState.Queued;
+        }
+    }
+
     public void Apply(WorkItemPublicationCompleted @event)
     {
         PendingPublicationProvider = null;
@@ -3054,6 +3179,8 @@ public sealed class TaskAggregate
         ReviewReadScope = null;
         RetryBranch = null;
         RetryBranchResumesForeignNode = false;
+        // An abandoned task is no longer held: nothing is left to release, and a hold that outlived the task would read as live.
+        FeedbackStepHeld = false;
         State = TaskState.Abandoned;
         // Same reasoning as Apply(TaskCompleted): a marker set earlier in this task's life is a
         // dead end here — Abandoned never reopens — so it must not survive to be read back.
