@@ -41,6 +41,12 @@ public sealed class UnknownBlockerTests
     {
         HashSet<Guid> known = [First];
 
-        UnknownBlocker.Among([First, Second, Second], known).Should().Equal(Second);
+        UnknownBlocker.Among([First, Second, Second], known, []).Should().Equal(Second);
+    }
+
+    [Fact]
+    public void A_blocker_the_dependent_has_recorded_as_dead_is_not_unknown_because_its_reason_explains_it()
+    {
+        UnknownBlocker.Among([First, Second], new HashSet<Guid>(), [First]).Should().Equal(Second);
     }
 }

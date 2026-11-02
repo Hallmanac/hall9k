@@ -1011,7 +1011,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         HashSet<Guid> known = [.. dependencies.Select(dependency => dependency.Id)];
-        if (UnknownBlocker.Line(UnknownBlocker.Among(details.UnmetDependencies, known)) is { } line)
+        if (UnknownBlocker.Line(UnknownBlocker.Among(details.UnmetDependencies, known, details.DeadDependencies)) is { } line)
         {
             AnsiConsole.MarkupLine($"  [yellow]{line.EscapeMarkup()}[/]");
         }

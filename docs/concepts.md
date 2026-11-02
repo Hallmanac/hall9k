@@ -503,6 +503,11 @@ as a purged project. The sweep records the blocker as failed only when this node
 blocker's project destroyed it; otherwise the dependent stays `Blocked`, and `h9k status`,
 `h9k task show` and the orchestrator feed name the blocker as unknown, by short id only, and
 suggest asking the teammate whose node holds that project.
+A blocker already recorded as dead is explained by its recorded reason and is not also called unknown. A
+node records the failure for a blocker it purged once per dependent: if a node that still has the
+blocker lifts the hold, this node leaves it lifted rather than recording it again.
+A purge from before this change left no record, so a blocker destroyed by one shows as unknown too,
+and the dependent stays `Blocked` until its dependencies are revised.
 
 The edge does double duty. "This could not start until that finished" is also a statement about
 relatedness, so the graph routes context: a dispatched run receives what its **immediate**

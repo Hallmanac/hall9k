@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Connectors.Orchestrator;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Xunit;
@@ -9,7 +10,7 @@ namespace Hall9k.Tests.Cli;
 /// <summary>
 /// A node that has no record of a blocker records nothing about it (the dependency sweep), so the
 /// surfaces that report the task have to say it does not know. The board and the feed read the
-/// same <see cref="UnknownBlocker"/> sentence; <c>h9k task show</c> prints it under its own list.
+/// same <see cref="UnknownBlocker"/> sentence; <c>h9k task show</c> carries it in its "Waiting on" row.
 /// </summary>
 public sealed class UnknownBlockerSurfaceTests
 {
@@ -45,9 +46,9 @@ public sealed class UnknownBlockerSurfaceTests
     {
         TaskDetails task = new() { Id = Guid.Parse("01a0bc05-a960-7657-b708-1aed37b5aaaa"), Objective = "ship the thing" };
 
-        OrchestratorFeedCommand.Heading(task, [Blocker]).Should().Be(
+        OrchestratorFeedPrinter.Heading(task, [Blocker]).Should().Be(
             "37b5aaaa  ship the thing  (unknown blocker 37b5ec69: it most likely belongs to a project in a "
             + "solution held on a teammate's node, so ask that teammate about it)");
-        OrchestratorFeedCommand.Heading(task, []).Should().Be("37b5aaaa  ship the thing");
+        OrchestratorFeedPrinter.Heading(task, []).Should().Be("37b5aaaa  ship the thing");
     }
 }

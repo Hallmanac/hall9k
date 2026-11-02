@@ -97,6 +97,46 @@ public sealed class TaskDependencyMissingBlockerTests(PostgresFixture postgres) 
     }
 
     [Fact]
+    public async Task A_node_that_purged_the_blocker_records_the_failure_once_and_leaves_it_lifted_after_another_node_recovers_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        IDocumentStore store = postgres.Store;
+        await store.Advanced.ResetAllData(cts.Token);
+        Guid ownerId = DomainId.New();
+        (Guid blockerId, Guid dependentId) = await SeedDependentOfUnseenBlockerAsync(
+            store, DomainId.New(), DomainId.New(), ownerId, cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Store(new PurgedTaskRecord(blockerId, DomainId.New(), Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        DependencyReevaluation first = await SweepAsync(store, cts.Token);
+        first.Parked.Should().ContainSingle(hold => hold.TaskId == dependentId);
+
+        // A node that still has the blocker lifts the hold, and the event replicates back here.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(dependentId, token: cts.Token)
+                ?? throw new InvalidOperationException("seeded task must exist");
+            session.Events.Append(
+                dependentId, TaskDecider.DependencyRecovered(task, blockerId, "the blocker is back on another node", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        int eventsBefore = await EventCountAsync(store, dependentId, cts.Token);
+
+        DependencyReevaluation second = await SweepAsync(store, cts.Token);
+
+        second.Parked.Should().BeEmpty("the failure was already recorded once, and the other node's recovery stands");
+        (await EventCountAsync(store, dependentId, cts.Token)).Should().Be(eventsBefore);
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails dependent = (await query.LoadAsync<TaskDetails>(dependentId, cts.Token))!;
+        dependent.State.Should().Be(TaskState.Blocked);
+        dependent.DependencyFailureReason.Should().BeNull();
+    }
+
+    [Fact]
     public async Task A_purge_records_every_task_it_destroyed_in_the_same_save_and_the_record_is_a_document_not_an_event()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
