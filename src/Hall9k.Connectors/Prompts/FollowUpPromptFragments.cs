@@ -97,7 +97,13 @@ public static class FollowUpPromptFragments
     /// read-only closeout triage, which is handed the scope closeout just decided rather than one a
     /// reopen recorded.
     /// </summary>
-    public static void AppendReviewReadScope(StringBuilder prompt, ReviewReadScope? scope, bool inReviewLap = false)
+    /// <param name="commentsFilePath">
+    /// Where the daemon wrote the readable comments' bodies, for a session that cannot run <c>gh</c> to read them
+    /// itself (the closeout triage): the prompt then points at that file instead of giving a <c>gh</c> command. Null
+    /// for a session that can, which is every other caller.
+    /// </param>
+    public static void AppendReviewReadScope(
+        StringBuilder prompt, ReviewReadScope? scope, bool inReviewLap = false, string? commentsFilePath = null)
     {
         const string file = $"{WorkPromptBuilder.TemplateDirectory}/review-read-scope.md";
         prompt.AppendLine(Fragment(file, "heading"));
@@ -106,6 +112,12 @@ public static class FollowUpPromptFragments
         {
             AppendFragment(prompt, file, "unrestricted");
             prompt.AppendLine();
+            if (commentsFilePath is not null)
+            {
+                AppendFragment(prompt, file, "unrestricted-from-file", ("CommentsPath", OneLine(commentsFilePath)));
+                prompt.AppendLine();
+            }
+
             return;
         }
 
@@ -189,11 +201,18 @@ public static class FollowUpPromptFragments
                 prompt.AppendLine();
             }
 
-            AppendFragment(prompt, file, "how-to-read");
-            prompt.AppendLine();
-            AppendFragment(prompt, file, "read-command");
-            prompt.AppendLine();
-            AppendFragment(prompt, file, "never-wider");
+            if (commentsFilePath is not null)
+            {
+                AppendFragment(prompt, file, "read-from-file", ("CommentsPath", OneLine(commentsFilePath)));
+            }
+            else
+            {
+                AppendFragment(prompt, file, "how-to-read");
+                prompt.AppendLine();
+                AppendFragment(prompt, file, "read-command");
+                prompt.AppendLine();
+                AppendFragment(prompt, file, "never-wider");
+            }
         }
 
         prompt.AppendLine();

@@ -7653,7 +7653,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         request.AssessmentFile.Should().StartWith(DrivenRunDirectory(driven.RunId)).And.EndWith(".md");
         request.Prompt.Should().Contain("PRRT_a").And.Contain("PRRT_b").And.Contain("Never post anything to GitHub");
         request.Prompt.Should().Contain("does not gate review feedback", "the scope the gate decided is what the session reads under");
-        request.Prompt.Should().NotContain("gh pr diff", "the session cannot run gh, so the diff is a file the daemon wrote");
+        request.Prompt.Should().NotContain("gh pr diff", "the session cannot run gh, so the diff is a file the daemon wrote")
+            .And.NotContain("gh api graphql", "nor does it read the review comments with gh: the daemon wrote those to a file too")
+            .And.Contain("closeout-triage-comments-");
         executor.DiffAtSpawn.Should().ContainSingle().Which.Should().Be(TriageCannedDiff, "the diff is on disk, at the path the prompt names, before the session starts");
         (await CountStreamEventsAsync<TaskEvents.CloseoutTriageDispatched>(driven.TaskId, cts.Token)).Should().Be(1);
         (await CountStreamEventsAsync<TaskEvents.TaskReopened>(driven.TaskId, cts.Token)).Should().Be(0, "a triage is not a lap");

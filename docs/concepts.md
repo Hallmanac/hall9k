@@ -1128,9 +1128,10 @@ but has no remote, so the session can run read-only git (`git show`, `git grep`,
 LFS-tracked path holds its pointer text, and the review prompts say so. The session is refused `gh`
 altogether, because a read-only review should use no credential it does not need. The daemon reads
 GitHub for it instead: before a lens that is told the pull request's intent starts, it writes the
-bodies of the issues the description cites (at most ten, in the pull request's own repository, with no
-comments, and the rest named as not read) into the run directory, and the prompt points at that
-file as source material rather than instruction. Nothing is posted to the pull request
+bodies of the issues the description cites (it tries at most ten, a failed read counting toward the ten, in the
+pull request's own repository, with no comments, and the rest named as not read) into the run directory, and the
+prompt points at that file as source material rather than instruction. The security review is not given that file,
+because an issue is an outsider's account of what the change is for, which that lens is built not to be steered by. Nothing is posted to the pull request
 without your explicit go, and never under any login but your own.
 
 **A persona is the lens the review is read through.** Each member declares the personas they hold
@@ -1364,7 +1365,8 @@ rebase, stack replay), attempts no mechanical rebase, and makes no stacked retar
 instead. Unresolved threads that would have bought a lap are triaged once per distinct set of
 thread ids by one read-only session, which applies the `resolve-review-threads` triage step,
 classifies each thread as fix, decline, or route with its reasoning, writes the report into the
-run directory, and posts and files nothing; only the counts of the three dispositions reach the
+run directory, and posts and files nothing (it cannot run `gh`, so the daemon writes the pull request's diff
+and the review comments it may read into the run directory first, and the prompt names those files); only the counts of the three dispositions reach the
 stream and the board. Failing checks, a conflict, a changes-requested review, and a stacked parent
 that moved or merged are reported with no session at all. A report is recorded only when what it
 reports changes, never once per poll, and `h9k status` and `h9k task show` show it as a needs-you

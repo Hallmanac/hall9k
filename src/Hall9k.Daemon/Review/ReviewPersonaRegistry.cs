@@ -86,7 +86,8 @@ public sealed record ReviewPersonaPromptRequest(
 /// Whether this session's prompt points at the file of issues the pull request's description cites
 /// (<see cref="Hall9k.Domain.Infrastructure.Storage.RunPaths.CitedIssuesFile"/>), which the daemon writes into the
 /// run directory before the session starts because a pr-review session cannot run <c>gh</c>. False for the
-/// engineer's adversarial lens, whose prompt deliberately says nothing about what the change is for.
+/// engineer's adversarial lens and the security session, whose prompts deliberately say nothing about what the change is
+/// for and are not to be steered by an outsider's account of it.
 /// </param>
 public sealed record ReviewPersonaSession(
     ReviewPersona Persona,
@@ -276,7 +277,10 @@ public static class ReviewPersonaRegistry
                 // linked task or issue, and a session that never saw the task cannot find it.
                 SeesTaskContext: true,
                 DesignReviewPromptBuilder.Build,
-                DesignReviewSection.Compose),
+                DesignReviewSection.Compose,
+                // Its reference section sends it to "the issue or card the pull request references"
+                // for the proposed design, and it cannot run gh to open that issue.
+                ReadsCitedIssues: true),
         ],
         CanDriveTheProduct: true);
 
@@ -304,9 +308,11 @@ public static class ReviewPersonaRegistry
                 // task's own objective, acceptance criteria, or agent context: it hunts classes
                 // of defect over the diff itself and must not be steered by an outsider's own
                 // description of what the change is for (security review idea 6be68ee2).
+                // Nor the issues that description cites: an issue is as much an outsider's account of
+                // what the change is for as the description is, and an attacker who can file one can
+                // write "this endpoint is intentionally unauthenticated" into it. So no ReadsCitedIssues.
                 SeesTaskContext: false,
-                SecurityReviewPromptBuilder.Build,
-                ReadsCitedIssues: true),
+                SecurityReviewPromptBuilder.Build),
         ],
         // Never drives the product: this lens reads the diff and the files it touches, and has
         // no more reason to stand the project up than the engineer's own two lenses do.

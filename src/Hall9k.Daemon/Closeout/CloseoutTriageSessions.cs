@@ -141,7 +141,8 @@ public sealed class CloseoutTriageSessions(
                 job = new TriageJob(
                     task.Id, key, task.Objective, task.AcceptanceCriteria, task.PullRequestUrl ?? run.PullRequestUrl ?? "",
                     threadIds, threadCount, scope, sessionId, reportPath,
-                    RunPaths.CloseoutTriageDiffFile(runDirectory, KeyHash(key), sessionId), project.RepositoryPath,
+                    RunPaths.CloseoutTriageDiffFile(runDirectory, KeyHash(key), sessionId),
+                    RunPaths.CloseoutTriageCommentsFile(runDirectory, KeyHash(key), sessionId), project.RepositoryPath,
                     run, runDirectory,
                     _options.ResolveModel(AgentRole.Review, task.Model, project.Model),
                     _options.ResolveEffort(AgentRole.Review, task.Effort, project.Effort));
@@ -242,12 +243,15 @@ public sealed class CloseoutTriageSessions(
     /// <summary>Runs the session and reads its report: the counts of its dispositions, or the reason there are none.</summary>
     private async Task<(TriageCounts? Counts, string? Reason)> TriageAsync(TriageJob job, CancellationToken stopping)
     {
-        // The session cannot run gh, so the daemon reads the diff for it before it starts. A diff it cannot
-        // read is written as a note saying so, and the session still starts.
+        // The session cannot run gh, so the daemon reads the diff and the comments it may read for it before it
+        // starts. Whatever it cannot read is written as a note saying so, and the session still starts.
         await PullRequestDiffFile.WriteAsync(
             _gitHubReader, job.PullRequestUrl, job.RepositoryPath, job.DiffPath, logger, stopping);
+        await ReviewCommentsFile.WriteAsync(
+            _gitHubReader, job.Scope, job.ThreadIds, job.RepositoryPath, job.CommentsPath, logger, stopping);
         string prompt = AgentPromptBuilder.BuildCloseoutTriage(
-            job.Objective, job.AcceptanceCriteria, job.PullRequestUrl, job.ThreadIds, job.Scope, job.ReportPath, job.DiffPath);
+            job.Objective, job.AcceptanceCriteria, job.PullRequestUrl, job.ThreadIds, job.Scope, job.ReportPath,
+            job.DiffPath, job.CommentsPath);
         string sessionName = SessionRoleName.For(DomainId.Short(job.TaskId), SessionRoleName.CloseoutTriage);
         string artifact = SessionRoleName.CloseoutTriageFor(KeyHash(job.ThreadSetKey));
         string workingDirectory = Directory.Exists(job.Run.WorktreePath) ? job.Run.WorktreePath : job.RunDirectory;
@@ -423,6 +427,7 @@ public sealed class CloseoutTriageSessions(
         Guid SessionId,
         string ReportPath,
         string DiffPath,
+        string CommentsPath,
         string RepositoryPath,
         RunDetails Run,
         string RunDirectory,
