@@ -43,6 +43,13 @@ internal static class PlanShowComposer
             $"  started: {plan.StartedAt:u}, at {plan.StartPhase.Word}",
             $"  tracker attestation: {Attestation(plan)}",
         ];
+        if (plan.FeedbackStepTaskId is { } feedbackTaskId)
+        {
+            lines.Add(
+                $"  [blue]the feedback step of task {TaskListCommand.ShortId(feedbackTaskId)}[/]: [dim]one challenge round, and the plan ends when "
+                + $"the step does (h9k task show {TaskListCommand.ShortId(feedbackTaskId)} says where it stands)[/]");
+        }
+
         if (plan.IdeaId is { } ideaId)
         {
             string note = facts.Discovery?.IdeaNote is { } text

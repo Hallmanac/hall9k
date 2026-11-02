@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Plan.Events;
 
 namespace Hall9k.Domain.Features.Plan;
@@ -25,6 +26,12 @@ public sealed class PlanAggregate
     public bool UntrackedAttested { get; private set; }
 
     public Guid StartedByOwnerId { get; private set; }
+
+    /// <summary>The task whose feedback step this plan carries, or null for an ordinary plan.</summary>
+    public Guid? FeedbackStepTaskId { get; private set; }
+
+    /// <summary>Whether this plan is a task's feedback step: one draft, one challenge round, judged verdict, and a step engine that owns what follows.</summary>
+    public bool IsFeedbackStep => FeedbackStepTaskId is not null;
 
     public DateTimeOffset StartedAt { get; private set; }
 
@@ -74,7 +81,9 @@ public sealed class PlanAggregate
         Discovery = @event.IdeaId is { } ideaId
             ? new PlanDiscoveryState { IdeaId = ideaId }
             : null;
-        _drafts.AddRange(@event.DraftIds.Select(draftId => PlanDraftState.Start(draftId, @event.StartPhase)));
+        FeedbackStepTaskId = @event.FeedbackStepTaskId;
+        _drafts.AddRange(@event.DraftIds.Select(draftId => PlanDraftState.Start(
+            draftId, @event.StartPhase, @event.FeedbackStepTaskId is null ? null : RefinementPurpose.FeedbackRefine)));
     }
 
     public void Apply(PlanDiscoveryDispatched @event) => Discovery?.Apply(@event);

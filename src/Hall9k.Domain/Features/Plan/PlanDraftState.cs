@@ -47,7 +47,13 @@ public sealed class PlanDraftState
     /// <summary>Rounds a person has granted beyond the daemon's cap, by resuming after rounds exhausted.</summary>
     public int ExtraRounds { get; set; }
 
+    /// <summary>How many challenges the plan has requested for this draft, ever. A feedback step's plan allows exactly one.</summary>
+    public int ChallengesRequested { get; set; }
+
     public bool Published { get; set; }
+
+    /// <summary>Whether a person published the draft by hand (the plan's own publish did not), which a feedback step reads as a person getting there first.</summary>
+    public bool PublishedByHand { get; set; }
 
     public bool Abandoned { get; set; }
 
@@ -63,7 +69,7 @@ public sealed class PlanDraftState
     public bool ResumedFromPark { get; set; }
 
     /// <summary>The draft as a plan starts it.</summary>
-    public static PlanDraftState Start(Guid draftId, PlanPhase startPhase) => startPhase == PlanPhase.Challenge
+    public static PlanDraftState Start(Guid draftId, PlanPhase startPhase, RefinementPurpose? purpose = null) => startPhase == PlanPhase.Challenge
         ? new PlanDraftState
         {
             DraftId = draftId,
@@ -71,7 +77,7 @@ public sealed class PlanDraftState
             Round = 1,
             Purpose = RefinementPurpose.Unknown,
         }
-        : new PlanDraftState { DraftId = draftId };
+        : new PlanDraftState { DraftId = draftId, Purpose = purpose ?? RefinementPurpose.Refine };
 
     public void Apply(PlanRefinementDispatched @event)
     {
@@ -84,6 +90,7 @@ public sealed class PlanDraftState
     public void Apply(PlanChallengeRequested @event)
     {
         ChallengeRequestedAt = @event.RequestedAt;
+        ChallengesRequested++;
         ResumedFromPark = false;
     }
 
@@ -148,6 +155,7 @@ public sealed class PlanDraftState
     public void Apply(PlanDraftPublished @event)
     {
         Published = true;
+        PublishedByHand = @event.ByHand;
         Phase = PlanPhase.Published;
         Ready = false;
         ParkReason = PlanParkReason.Unknown;

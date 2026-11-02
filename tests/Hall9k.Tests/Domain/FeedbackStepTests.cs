@@ -261,6 +261,31 @@ public sealed class FeedbackStepTests
     }
 
     [Fact]
+    public void A_judged_verdict_whose_every_must_was_declined_unrevised_is_not_published_by_the_step_even_with_the_requirement_off()
+    {
+        TaskAggregate task = Held();
+        task.Apply(FeedbackStepDecider.Start(task, Node, Now));
+        (_, TaskReturnedToDraft drafted, FeedbackStepRefinementBegun begun) = FeedbackStepDecider.TakeBackToDraft(task, DomainId.New(), Owner, Now);
+        task.Apply(drafted);
+        task.Apply(begun);
+        task.Apply(new DraftChallengeRecorded(
+            task.Id, DomainId.New(), Node, ChallengeVerdict.PublishAsRevised, ChallengeFailureReason.Unknown, 2, 0, 0,
+            AgentModel.ChallengeDefault, AgentEffort.High, Now));
+        TaskDependencyGraph graph = new([Blocker(true)]);
+
+        Action byThePlan = () => TaskDecider.Publish(task, graph, Now, Owner);
+        Action withTheRequirementOff = () => TaskDecider.Publish(task, graph, Now, Owner, challenge: new ChallengeGateInput(false, "demo", null));
+
+        byThePlan.Should().Throw<DomainBusinessRuleException>().WithMessage("*feedback step*");
+        withTheRequirementOff.Should().Throw<DomainBusinessRuleException>().WithMessage("*--skip-challenge*");
+        TaskDecider.Publish(task, graph, Now, Owner, challenge: new ChallengeGateInput(false, "demo", "the notes were wrong"))
+            .ChallengeSkipReason.Should().Be("the notes were wrong", "a person publishing by hand may still say why");
+
+        task.Apply(TaskDecider.Revise(task, Optional<string>.Of("Applied a must"), default, default, default, default, default, Now, Owner));
+        TaskDecider.Publish(task, graph, Now, Owner).ChallengeSkipReason.Should().BeNull("a revision is how the verdict gets applied");
+    }
+
+    [Fact]
     public void The_requeue_is_refused_when_the_assignee_changed_while_the_step_ran()
     {
         TaskAggregate task = Held();

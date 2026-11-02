@@ -1,6 +1,7 @@
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Notes;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -50,7 +51,15 @@ public sealed record PlanRefinementPromptFacts(
     PriorVerdictFacts? PriorVerdict,
     IReadOnlyList<SiblingDraftFacts>? OtherDrafts = null,
     string? DiscoveryReport = null,
-    IReadOnlyList<SolutionMemberTask>? OtherMemberTasks = null);
+    IReadOnlyList<SolutionMemberTask>? OtherMemberTasks = null,
+    FeedbackStepPromptFacts? FeedbackStep = null);
+
+/// <summary>
+/// What a feedback step's refinement or judging session is told that an ordinary plan's is not: the notes the task's blockers left
+/// that the trust rule lets into a prompt (a held one is never here), which are why the task is back in Draft.
+/// </summary>
+/// <param name="Notes">The blockers' notes as a prompt carries them, each under the short id of the blocker that left it.</param>
+public sealed record FeedbackStepPromptFacts(InjectedTaskNotes Notes);
 
 /// <summary>A sibling draft in the same plan, as a refinement session is told of it: the id it can name in a revision and what it is for.</summary>
 public sealed record SiblingDraftFacts(Guid Id, string Objective);

@@ -617,12 +617,21 @@ public static class TaskDecider
     /// </summary>
     private static string? DecideChallengeGate(TaskAggregate task, ChallengeGateInput? challenge)
     {
-        if (challenge is null)
+        // A feedback step's judging session may decline every must of a publish as revised verdict, and declining them all with
+        // no revision is a verdict nobody applied. The plan's own publish refuses that whatever the project's requirement says, so
+        // the plan parks for a person (it never states a reason to skip); a person publishing the draft by hand may still state
+        // one. A missing or do not publish verdict never reaches here from the plan, which parks on either before it publishes.
+        bool feedbackStepMustsUnapplied = task.FeedbackStepRunning
+            && task.FeedbackStepPlanId is not null
+            && task.LatestChallengeVerdict is { MustCount: > 0 } verdict
+            && verdict.Verdict == ChallengeVerdict.PublishAsRevised
+            && !task.RevisedSinceChallengeVerdict;
+        if (challenge is null && !feedbackStepMustsUnapplied)
         {
             return null;
         }
 
-        if (challenge.SkipReason is { } reason && reason.IsBlank())
+        if (challenge?.SkipReason is { } reason && reason.IsBlank())
         {
             throw new DomainValidationException(
                 "--skip-challenge takes the reason you are publishing without a usable challenge verdict, and it "
@@ -631,20 +640,27 @@ public static class TaskDecider
                 + "who gave it.");
         }
 
-        if (ChallengeGate.Shortfall(task, challenge.Required) is not { } shortfall)
+        if (ChallengeGate.Shortfall(task, feedbackStepMustsUnapplied || challenge is { Required: true }) is not { } shortfall)
         {
             return null;
         }
 
-        return challenge.SkipReason is { } stated
-            ? stated.Trim()
-            : throw new DomainBusinessRuleException(
+        return challenge switch
+        {
+            { SkipReason: { } stated } => stated.Trim(),
+            { Required: true } => throw new DomainBusinessRuleException(
                 $"Task {task.Id} cannot publish yet: {shortfall}, and project {challenge.ProjectName} requires one. "
                 + $"Run h9k task challenge {task.Id}, read the verdict, apply what it accepts with h9k task revise, "
                 + "then publish. To publish without one, state why: "
                 + $"h9k task publish {task.Id} --skip-challenge \"<reason>\" (the reason is recorded with who gave "
                 + $"it). The requirement is a project setting: h9k project set {challenge.ProjectName} "
-                + "--require-challenge off.");
+                + "--require-challenge off."),
+            _ => throw new DomainBusinessRuleException(
+                $"Task {task.Id} cannot publish yet: {shortfall}. Its feedback step publishes it only once the verdict "
+                + "it judged has been applied, whatever the project's challenge requirement, so a plan's publish parks on it. "
+                + $"Apply what the verdict accepts with h9k task revise {task.Id}, then publish; or state why it should "
+                + $"publish as it stands: h9k task publish {task.Id} --skip-challenge \"<reason>\"."),
+        };
     }
 
     /// <summary>

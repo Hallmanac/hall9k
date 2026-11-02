@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Plan.Events;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
@@ -24,6 +25,11 @@ public sealed class PlanDetails
     public bool UntrackedAttested { get; set; }
 
     public Guid StartedByOwnerId { get; set; }
+
+    /// <summary>The task whose feedback step this plan carries, or null for an ordinary plan.</summary>
+    public Guid? FeedbackStepTaskId { get; set; }
+
+    public bool IsFeedbackStep => FeedbackStepTaskId is not null;
 
     public DateTimeOffset StartedAt { get; set; }
 
@@ -84,7 +90,9 @@ public sealed partial class PlanDetailsProjection : SingleStreamProjection<PlanD
         Discovery = @event.Data.IdeaId is { } ideaId
             ? new PlanDiscoveryState { IdeaId = ideaId }
             : null,
-        Drafts = [.. @event.Data.DraftIds.Select(draftId => PlanDraftState.Start(draftId, @event.Data.StartPhase))],
+        FeedbackStepTaskId = @event.Data.FeedbackStepTaskId,
+        Drafts = [.. @event.Data.DraftIds.Select(draftId => PlanDraftState.Start(
+            draftId, @event.Data.StartPhase, @event.Data.FeedbackStepTaskId is null ? null : RefinementPurpose.FeedbackRefine))],
     };
 
     public void Apply(IEvent<PlanDiscoveryDispatched> @event, PlanDetails view) => view.Discovery?.Apply(@event.Data);

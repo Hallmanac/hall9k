@@ -527,6 +527,9 @@ public sealed class Frontmatter(
     /// <summary>What followed the closing <c>---</c>, trimmed; null when there was none.</summary>
     public string? Body { get; } = body;
 
+    /// <summary>Every key the block mentioned, however it was valued, scalar keys first and then the keys that only carried items.</summary>
+    public IEnumerable<string> Keys => scalars.Keys.Concat(lists.Keys.Where(key => !scalars.ContainsKey(key)));
+
     /// <summary>Whether the block mentioned this key at all, however it was valued.</summary>
     public bool Has(string key) => scalars.ContainsKey(key) || lists.ContainsKey(key);
 

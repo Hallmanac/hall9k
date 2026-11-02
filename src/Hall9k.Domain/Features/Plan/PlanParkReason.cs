@@ -55,6 +55,21 @@ public sealed record PlanParkReason
         "publishing the draft was refused",
         "read the refusal in the plan's session directory and fix what it names, then h9k plan resume");
 
+    public static readonly PlanParkReason ShouldNotRun = new(
+        "ShouldNotRun",
+        "the refinement session concluded the task should not run, because what its blockers left removes its reason to exist",
+        "read the refinement report, then abandon the task, or revise it, publish it, and queue it by hand");
+
+    public static readonly PlanParkReason RevisionBeyondText = new(
+        "RevisionBeyondText",
+        "the revision named a field other than the objective, criteria, or context",
+        "make the change by hand if it is wanted: h9k task revise, publish, and queue the task");
+
+    public static readonly PlanParkReason OneChallengeOnly = new(
+        "OneChallengeOnly",
+        "a feedback step runs one challenge and no more, and a second was asked for",
+        "settle the task by hand: h9k task challenge it, then publish and queue it");
+
     /// <summary>Not recognized or not parked. Serializes as an empty string.</summary>
     public static readonly PlanParkReason Unknown = new(string.Empty, "not parked", string.Empty);
 
@@ -88,6 +103,9 @@ public sealed record PlanParkReason
         "Gate" => Gate,
         "ChallengeFailed" => ChallengeFailed,
         "PublishRefused" => PublishRefused,
+        "ShouldNotRun" => ShouldNotRun,
+        "RevisionBeyondText" => RevisionBeyondText,
+        "OneChallengeOnly" => OneChallengeOnly,
         _ => Unknown,
     };
 

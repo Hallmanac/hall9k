@@ -209,7 +209,23 @@ public static class PlanDecider
             return [Park(plan, draft.DraftId, PlanParkReason.Question, sessionId, now)];
         }
 
+        // Only a feedback step's prompt offers this closing word. An ordinary plan's session that wrote it anyway has said
+        // something only a person can settle, which is what a question is.
+        if (outcome == RefinementOutcome.ShouldNotRun)
+        {
+            return [Park(plan, draft.DraftId, plan.IsFeedbackStep ? PlanParkReason.ShouldNotRun : PlanParkReason.Question, sessionId, now)];
+        }
+
         bool changed = outcome == RefinementOutcome.Revised;
+
+        // A session that judged a verdict may decline every change with a reason in the journal and revise nothing: the draft is
+        // ready as it stands, and the publish, not this step, refuses a verdict whose musts were all declined unrevised, whatever the
+        // project's challenge requirement says (TaskDecider.Publish).
+        if (purpose == RefinementPurpose.JudgeVerdict)
+        {
+            return [Moved(plan, draft, PlanPhase.Challenge, draft.Round, PlanOutcome.Applied, RefinementPurpose.Unknown, ready: true, sessionId, now)];
+        }
+
         if (purpose == RefinementPurpose.ApplyVerdict)
         {
             return changed
@@ -227,6 +243,18 @@ public static class PlanDecider
                 sessionId, now),
         ];
     }
+
+    /// <summary>
+    /// Whether the plan may request a challenge for the draft. An ordinary plan may as often as its rounds allow. A feedback
+    /// step's plan may request exactly one, ever, however the plan came back to challenge (a person's resume included), so
+    /// no session or sweep of the daemon can start a second one for the same release.
+    /// </summary>
+    public static bool MayRequestChallenge(PlanAggregate plan, PlanDraftState draft) =>
+        !plan.IsFeedbackStep || draft.ChallengesRequested == 0;
+
+    /// <summary>A challenge a feedback step's plan was about to ask for a second time: the plan parks on the draft instead.</summary>
+    public static PlanParked ParkOneChallengeOnly(PlanAggregate plan, PlanDraftState draft, DateTimeOffset now) =>
+        Park(plan, draft.DraftId, PlanParkReason.OneChallengeOnly, null, now);
 
     /// <summary>A refinement session's revision was not applied, or the session failed: the plan parks on the draft.</summary>
     public static PlanParked ParkOn(PlanAggregate plan, Guid draftId, PlanParkReason reason, Guid? sessionId, DateTimeOffset now) =>
@@ -266,7 +294,13 @@ public static class PlanDecider
 
         if (outcome == PlanOutcome.PublishAsRevised)
         {
-            return [Moved(plan, draft, PlanPhase.Refinement, draft.Round, outcome, RefinementPurpose.ApplyVerdict, ready: false, recorded.SessionId, now)];
+            return
+            [
+                Moved(
+                    plan, draft, PlanPhase.Refinement, draft.Round, outcome,
+                    plan.IsFeedbackStep ? RefinementPurpose.JudgeVerdict : RefinementPurpose.ApplyVerdict,
+                    ready: false, recorded.SessionId, now),
+            ];
         }
 
         return draft.Round >= roundCap + draft.ExtraRounds

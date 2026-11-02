@@ -15,6 +15,9 @@ public sealed record RefinementOutcome
     public static readonly RefinementOutcome Unchanged = new("Unchanged", "unchanged");
     public static readonly RefinementOutcome Question = new("Question", "question");
 
+    /// <summary>A feedback step's refinement concluded the task should not run at all: the notes its blockers left remove its reason to exist. Only that session's prompt offers it.</summary>
+    public static readonly RefinementOutcome ShouldNotRun = new("ShouldNotRun", "should-not-run");
+
     /// <summary>No readable outcome. Serializes as an empty string.</summary>
     public static readonly RefinementOutcome Unknown = new(string.Empty, "no outcome");
 
@@ -38,6 +41,7 @@ public sealed record RefinementOutcome
         "Revised" => Revised,
         "Unchanged" => Unchanged,
         "Question" => Question,
+        "ShouldNotRun" => ShouldNotRun,
         _ => Unknown,
     };
 
@@ -49,6 +53,7 @@ public sealed record RefinementOutcome
             "revised" => Revised,
             "unchanged" => Unchanged,
             "question" => Question,
+            "should-not-run" or "should not run" => ShouldNotRun,
             _ => Unknown,
         };
 
