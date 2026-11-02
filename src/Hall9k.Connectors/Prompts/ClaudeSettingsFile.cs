@@ -371,8 +371,8 @@ public static class ClaudeSettingsFile
     /// content on its own). It holds no <c>gh</c> rule at all: a read-only review should use no
     /// credential it does not need, so the daemon reads GitHub for the session and writes what it
     /// gathered into the run directory, where the scoped <c>Read</c> reaches it (the pull request's
-    /// diff for a feedback evaluator or a closeout triage, the issues a description cites for the
-    /// lenses that are told the pull request's intent).
+    /// diff for a feedback evaluator or a closeout triage, the review comments a closeout triage may read, and the issues a
+    /// description cites for the review lenses and the mention follow-up, whose prompts point at that file).
     /// </para>
     /// <para>
     /// <b>The deny list</b> is <see cref="ReviewLapDeniedTools"/> — the identical write-surface

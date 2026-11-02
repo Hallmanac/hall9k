@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
@@ -181,7 +180,6 @@ public static class DesignReviewPromptBuilder
                 new Dictionary<string, string>
                 {
                     ["CitedIssuesPath"] = RunPaths.CitedIssuesFile(runDirectory),
-                    ["MaxNamedNotRead"] = CitedIssues.MaxNamedNotRead.ToString(CultureInfo.InvariantCulture),
                 });
             prompt.AppendLine();
         }

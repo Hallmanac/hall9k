@@ -179,8 +179,8 @@ public sealed class DaemonOptions
     /// <summary>
     /// The turn cap a mention follow-up lap is spawned with (task 7ae690f5), passed straight
     /// through as <c>claude -p --max-turns</c> the same way <see cref="CourierMaxTurns"/> bounds
-    /// its own narrow auxiliary session: the lap reads the prior report, the thread, and parts of
-    /// the diff, writes an addendum, and never posts — a bounded job, so it gets a bounded turn
+    /// its own narrow auxiliary session: the lap reads the prior report, the pull request's
+    /// description the daemon quotes for it (it cannot run <c>gh</c>), and parts of the diff, writes an addendum, and never posts — a bounded job, so it gets a bounded turn
     /// budget rather than the unbounded one an ordinary build session gets.
     /// </summary>
     public int PrReviewMentionFollowUpMaxTurns { get; set; } = 40;

@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon.Review;
@@ -58,8 +57,7 @@ public static class SecurityReviewPromptBuilder
             prompt.AppendLine();
             AppendFragment(
                 prompt, $"{TemplateDirectory}/build.md", "cited-issues",
-                ("CitedIssuesPath", RunPaths.CitedIssuesFile(request.RunDirectory)),
-                ("MaxNamedNotRead", CitedIssues.MaxNamedNotRead.ToString(CultureInfo.InvariantCulture)));
+                ("CitedIssuesPath", RunPaths.CitedIssuesFile(request.RunDirectory)));
         }
 
         AppendLenses(prompt);

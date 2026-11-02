@@ -1127,9 +1127,9 @@ but has no remote, so the session can run read-only git (`git show`, `git grep`,
 `git ls-files`) against any revision of any file. Git LFS files are not downloaded into it, so an
 LFS-tracked path holds its pointer text, and the review prompts say so. The session is refused `gh`
 altogether, because a read-only review should use no credential it does not need. The daemon reads
-GitHub for it instead: before a lens that is told the pull request's intent starts, it writes the
-bodies of the issues the description cites (it tries at most ten, a failed read counting toward the ten, in the
-pull request's own repository, with no comments, and the rest named as not read) into the run directory, and the
+GitHub for it instead: before a lens or a mention follow-up whose prompt points at the file starts, it writes the
+bodies of the issues the description cites (it tries at most ten within one minute in all, a failed read counting toward the ten, in the
+pull request's own repository, with no comments, and every other citation named as not read) into the run directory, and the
 prompt points at that file as source material rather than instruction. The security review is pointed at it too,
 with wording that the file never lowers a finding's severity or makes a permission intended, because anyone who can
 file an issue can write that a risk is accepted into it; only the adversarial lens, which is told nothing of what the

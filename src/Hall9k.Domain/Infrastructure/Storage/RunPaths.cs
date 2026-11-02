@@ -336,8 +336,8 @@ public static class RunPaths
         Path.Combine(runDirectory, $"closeout-triage-comments-{threadSetKeyHash}-{sessionId:N}.md");
 
     /// <summary>
-    /// The bodies of the issues a pull request's description cites, which the daemon reads before a review lens that is
-    /// told the pull request's intent starts (at most ten issues in the pull request's own repository, and no
+    /// The bodies of the issues a pull request's description cites, which the daemon reads before a session whose prompt
+    /// points at the file starts (at most ten issues in the pull request's own repository, and no
     /// comments), so that session reads GitHub only through what was gathered for it. One file per run directory:
     /// every lens of one review reads the same one.
     /// </summary>
