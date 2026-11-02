@@ -42,3 +42,7 @@ context: |-
   - `src/Hall9k.Cli/Commands/DoctorCommand.cs` and `src/Hall9k.Cli/Diagnostics/*Doctor.cs`: add a `CourierDoctor` in that pattern, after `DatabaseDoctor`. `h9k update --restart` and `h9k install --restart` run doctor with `--no-configure` while the daemon is stopped. The feed read is `OrchestratorFeedReader.ReadUndrainedAsync`, as `OrchestratorFeedCommand` calls it.
 
   956bd97e later adds a "blocked by elevation" gate decision and status text in the same files. Keep the status line's states (in flight, day cap spent, failing) as separate branches of one composer, so a further state lands as one more branch.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a04de3-7a23-75c0-8a06-9314ef6ab27d
+holder-node-name: HALL-AGELESSRX
+holder-since: 2026-11-02 16:29:12Z
