@@ -390,7 +390,11 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   itself. The one thing that does not update itself is an autostart registration's launch script:
   no `h9k install` and no `h9k update` rewrites it, only `h9k daemon autostart enable` does. Until
   you run that, an autostarted daemon keeps launching the old way and logs a sharing-violation
-  warning at start naming this remedy. Two things are worth knowing if you see that warning. Your
+  warning at start naming this remedy. A re-run keeps the logon task's run level rather than
+  resetting it, so it does not undo an elevated task; on an elevated task it must be run from an
+  elevated shell, because a registration at the elevated level is refused from one that is not
+  (`--run-level limited` lowers it on purpose, and [INSTALL.md](INSTALL.md#windows-notes) has the
+  rest). Two things are worth knowing if you see that warning. Your
   own `Get-Content -Wait` reader is never the cause: cmd.exe admits readers, and so does the handle
   `h9kd` tries to open. And nothing is hidden from you by it: every line still lands in that same
   `h9kd.log`, and this is a printed warning rather than a silent switch to some other console.
