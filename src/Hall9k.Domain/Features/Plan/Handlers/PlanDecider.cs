@@ -1,6 +1,7 @@
 using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Domain.Features.Plan.Handlers;
@@ -25,6 +26,9 @@ public enum PlanStepKind
 
     /// <summary>A person granted a round after rounds exhausted: move the draft to refinement to answer the verdict.</summary>
     StartNextRound,
+
+    /// <summary>Dispatch the discovery session of a plan started from an idea.</summary>
+    DispatchDiscovery,
 }
 
 /// <summary>
@@ -72,6 +76,89 @@ public static class PlanDecider
         return draft.Outcome == PlanOutcome.DoNotPublish
             ? PlanStepKind.StartNextRound
             : PlanStepKind.RequestChallenge;
+    }
+
+    /// <summary>
+    /// The next step of a plan still in discovery: its session is running (<see cref="PlanStepKind.AwaitSession"/>), it is
+    /// parked at the gate or on a failed session (nothing), or discovery has yet to be dispatched. A plan that is not in
+    /// discovery has no discovery step.
+    /// </summary>
+    public static PlanStepKind NextDiscoveryStep(PlanAggregate plan)
+    {
+        if (!plan.InDiscovery || plan.Discovery is not { } discovery)
+        {
+            return PlanStepKind.None;
+        }
+
+        return discovery switch
+        {
+            { IsParked: true } => PlanStepKind.None,
+            { RunningSessionId: not null } => PlanStepKind.AwaitSession,
+            _ => PlanStepKind.DispatchDiscovery,
+        };
+    }
+
+    /// <summary>
+    /// What discovery's session came to: a readable report parks the plan at the gate, anything else parks it as a failed
+    /// session with the closed reason it failed for. A plan with no idea has no discovery to park.
+    /// </summary>
+    public static PlanDiscoveryParked ParkDiscovery(
+        PlanAggregate plan, PlanParkReason reason, Guid? sessionId, RefinementFailureReason failure, DateTimeOffset now) =>
+        plan.IdeaId is { } ideaId
+            ? new PlanDiscoveryParked(plan.Id, plan.ProjectId, ideaId, reason, sessionId, failure, now)
+            : throw new DomainConflictException($"Plan {plan.Id} was not started from an idea, so it has no discovery to park.");
+
+    /// <summary>
+    /// <c>h9k plan stop</c>: the gate answered by not pursuing. Accepted only at the gate; the reason is the person's own words.
+    /// The idea is not touched.
+    /// </summary>
+    public static PlanStopped Stop(PlanAggregate plan, string reason, Guid ownerId, DateTimeOffset now)
+    {
+        RequireAtGate(plan, "stopped");
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            throw new DomainValidationException(
+                "A plan is stopped with a reason, in a sentence: h9k plan stop <plan> --reason \"<why>\". A blank one is an empty shell variable, not a statement.");
+        }
+
+        return new PlanStopped(plan.Id, plan.ProjectId, plan.IdeaId ?? Guid.Empty, reason.Trim(), ownerId, now);
+    }
+
+    /// <summary>
+    /// <c>h9k plan pursue</c>: the gate answered by pursuing, naming the drafts the command cut in the same save. Accepted only
+    /// at the gate, and the stream's version the caller appends against is what lets only one of two pursues at once land.
+    /// </summary>
+    public static PlanDraftsCut Pursue(
+        PlanAggregate plan, IReadOnlyList<Guid> draftIds, Guid? epicId, bool noExistingItemAttested, bool untrackedAttested,
+        Guid ownerId, DateTimeOffset now)
+    {
+        RequireAtGate(plan, "pursued");
+        return draftIds.Count == 0
+            ? throw new DomainValidationException("Pursuing a plan cuts at least one draft; the report proposed none.")
+            : new PlanDraftsCut(
+                plan.Id, plan.ProjectId, plan.IdeaId ?? Guid.Empty, draftIds, epicId, noExistingItemAttested, untrackedAttested,
+                ownerId, now);
+    }
+
+    /// <summary>Refuses, naming where the plan stands, unless discovery's report waits at the gate. Public so a command can ask before it does work the answer would waste.</summary>
+    public static void RequireAtGate(PlanAggregate plan, string verb)
+    {
+        if (plan.AtGate)
+        {
+            return;
+        }
+
+        string where = plan switch
+        {
+            { IsLive: false } => $"is {plan.State.Value}",
+            { Discovery: null } => "was started from drafts and has no discovery gate",
+            { InDiscovery: false } => "has already cut its drafts",
+            { Discovery.IsParked: true } => "is parked because its discovery session failed, not at the gate (h9k plan resume runs it again)",
+            _ => "has not finished discovery yet",
+        };
+        throw new DomainConflictException(
+            $"Plan {plan.Id} {where}, so it cannot be {verb}. A plan is pursued or stopped only while discovery's report waits at "
+            + $"its gate; h9k plan show {DomainId.Short(plan.Id)} says where it stands.");
     }
 
     /// <summary>
@@ -219,6 +306,16 @@ public static class PlanDecider
         if (!plan.IsLive)
         {
             throw new DomainConflictException($"Plan {plan.Id} is {plan.State.Value}, so there is nothing to resume.");
+        }
+
+        // At the gate a resume would read as go and spend an Opus session on the wrong answer: it names the two real answers.
+        if (plan.AtGate)
+        {
+            throw new DomainConflictException(
+                $"Plan {plan.Id} is at discovery's gate, where a resume is not an answer. Read the report with "
+                + $"h9k plan show {DomainId.Short(plan.Id)}, then answer with h9k plan pursue {DomainId.Short(plan.Id)} (cut its proposed "
+                + $"tasks as drafts) or h9k plan stop {DomainId.Short(plan.Id)} --reason \"<why>\" (end it; another look is a new plan "
+                + "with h9k plan start --idea).");
         }
 
         return plan.IsParked

@@ -94,6 +94,9 @@ public static class SessionRoleName
     /// <summary>A plan's refinement session on one draft (<c>h9k plan start</c>).</summary>
     public const string Refinement = "refinement";
 
+    /// <summary>A plan's discovery session on one idea (<c>h9k plan start --idea</c>); its prefix is the plan's short id, since it has no task.</summary>
+    public const string Discovery = "discovery";
+
     /// <summary>
     /// The bounded follow-up lap auto-pr-review's own mention trigger dispatches on an
     /// already-reviewed pull request (idea 2f079bcd): a single, narrowly-scoped session answering

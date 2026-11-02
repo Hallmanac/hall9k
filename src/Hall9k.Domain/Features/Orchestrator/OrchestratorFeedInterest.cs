@@ -84,6 +84,8 @@ public static class OrchestratorFeedInterest
         // A plan parked for a person (h9k plan start): at the level a review park has, because it is the same kind of
         // stop. A phase move (PlanDraftMoved) is deliberately absent and so never arrives; the plan's end is below.
         [typeof(PlanParked)] = OrchestratorFeedLevel.Actionable,
+        // The same stop in discovery, which has no draft to park on: the report waits at the gate, or the session failed.
+        [typeof(PlanDiscoveryParked)] = OrchestratorFeedLevel.Actionable,
 
         // idea 6be68ee2, companion 1bb803e1: an owner-role member write a non-root node's own
         // invite match asked for, parked on this root for its own human to approve
@@ -160,6 +162,8 @@ public static class OrchestratorFeedInterest
         // without polling. The text carries ids alone; the cancel reason is its person's, and stays in h9k plan show.
         [typeof(PlanPublished)] = OrchestratorFeedLevel.Transitions,
         [typeof(PlanCancelled)] = OrchestratorFeedLevel.Transitions,
+        // Stopped at discovery's gate: a normal ending, an ordinary item.
+        [typeof(PlanStopped)] = OrchestratorFeedLevel.Transitions,
         [typeof(TaskClaimed)] = OrchestratorFeedLevel.Transitions,
         [typeof(PullRequestOpened)] = OrchestratorFeedLevel.Transitions,
         [typeof(TaskCompleted)] = OrchestratorFeedLevel.Transitions,

@@ -5,7 +5,8 @@ namespace Hall9k.Domain.Features.Plan;
 
 /// <summary>
 /// Where a plan as a whole stands. A parked plan is still Live: parking is a fact about its drafts
-/// (<see cref="PlanAggregate.IsParked"/>), and what a person does about it is resume or cancel.
+/// (<see cref="PlanAggregate.IsParked"/>), and what a person does about it is resume or cancel (or, at discovery's gate,
+/// pursue or stop).
 /// </summary>
 [JsonConverter(typeof(PlanStateJsonConverter))]
 public sealed record PlanState
@@ -18,6 +19,9 @@ public sealed record PlanState
 
     /// <summary>A person cancelled it, or every draft was abandoned. The plan's other end.</summary>
     public static readonly PlanState Cancelled = new("Cancelled");
+
+    /// <summary>A person answered discovery's gate by not pursuing the idea. A normal ending, neither a failure nor a cancellation.</summary>
+    public static readonly PlanState Stopped = new("Stopped");
 
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly PlanState Unknown = new(string.Empty);
@@ -35,6 +39,7 @@ public sealed record PlanState
         "Live" => Live,
         "Published" => Published,
         "Cancelled" => Cancelled,
+        "Stopped" => Stopped,
         _ => Unknown,
     };
 

@@ -39,6 +39,7 @@ public static class OrchestratorFeedUrgency
         typeof(ReviewFindingRouted),
         typeof(QuestionAsked),
         typeof(PlanParked),
+        typeof(PlanDiscoveryParked),
 
         // Daemon trouble: the machinery, not the work, went wrong.
         typeof(RunSessionErrorRetried),

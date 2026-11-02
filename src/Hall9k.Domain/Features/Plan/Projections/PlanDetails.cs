@@ -31,11 +31,38 @@ public sealed class PlanDetails
 
     public string? CancelReason { get; set; }
 
+    /// <summary>The idea discovery runs on, and the session and park it is in; null for a plan started from drafts.</summary>
+    public PlanDiscoveryState? Discovery { get; set; }
+
+    /// <summary>The epic <c>h9k plan pursue --epic-title</c> created for the cut drafts, or null.</summary>
+    public Guid? EpicId { get; set; }
+
+    /// <summary>The reason a person gave when they stopped the plan at the gate, or null.</summary>
+    public string? StopReason { get; set; }
+
+    /// <summary>The idea the plan was started from, or null.</summary>
+    public Guid? IdeaId => Discovery?.IdeaId;
+
+    /// <summary>Whether a plan started from an idea is still in discovery, with no drafts yet.</summary>
+    public bool InDiscovery => IsLive && Discovery is not null && Drafts.Count == 0;
+
+    /// <summary>
+    /// Where the plan as a whole stands: discovery until its drafts are cut, then the earliest phase of any draft still open,
+    /// and published once every draft is closed.
+    /// </summary>
+    public PlanPhase Phase => Discovery is not null && Drafts.Count == 0
+        ? PlanPhase.Discovery
+        : Drafts.Where(draft => !draft.IsClosed).OrderBy(draft => draft.Phase == PlanPhase.Refinement ? 0 : 1).Select(draft => draft.Phase).FirstOrDefault()
+            ?? (Drafts.Count > 0 ? PlanPhase.Published : StartPhase);
+
+    /// <summary>Whether discovery's report waits at the gate for a person.</summary>
+    public bool AtGate => InDiscovery && Discovery is { AtGate: true };
+
     public List<PlanDraftState> Drafts { get; set; } = [];
 
     public bool IsLive => State.IsLive;
 
-    public bool IsParked => Drafts.Any(draft => draft.IsParked);
+    public bool IsParked => Discovery?.IsParked == true || Drafts.Any(draft => draft.IsParked);
 
     public bool Includes(Guid draftId) => Drafts.Any(draft => draft.DraftId == draftId);
 
@@ -54,8 +81,25 @@ public sealed partial class PlanDetailsProjection : SingleStreamProjection<PlanD
         UntrackedAttested = @event.Data.UntrackedAttested,
         StartedByOwnerId = @event.Data.StartedByOwnerId,
         StartedAt = @event.Data.StartedAt,
+        Discovery = @event.Data.IdeaId is { } ideaId
+            ? new PlanDiscoveryState { IdeaId = ideaId }
+            : null,
         Drafts = [.. @event.Data.DraftIds.Select(draftId => PlanDraftState.Start(draftId, @event.Data.StartPhase))],
     };
+
+    public void Apply(IEvent<PlanDiscoveryDispatched> @event, PlanDetails view) => view.Discovery?.Apply(@event.Data);
+
+    public void Apply(IEvent<PlanDiscoveryParked> @event, PlanDetails view) => view.Discovery?.Apply(@event.Data);
+
+    public void Apply(IEvent<PlanDraftsCut> @event, PlanDetails view)
+    {
+        view.Discovery?.ApplyCut();
+        view.EpicId = @event.Data.EpicId;
+        view.NoExistingItemAttested = @event.Data.NoExistingItemAttested;
+        view.UntrackedAttested = @event.Data.UntrackedAttested;
+        view.StartedByOwnerId = @event.Data.CutByOwnerId;
+        view.Drafts.AddRange(@event.Data.DraftIds.Select(draftId => PlanDraftState.Start(draftId, PlanPhase.Refinement)));
+    }
 
     public void Apply(IEvent<PlanRefinementDispatched> @event, PlanDetails view) => view.Draft(@event.Data.DraftId)?.Apply(@event.Data);
 
@@ -67,6 +111,7 @@ public sealed partial class PlanDetailsProjection : SingleStreamProjection<PlanD
 
     public void Apply(IEvent<PlanResumed> @event, PlanDetails view)
     {
+        view.Discovery?.ApplyResume();
         foreach (PlanDraftState draft in view.Drafts)
         {
             draft.ApplyResume();
@@ -81,6 +126,13 @@ public sealed partial class PlanDetailsProjection : SingleStreamProjection<PlanD
     {
         view.State = PlanState.Published;
         view.EndedAt = @event.Data.PublishedAt;
+    }
+
+    public void Apply(IEvent<PlanStopped> @event, PlanDetails view)
+    {
+        view.State = PlanState.Stopped;
+        view.EndedAt = @event.Data.StoppedAt;
+        view.StopReason = @event.Data.Reason;
     }
 
     public void Apply(IEvent<PlanCancelled> @event, PlanDetails view)
