@@ -378,6 +378,16 @@ public static class RunPaths
     public static string RefinementProcessFile(Guid sessionId) => Path.Combine(GlobalDirectory(sessionId), "refinement-process.txt");
 
     /// <summary>
+    /// The report a plan's discovery session writes (<c>h9k plan start --idea</c>), whose closing block holds the gate's
+    /// answer. Derived from the session id alone, like <see cref="RefinementReportFile"/>. The daemon copies a readable one to
+    /// the idea's workspace; this is where it stays when the copy fails.
+    /// </summary>
+    public static string DiscoveryReportFile(Guid sessionId) => Path.Combine(GlobalDirectory(sessionId), "discovery-report.md");
+
+    /// <summary>Where the daemon writes a discovery session's process identity, for the same reason as <see cref="ChallengeProcessFile"/>.</summary>
+    public static string DiscoveryProcessFile(Guid sessionId) => Path.Combine(GlobalDirectory(sessionId), "discovery-process.txt");
+
+    /// <summary>
     /// A plan's own directory, beside the session directories its sessions run in: the output of the child <c>h9k</c>
     /// commands the daemon runs for it, which can quote a session's text and so never rides a stream.
     /// </summary>

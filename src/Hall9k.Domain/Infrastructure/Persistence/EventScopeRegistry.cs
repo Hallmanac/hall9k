@@ -170,6 +170,11 @@ public static class EventScopeRegistry
         [typeof(PlanDraftAbandoned)] = EventScope.NodeScoped,
         [typeof(PlanPublished)] = EventScope.NodeScoped,
         [typeof(PlanCancelled)] = EventScope.NodeScoped,
+        [typeof(PlanDiscoveryDispatched)] = EventScope.NodeScoped,
+        [typeof(PlanDiscoveryParked)] = EventScope.NodeScoped,
+        [typeof(PlanDraftsCut)] = EventScope.NodeScoped,
+        [typeof(PlanStopped)] = EventScope.NodeScoped,
+        [typeof(PlanTokensRecorded)] = EventScope.NodeScoped,
 
         // Records this process's own pid and start time (session/mechanics bookkeeping, the
         // same shape as RunProcessStarted below), not a team-visible work fact, so it stays

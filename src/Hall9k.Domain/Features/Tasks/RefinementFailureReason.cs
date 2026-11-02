@@ -4,7 +4,7 @@ using Hall9k.Domain.Shared.ValueObjects;
 namespace Hall9k.Domain.Features.Tasks;
 
 /// <summary>
-/// Why a refinement session came to nothing: a closed list, so the event holds nothing a session or a stranger
+/// Why a refinement session, or a plan's discovery session, came to nothing: a closed list, so the event holds nothing a session or a stranger
 /// wrote. <see cref="Unknown"/> is "no failure", which a session whose outcome was applied records. A session whose
 /// report was readable but whose revision was not applied records the outcome it named and the reason here
 /// (<see cref="DraftChanged"/> or <see cref="RevisionRefused"/>).
@@ -24,6 +24,8 @@ public sealed record RefinementFailureReason
     public static readonly RefinementFailureReason DaemonRestarted = new("DaemonRestarted", "the daemon stopped or restarted while the session ran");
     public static readonly RefinementFailureReason DispatchExpired = new("DispatchExpired", "another node dispatched it and recorded no outcome past the foreign-session ceiling");
     public static readonly RefinementFailureReason Cancelled = new("Cancelled", "the plan was cancelled, so the session was stopped and nothing was applied");
+
+    public static readonly RefinementFailureReason ReportNotCopied = new("ReportNotCopied", "the discovery report was readable but could not be copied into the idea's workspace, so it stays in the session directory");
 
     public static readonly RefinementFailureReason DraftClosed = new("DraftClosed", "the draft was published or abandoned while the session ran, so the session was stopped and nothing was applied");
 
@@ -60,6 +62,7 @@ public sealed record RefinementFailureReason
         "DispatchExpired" => DispatchExpired,
         "Cancelled" => Cancelled,
         "DraftClosed" => DraftClosed,
+        "ReportNotCopied" => ReportNotCopied,
         _ => Unknown,
     };
 

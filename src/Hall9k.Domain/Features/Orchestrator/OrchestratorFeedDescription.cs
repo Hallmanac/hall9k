@@ -2,6 +2,7 @@ using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -131,6 +132,10 @@ public static class OrchestratorFeedDescription
             TaskPublished => "published and ready to assign",
             DraftChallengeRecorded challenged => ChallengeLine(challenged),
             PlanParked parked => PlanParkLine(parked),
+            PlanDiscoveryParked discoveryParked => PlanDiscoveryParkLine(discoveryParked),
+            PlanStopped stopped =>
+                $"plan {DomainId.Short(stopped.Id)} ended stopped at discovery's gate; the idea {DomainId.Short(stopped.IdeaId)} is still Captured, and "
+                + "concluding or archiving it stays yours",
             PlanPublished published => PlanPublishedLine(published),
             PlanCancelled cancelled =>
                 $"plan {DomainId.Short(cancelled.Id)} ended cancelled; its drafts that were neither published nor abandoned are Drafts again",
@@ -375,6 +380,21 @@ public static class OrchestratorFeedDescription
         $"plan {DomainId.Short(parked.Id)} parked on draft {DomainId.Short(parked.DraftId)}: {parked.Reason.Description}; "
         + $"read it with h9k plan show {DomainId.Short(parked.Id)}, then answer it with h9k plan resume {DomainId.Short(parked.Id)} "
         + "or by hand";
+
+    /// <summary>
+    /// A plan's park in discovery: the plan, the idea, and the reason from the closed list, with the verbs that read and answer
+    /// it. Ids and the reason alone, because the report's words never reach the feed. At the gate the answers are pursue and
+    /// stop; resume is refused there, so it is not offered.
+    /// </summary>
+    private static string PlanDiscoveryParkLine(PlanDiscoveryParked parked)
+    {
+        string plan = DomainId.Short(parked.Id);
+        string answer = parked.Reason == PlanParkReason.Gate
+            ? $"then answer it with h9k plan pursue {plan} or h9k plan stop {plan} --reason \"<why>\""
+            : $"then answer it with h9k plan resume {plan}";
+        return $"plan {plan} parked in discovery of idea {DomainId.Short(parked.IdeaId)}: {parked.Reason.Description}; "
+            + $"read it with h9k plan show {plan}, {answer}";
+    }
 
     /// <summary>
     /// How a draft challenge ended: the verdict with its counts, or the failure reason from the closed list.

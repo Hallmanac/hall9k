@@ -265,13 +265,15 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
 
         // A plan's own stream belongs to no project the resolver could name either: it is keyed by its own id and never
         // replicates. Its events carry the project id themselves, and the ones that concern a draft carry its id.
-        if (candidate.Data is PlanParked or PlanPublished or PlanCancelled)
+        if (candidate.Data is PlanParked or PlanPublished or PlanCancelled or PlanDiscoveryParked or PlanStopped)
         {
             return candidate.Data switch
             {
                 PlanParked parked => new OrchestratorFeedScope(parked.ProjectId, parked.DraftId),
                 PlanPublished published => new OrchestratorFeedScope(published.ProjectId, null),
                 PlanCancelled cancelled => new OrchestratorFeedScope(cancelled.ProjectId, null),
+                PlanDiscoveryParked discoveryParked => new OrchestratorFeedScope(discoveryParked.ProjectId, null),
+                PlanStopped stopped => new OrchestratorFeedScope(stopped.ProjectId, null),
                 _ => throw new InvalidOperationException("Unreachable: candidate.Data matched no plan event."),
             };
         }

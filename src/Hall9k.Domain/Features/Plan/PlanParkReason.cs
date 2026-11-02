@@ -37,8 +37,13 @@ public sealed record PlanParkReason
 
     public static readonly PlanParkReason SessionFailed = new(
         "SessionFailed",
-        "the refinement session failed, or was refused before it ran (the daemon log says why)",
+        "the refinement or discovery session failed, or was refused before it ran (the daemon log says why)",
         "h9k plan resume runs it again; if the daemon log names a refusal (an archived project, a missing checkout), settle that first");
+
+    public static readonly PlanParkReason Gate = new(
+        "Gate",
+        "discovery has finished and its report waits for you to pursue the idea or stop",
+        "read the report, then h9k plan pursue cuts its proposed tasks as drafts the plan carries to Published, or h9k plan stop --reason \"<why>\" ends the plan; h9k plan resume is refused here");
 
     public static readonly PlanParkReason ChallengeFailed = new(
         "ChallengeFailed",
@@ -80,6 +85,7 @@ public sealed record PlanParkReason
         "DraftChanged" => DraftChanged,
         "RevisionRefused" => RevisionRefused,
         "SessionFailed" => SessionFailed,
+        "Gate" => Gate,
         "ChallengeFailed" => ChallengeFailed,
         "PublishRefused" => PublishRefused,
         _ => Unknown,

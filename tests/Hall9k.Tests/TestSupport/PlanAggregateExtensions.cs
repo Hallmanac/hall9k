@@ -43,6 +43,18 @@ internal static class PlanAggregateExtensions
             case PlanCancelled cancelled:
                 plan.Apply(cancelled);
                 break;
+            case PlanDiscoveryDispatched discovery:
+                plan.Apply(discovery);
+                break;
+            case PlanDiscoveryParked discoveryParked:
+                plan.Apply(discoveryParked);
+                break;
+            case PlanDraftsCut cut:
+                plan.Apply(cut);
+                break;
+            case PlanStopped stopped:
+                plan.Apply(stopped);
+                break;
             default:
                 break;
         }

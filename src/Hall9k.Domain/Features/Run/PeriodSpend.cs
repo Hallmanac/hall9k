@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Courier;
+using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -15,7 +16,9 @@ public sealed record PeriodSpendByModel(AgentModel Model, long TotalInputTokens)
 /// <see cref="PublicationTokensRecorded"/> — a card-publication errand's, which rides the task's
 /// own stream because it has no run to carry a <see cref="TokensRecorded"/> of its own — and
 /// <see cref="CourierTokensRecorded"/> — a feed courier's, which rides neither a run's nor a
-/// task's stream because it has no task at all (idea 89471598, piece 3) — plus every
+/// task's stream because it has no task at all (idea 89471598, piece 3) — and
+/// <see cref="PlanTokensRecorded"/> (a plan's discovery session's, which rides the plan's own stream for the
+/// same reason and stays on the node that spent it) plus every
 /// <see cref="PurgedSpendRecord"/> a project purge has ever carried forward on their behalf
 /// (task: an archived project can be purged), rather than held in a stored counter (backlog:
 /// spend-governor step three): a daemon restart can neither lose nor double-count it, because
@@ -46,6 +49,11 @@ public sealed record PeriodSpend(long TotalInputTokens, IReadOnlyList<PeriodSpen
             .Where(e => e.RecordedAt >= periodStart)
             .ToListAsync(cancellationToken);
 
+        IReadOnlyList<PlanTokensRecorded> planEvents = await session.Events
+            .QueryRawEventDataOnly<PlanTokensRecorded>()
+            .Where(e => e.RecordedAt >= periodStart)
+            .ToListAsync(cancellationToken);
+
         IReadOnlyList<PurgedSpendRecord> purgedRecords = await session.Query<PurgedSpendRecord>()
             .Where(r => r.RecordedAt >= periodStart)
             .ToListAsync(cancellationToken);
@@ -56,6 +64,8 @@ public sealed record PeriodSpend(long TotalInputTokens, IReadOnlyList<PeriodSpen
             .. publicationEvents.Select(e => (
                 e.Model ?? AgentModel.Unknown, e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens)),
             .. courierEvents.Select(e => (
+                e.Model ?? AgentModel.Unknown, e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens)),
+            .. planEvents.Select(e => (
                 e.Model ?? AgentModel.Unknown, e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens)),
             .. purgedRecords.Select(r => (r.Model, r.TotalInputTokens)),
         ];

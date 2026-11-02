@@ -4,13 +4,15 @@ using Hall9k.Domain.Shared.ValueObjects;
 namespace Hall9k.Domain.Features.Plan;
 
 /// <summary>
-/// Where one draft of a plan stands: being refined, being challenged, or published. Discovery and drafting are not
-/// phases a plan offers yet. A draft that is ready to publish stays in the phase it last finished; readiness is its
-/// own fact (<see cref="PlanDraftState.Ready"/>).
+/// Where a plan, or one draft of it, stands: in discovery (a plan started from an idea, before any draft exists), being
+/// refined, being challenged, or published. Drafting is not a phase: a person's pursue at the gate cuts the report's proposed
+/// tasks as drafts. A draft that is ready to publish stays in the phase it last finished; readiness is its own fact
+/// (<see cref="PlanDraftState.Ready"/>).
 /// </summary>
 [JsonConverter(typeof(PlanPhaseJsonConverter))]
 public sealed record PlanPhase
 {
+    public static readonly PlanPhase Discovery = new("Discovery", "discovery");
     public static readonly PlanPhase Refinement = new("Refinement", "refinement");
     public static readonly PlanPhase Challenge = new("Challenge", "challenge");
     public static readonly PlanPhase Published = new("Published", "published");
@@ -33,6 +35,7 @@ public sealed record PlanPhase
 
     public static implicit operator PlanPhase(string? value) => value switch
     {
+        "Discovery" => Discovery,
         "Refinement" => Refinement,
         "Challenge" => Challenge,
         "Published" => Published,
