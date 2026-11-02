@@ -535,8 +535,12 @@ would read as go.
   set. It is refused, with nothing cut and the plan still at the gate, when the plan is not at the gate, the report is missing,
   unreadable, or says stop, the idea is no longer Captured or is no longer in the plan's project, or the project is archived or
   scheduled for purge. On a project whose publish asks for a tracker attestation it needs `--no-existing-item` or `--untracked`,
-  recorded as `h9k plan start` records them. `--epic-title "<title>"` creates one plain epic and puts every cut draft in it,
-  and is refused unless the report proposes two or more tasks.
+  recorded as `h9k plan start` records them. `--epic-title "<title>"` creates one epic and puts every cut draft in it,
+  and is refused unless the report proposes two or more tasks. In a project that belongs to an open solution it is a solution
+  epic, made the way `h9k epic add` makes one (a copy in each member project this node holds that is not scheduled for purge,
+  all sharing one solution epic key), with the drafts in this project's copy; the output gives the reference `h9k epic add`
+  prints and names any member that got no copy. It is refused, with nothing cut, where `h9k epic add` would refuse (the solution
+  is closed on a project that has not caught up with it). In a project in no open solution it is one plain project epic.
 - `h9k plan stop <plan> --reason "<why>"` is accepted only at the gate and ends the plan as Stopped, a normal ending that
   `h9k plan show` and `h9k plan list` print as neither a failure nor a cancellation, and that arrives on the feed as an
   ordinary item. The idea stays Captured, with its workspace, its report, and any task already cut from it untouched; closing

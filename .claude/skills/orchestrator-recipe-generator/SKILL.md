@@ -900,7 +900,7 @@ own heading, and writes no launch line or model for the work a plan does:
   the phase, and the reason alone, and `h9k status` lists it under Needs you. The window reads the report (`h9k plan show
   <plan>` prints its path, whether it says pursue or stop, and the objectives it proposes, and a line to question the
   discovery session) and then answers with `h9k plan pursue <plan>`, which cuts the report's `TASK` lines as the plan's
-  drafts (`--epic-title "<t>"` for one epic over two or more; `--no-existing-item` or `--untracked` where a publish asks) and
+  drafts (`--epic-title "<t>"` for one epic over two or more, a solution epic where the project belongs to an open solution; `--no-existing-item` or `--untracked` where a publish asks) and
   carries them on a plan's ordinary path, or `h9k plan stop <plan> --reason "<why>"`, a normal ending that leaves the idea
   Captured. A person's edit to the report counts at pursue. `h9k plan resume` is refused at the gate, and another look is a
   stop and then a new plan. Concluding or archiving the idea stays the window's own act at closeout; no plan does it.
