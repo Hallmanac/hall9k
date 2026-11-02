@@ -1,0 +1,59 @@
+hall9k-task-record: 1
+task-id: 01a199f6-f4c3-75bb-b84a-493f0b340ae2
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#851
+objective: When a task is set to take the feedback step, the notes its blockers left are checked against it before it is released, and a task they affect is refined, challenged once, and queued again with the same assignee and node, or parked for a person
+criteria:
+  - A project setting decides whether its tasks take the feedback step, and it is off by default. A task can override the project setting either way while it is Draft, Published, or Blocked and not yet held for its feedback step, as a scheduling fact outside the readiness contract like the queue-first marker. The override is refused, with the reason, once the task is held for its feedback step, has been released to Queued, or has been claimed. The setting and the override each have a description and an example in `--help`.
+  - |-
+    A task that takes the feedback step stays Blocked at its release point until its feedback step has ended. Its release point is the moment it would otherwise move from Blocked to Queued: the last of its blockers reaching true closeout (for an ordinary blocker), the parent's Delivered (for the edge it is stacked on), or the pull request it is stacked on in another install being observed open or merged, whichever comes last. While it is held, neither the dispatcher nor an interactive claim (`h9k task drive` or `h9k task start`, with or without `--acknowledge-unmet-dependencies`) can claim it, and `h9k task show` and `h9k status` say that it is held for the feedback step.
+  - Queueing a task that takes the feedback step when all its blockers have already cleared holds it in the same way, instead of making it Queued at once.
+  - When none of the task's blockers left a note that the trust rule lets into a prompt, no session runs and the task goes to Queued as it would without the step.
+  - A task with several blockers gets one check, after the last blocker clears, over the notes of all of them. A note the trust rule holds back is never placed in the check's prompt.
+  - The check is one headless session whose model and effort come from the daemon's model policy under a role of its own, so the check and the refinement can be set to different tiers without a code change. It is given the task's objective, criteria, and context and the blockers' notes, and it answers whether the notes affect the task. When it answers that they do not, the task goes to Queued.
+  - When the check session fails, times out, or ends without a readable answer, the task goes to Queued and the failure is recorded on the task, so a failed check never stalls the tasks behind it.
+  - When the check answers that the notes affect the task, the daemon takes the task out of the queue and back to Draft, one session at the refinement tier refines it, and the daemon requests exactly one challenge of the result. No session or sweep of the daemon starts a second challenge for the same release, and a test proves it.
+  - After a publish as revised verdict, a session judges each must and should change in the challenge report, applies the ones it accepts, and records in the task's journal a reason for each one it declines; the daemon then publishes the result. After a publish as written verdict, the daemon publishes the refined task as it stands. In both cases the task is queued again for the same owner, with the same owner fingerprint, assignee, and node placement it had before the step, and it reaches Queued at once because its blockers have cleared.
+  - |-
+    The task is parked for a person instead of being queued, and the reason is shown in `h9k task show` and `h9k status`, when any of these happens: the challenge returns do not publish; the challenge ends with no verdict; the refinement session concludes that the task should not run; the refinement's revision names anything other than the objective, criteria, or context (dependencies, stack link, type, or model); the refinement session, or the session that judges the verdict, fails, times out, or ends without a readable report; or the publish or the requeue is refused. Once a task is parked, the step is over: nothing in the daemon queues it on the step's behalf, and a person who settles the park publishes and queues it by hand.
+  - |-
+    Each feedback step records its outcome as an event on the task's stream, and `h9k task show` prints it. The outcomes are: released without a check, released after the check, released after a failed check, revised and queued again, parked (with the reason), and ended without acting because a person dequeued, unassigned, abandoned, or revised the task while the step ran.
+  - After a feedback step has released, requeued, or parked a task, nothing starts a second step for that task. That covers the step's own requeue, a later observation of the pull request it is stacked on, a person queueing it again, and a change to its parent after it has been claimed.
+  - |-
+    The feedback step runs on one node only: the node the task is placed on, or, when the task has no placement, a node of the owner it is queued for. No other node, a teammate's included, starts a session for it, and a test proves that two nodes observing the same release start one check between them.
+  - |-
+    `docs/concepts.md`, in the task lifecycle section that describes the queue-first exception, and `docs/cli.md` describe the feedback step, its project setting and task override, and the outcomes a person can see.
+dependencies: [01a194fc-125b-726c-9d8a-5d8d0a3d47e0]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/0b340ae2-when-a-task-is-set-to-take-the
+published: 2026-11-02 18:33:36Z
+context: |-
+  ## Where the design lives
+
+  The design was approved by the owner and is in `feedback-step-brief.md` in the workspace of idea 13403621, with the rulings behind it under "Rulings" in that workspace's `journal.md` (entries from 2026-11-01 12:33 to 20:54). Read the brief before starting; this context points at the code and adds what the code at the time of refinement shows. The brief's "Timing" and "Rules for the path" sections are for the orchestrator and are already met: the blocker `0a3d47e0` (plan mode, PR #833) is Done.
+
+  The daemon makes every lifecycle move and starts every session; sessions supply judgment and nothing else. There is no new task state: a held task stays Blocked.
+
+  ## Code to start from
+
+  - Release today: `TaskDecider.DependencyCompleted` and `TaskAggregate.Apply(TaskDependencyCompleted)` move Blocked to Queued when the last unmet dependency clears, re-applied each sweep by `TaskDependencyResolver`. `TaskDecider.Assign` (the `h9k task queue` path) lands Queued directly when no dependency blocks. `StackedEdgeRules.Blocks` decides per edge whether a stacked parent's Delivered or true closeout is the release point. The hold has to cover all three Blocked-to-Queued doors that `TaskAggregate` names: `Apply(TaskAssigned)`, `Apply(TaskDependencyCompleted)`, and `Apply(RemoteStackedParentObserved)`. The last of these can also move a Queued task back to Blocked. The unmet-dependency set is recomputed on requeue, so it is not on its own a safe place for the hold.
+  - The dependency sweep runs on every node over every Blocked task in that node's store, teammates' tasks included, so the step's start needs a fence on the task's stream and an owner-and-placement check before any session starts. A plan, by contrast, is node-scoped (`PlanStarted`).
+  - Getting a held task back to Draft: `TaskDecider.ReturnToDraft` accepts Published only, so a Blocked task is taken out with `TaskDecider.Dequeue` first. `TaskAggregate.Apply(TaskUnassigned)` keeps the assignee when `KeepsAssignee` is set but clears `PlacedOnNodeId`, so the requeue must pass the earlier placement back through `Assign`'s `placedOnNodeId`. `Apply(TaskAssigned)` also replaces the assignment's owner fingerprint with the event's own value, so the requeue passes the earlier assignment's owner fingerprint as well as its placement.
+  - Refinement and the single challenge: the plan engine (`Hall9k.Daemon/Plan/PlanEngine.cs`, decisions in `PlanDecider`) already carries a Draft through a refinement session, a challenge, a session that applies a publish as revised verdict, and a publish through the installed `h9k`, and it parks a draft for a person on do not publish when its rounds are spent. Its round cap is the daemon-wide `DaemonOptions.PlanRoundCap` (default 2), so reusing it here needs a cap of one for this step. Prefer reusing it over a second refinement loop.
+  - Judging the verdict: the plan engine's apply purpose (`RefinementPurpose.ApplyVerdict`, prompt in `.claude/templates/agent-prompt-builder/plan-refinement.md`) applies every must and should. The ruled design has the session judge each one, so this step needs a purpose, or a resumed session (`IExecutor`'s `ResumeSessionId`, as the brief describes), that may decline one with a recorded reason. Either meets the criteria; say in the pull request which one was used and why. A decline of every must with no revision is refused by `ChallengeGate`, so that case parks as a refused publish.
+  - `ChallengeGate` lets a later revision of a verdict that already passed publish unchallenged, so the step must request its own challenge rather than rely on the earlier one.
+  - Republish: the step's publish passes the tracking choice the task's earlier publish recorded (`--untracked` when it was untracked) and never passes `--no-existing-item`, since the daemon searched no tracker.
+  - A person's `h9k plan resume` on a parked plan grants another round. The step's park ends the step, so the step must not act on what such a resume later publishes.
+  - `RefinementReport` reads only `revised`, `unchanged`, and `question`; the "should not run" outcome needs a new closing value or a stated mapping onto one of these.
+  - Notes: `TaskNoteRecorded` and `Features/Tasks/Notes/`; `InjectedTaskNotes` carries the trust rule's mark for prompts. Dispatched sessions are refused `h9k task notes` (`DispatchedSessionCommandClassification`), so the check receives the notes in its prompt. The epic view covers only epic siblings, so the check reads the blockers' notes by id.
+  - Roles: `AgentRole.Refinement` and `AgentRole.Challenge` exist, each with its own model and effort in the policy. The check takes a role of its own so that the brief's starting tiers (a cheap check, a high refinement tier) can be set apart in the model policy.
+  - Setting precedent: the queue-first marker on `TaskReviseCommand` is the existing scheduling fact a published task can change outside the Draft-only rule of Decisions Log #34. Queue-first is let through in any live state; the override here is deliberately narrower.
+  - Interactive claim: `TaskDecider.ClaimInteractively` claims a Blocked task when the caller acknowledges unmet dependencies; a held task has none, so it needs its own refusal with its own reason.
+
+  ## Out of scope
+
+  The goal concept (idea 75bed4cc), initiatives, loops inside a build, and a second step when a parent changes after the child has started (the stack rebase already handles the code). Whether a plan of several tasks turns the flag on by default, and whether the check also reads the blockers' pull request summaries, are left for later; notes alone are the input here.
