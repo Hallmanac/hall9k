@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using FluentAssertions;
+using Hall9k.Cli.Commands;
 using Hall9k.Cli.DaemonControl;
 using Xunit;
 
@@ -21,7 +22,7 @@ public sealed class WindowsDaemonAutostartTests
     [Fact]
     public void The_task_carries_a_logon_trigger_running_as_the_signed_in_user()
     {
-        string xml = WindowsDaemonAutostart.TaskXmlContent();
+        string xml = WindowsDaemonAutostart.TaskXmlContent(AutostartRunLevel.Limited);
 
         xml.Should().Contain("<LogonTrigger>");
         // Decisions Log #3: never a service identity — a Windows service would run as a
@@ -40,7 +41,7 @@ public sealed class WindowsDaemonAutostartTests
         // UserId of its own either, so it resolves to whoever registers the task), and
         // RestartOnFailure would burn its budget on a run that could never succeed while
         // never starting the enabling user's own daemon.
-        string xml = WindowsDaemonAutostart.TaskXmlContent();
+        string xml = WindowsDaemonAutostart.TaskXmlContent(AutostartRunLevel.Limited);
 
         xml.Should().Contain($@"{System.Environment.UserDomainName}\{System.Environment.UserName}");
         int logonTriggerEnd = xml.IndexOf("</LogonTrigger>", StringComparison.Ordinal);
@@ -50,7 +51,7 @@ public sealed class WindowsDaemonAutostartTests
     [Fact]
     public void The_task_only_restarts_on_a_nonzero_exit()
     {
-        string xml = WindowsDaemonAutostart.TaskXmlContent();
+        string xml = WindowsDaemonAutostart.TaskXmlContent(AutostartRunLevel.Limited);
 
         // This only asserts the task definition's own shape (RestartOnFailure's presence and
         // count) — it says nothing about whether wscript.exe's exit code, the thing
@@ -177,7 +178,7 @@ public sealed class WindowsDaemonAutostartTests
     [Fact]
     public void The_execution_time_limit_is_unlimited()
     {
-        string xml = WindowsDaemonAutostart.TaskXmlContent();
+        string xml = WindowsDaemonAutostart.TaskXmlContent(AutostartRunLevel.Limited);
 
         // Task Scheduler's own default (72 hours) would otherwise kill a daemon meant to
         // run indefinitely.
@@ -187,7 +188,7 @@ public sealed class WindowsDaemonAutostartTests
     [Fact]
     public void The_action_runs_the_launch_script_through_a_windowless_host()
     {
-        string xml = WindowsDaemonAutostart.TaskXmlContent();
+        string xml = WindowsDaemonAutostart.TaskXmlContent(AutostartRunLevel.Limited);
 
         // wscript.exe, not cmd.exe directly: there is no Task Scheduler setting that hides
         // a console-subsystem action's window, and an InteractiveToken principal runs it on
@@ -404,5 +405,266 @@ public sealed class WindowsDaemonAutostartTests
         string script = WindowsDaemonAutostart.LaunchScriptContent(Launcher, Binary, Log, []);
 
         script.Should().Contain($"\"\"{Binary}\"\"");
+    }
+
+    private sealed class FakeElevation(bool elevated) : IProcessElevation
+    {
+        public int Reads { get; private set; }
+
+        public bool IsElevated()
+        {
+            Reads++;
+            return elevated;
+        }
+    }
+
+    private sealed class FakeTaskInspector(bool exists, string? runLevelOutput) : IScheduledTaskInspector
+    {
+        public int Reads { get; private set; }
+
+        public bool Exists() => exists;
+
+        public Task<string?> ReadRunLevelAsync(CancellationToken cancellationToken)
+        {
+            Reads++;
+            return Task.FromResult(runLevelOutput);
+        }
+    }
+
+    [Fact]
+    public void The_task_xml_registers_least_privilege_at_the_limited_level()
+    {
+        string xml = WindowsDaemonAutostart.TaskXmlContent(AutostartRunLevel.Limited);
+
+        xml.Should().Contain("<RunLevel>LeastPrivilege</RunLevel>");
+        xml.Should().NotContain("HighestAvailable");
+    }
+
+    [Fact]
+    public void The_task_xml_registers_highest_available_at_the_highest_level()
+    {
+        string xml = WindowsDaemonAutostart.TaskXmlContent(AutostartRunLevel.Highest);
+
+        xml.Should().Contain("<RunLevel>HighestAvailable</RunLevel>");
+        xml.Should().NotContain("LeastPrivilege");
+    }
+
+    [Fact]
+    public void The_run_level_is_the_only_thing_the_task_xml_varies_on()
+    {
+        string limited = WindowsDaemonAutostart.TaskXmlContent(AutostartRunLevel.Limited);
+        string highest = WindowsDaemonAutostart.TaskXmlContent(AutostartRunLevel.Highest);
+
+        highest.Replace("HighestAvailable", "LeastPrivilege").Should().Be(limited);
+    }
+
+    [Fact]
+    public void The_run_level_query_reads_the_principal_through_get_scheduledtask()
+    {
+        WindowsDaemonAutostart.RunLevelQueryCommand().Should().Be(
+            "(Get-ScheduledTask -TaskPath '\\Hall9k\\' -TaskName 'h9kd').Principal.RunLevel.ToString()");
+    }
+
+    [Theory]
+    [InlineData("Highest", "Highest")]
+    [InlineData("Highest\r\n", "Highest")]
+    [InlineData("Limited", "Limited")]
+    [InlineData(" Limited \n", "Limited")]
+    [InlineData("", null)]
+    [InlineData("highest", null)]
+    [InlineData("LeastPrivilege", null)]
+    [InlineData("Get-ScheduledTask : No MSFT_ScheduledTask objects found", null)]
+    public void Only_highest_and_limited_are_read_from_the_powershell_output(string output, string? expected)
+    {
+        AutostartRunLevel? level = AutostartRunLevel.FromPowerShellOutput(output);
+
+        level?.PowerShellName.Should().Be(expected);
+        (level is null).Should().Be(expected is null);
+    }
+
+    [Theory]
+    [InlineData("highest", "Highest")]
+    [InlineData("LIMITED", "Limited")]
+    [InlineData("admin", null)]
+    [InlineData("", null)]
+    public void The_run_level_option_takes_highest_or_limited(string value, string? expected)
+    {
+        AutostartRunLevel? level = AutostartRunLevel.FromOptionValue(value);
+
+        level?.PowerShellName.Should().Be(expected);
+        (level is null).Should().Be(expected is null);
+    }
+
+    // Every combination of existing task, --run-level and shell elevation. null is "no --run-level".
+    // An expected level of null is a refusal.
+    [Theory]
+    [InlineData(false, false, null, null, "Limited")]
+    [InlineData(false, false, null, "highest", null)]
+    [InlineData(false, false, null, "limited", "Limited")]
+    [InlineData(false, true, null, null, "Limited")]
+    [InlineData(false, true, null, "highest", "Highest")]
+    [InlineData(false, true, null, "limited", "Limited")]
+    [InlineData(true, true, "Highest", null, "Highest")]
+    [InlineData(true, true, "Highest", "highest", "Highest")]
+    [InlineData(true, true, "Highest", "limited", "Limited")]
+    [InlineData(true, false, "Highest", null, null)]
+    [InlineData(true, false, "Highest", "highest", null)]
+    [InlineData(true, false, "Highest", "limited", "Limited")]
+    [InlineData(true, true, "Limited", null, "Limited")]
+    [InlineData(true, true, "Limited", "highest", "Highest")]
+    [InlineData(true, true, "Limited", "limited", "Limited")]
+    [InlineData(true, false, "Limited", null, "Limited")]
+    [InlineData(true, false, "Limited", "highest", null)]
+    [InlineData(true, false, "Limited", "limited", "Limited")]
+    [InlineData(true, true, "Interactive", null, null)]
+    [InlineData(true, true, "Interactive", "highest", "Highest")]
+    [InlineData(true, true, "Interactive", "limited", "Limited")]
+    [InlineData(true, false, "Interactive", null, null)]
+    [InlineData(true, false, "Interactive", "highest", null)]
+    [InlineData(true, false, "Interactive", "limited", "Limited")]
+    public async Task The_level_registered_follows_the_existing_task_the_option_and_the_elevation(
+        bool exists, bool elevated, string? runLevelOutput, string? option, string? expected)
+    {
+        FakeTaskInspector inspector = new(exists, runLevelOutput);
+        WindowsDaemonAutostart autostart = new(new FakeElevation(elevated), inspector);
+        AutostartRunLevel? requested = option is null
+            ? null
+            : AutostartRunLevel.FromOptionValue(option);
+
+        Func<Task<AutostartRunLevel>> resolve = () => autostart.ResolveRunLevelAsync(requested, CancellationToken.None);
+
+        if (expected is null)
+        {
+            await resolve.Should().ThrowAsync<InvalidOperationException>();
+        }
+        else
+        {
+            AutostartRunLevel level = await resolve();
+            level.PowerShellName.Should().Be(expected);
+        }
+    }
+
+    [Fact]
+    public async Task An_explicit_run_level_does_not_read_the_existing_task()
+    {
+        FakeTaskInspector inspector = new(exists: true, "Highest");
+        WindowsDaemonAutostart autostart = new(new FakeElevation(true), inspector);
+
+        await autostart.ResolveRunLevelAsync(AutostartRunLevel.Limited, CancellationToken.None);
+
+        inspector.Reads.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task An_absent_task_is_never_read_for_a_level()
+    {
+        FakeTaskInspector inspector = new(exists: false, runLevelOutput: null);
+        WindowsDaemonAutostart autostart = new(new FakeElevation(true), inspector);
+
+        await autostart.ResolveRunLevelAsync(requestedRunLevel: null, CancellationToken.None);
+
+        inspector.Reads.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Elevation_is_only_read_for_a_highest_registration()
+    {
+        FakeElevation elevation = new(elevated: false);
+        WindowsDaemonAutostart autostart = new(elevation, new FakeTaskInspector(exists: true, "Limited"));
+
+        await autostart.ResolveRunLevelAsync(requestedRunLevel: null, CancellationToken.None);
+
+        elevation.Reads.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Keeping_an_existing_highest_task_from_a_non_elevated_shell_is_refused_naming_both_ways_forward()
+    {
+        WindowsDaemonAutostart autostart = new(new FakeElevation(false), new FakeTaskInspector(true, "Highest"));
+
+        Func<Task> resolve = () => autostart.ResolveRunLevelAsync(requestedRunLevel: null, CancellationToken.None);
+
+        (await resolve.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should()
+            .Contain("Highest (HighestAvailable)")
+            .And.Contain("keeps that level")
+            .And.Contain("not elevated")
+            .And.Contain("Re-run from an elevated shell")
+            .And.Contain("--run-level limited");
+    }
+
+    [Fact]
+    public async Task Asking_for_highest_from_a_non_elevated_shell_is_refused_naming_both_ways_forward()
+    {
+        WindowsDaemonAutostart autostart = new(new FakeElevation(false), new FakeTaskInspector(false, null));
+
+        Func<Task> resolve = () => autostart.ResolveRunLevelAsync(AutostartRunLevel.Highest, CancellationToken.None);
+
+        (await resolve.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should()
+            .Contain("--run-level highest")
+            .And.Contain("Highest (HighestAvailable)")
+            .And.Contain("not elevated")
+            .And.Contain("Re-run from an elevated shell")
+            .And.Contain("--run-level limited to register it not elevated")
+            .And.NotContain("lower");
+    }
+
+    [Fact]
+    public async Task An_unreadable_existing_level_requires_an_explicit_run_level_and_says_why()
+    {
+        WindowsDaemonAutostart autostart = new(new FakeElevation(true), new FakeTaskInspector(true, null));
+
+        Func<Task> resolve = () => autostart.ResolveRunLevelAsync(requestedRunLevel: null, CancellationToken.None);
+
+        (await resolve.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should()
+            .Contain(WindowsDaemonAutostart.TaskName)
+            .And.Contain("could not be read")
+            .And.Contain("neither Highest nor Limited")
+            .And.Contain("--run-level highest")
+            .And.Contain("--run-level limited");
+    }
+
+    [Theory]
+    [InlineData("deferred")]
+    [InlineData("launchd")]
+    public void Run_level_is_refused_on_a_platform_that_is_not_windows(string platform)
+    {
+        IDaemonAutostart autostart = platform switch
+        {
+            "launchd" => new LaunchdDaemonAutostart(),
+            _ => new DeferredDaemonAutostart("not here"),
+        };
+
+        string? refusal = DaemonAutostartEnableCommand.RunLevelRefusal(autostart, "highest");
+
+        refusal.Should().Contain("--run-level").And.Contain("applies only to Windows");
+    }
+
+    [Fact]
+    public void Enable_without_run_level_is_not_refused_on_any_platform()
+    {
+        DaemonAutostartEnableCommand.RunLevelRefusal(new DeferredDaemonAutostart("not here"), runLevelOption: null)
+            .Should().BeNull();
+        DaemonAutostartEnableCommand.RunLevelRefusal(new LaunchdDaemonAutostart(), runLevelOption: null)
+            .Should().BeNull();
+    }
+
+    [Fact]
+    public void Run_level_is_accepted_by_the_windows_autostart()
+    {
+        WindowsDaemonAutostart windows = new(new FakeElevation(true), new FakeTaskInspector(false, null));
+
+        DaemonAutostartEnableCommand.RunLevelRefusal(windows, "highest").Should().BeNull();
+    }
+
+    [Fact]
+    public void A_run_level_option_that_is_neither_highest_nor_limited_fails_validation()
+    {
+        DaemonAutostartEnableCommand.Settings bad = new() { RunLevel = "admin" };
+        DaemonAutostartEnableCommand.Settings good = new() { RunLevel = "highest" };
+
+        bad.Validate().Successful.Should().BeFalse();
+        bad.Validate().Message.Should().Contain("highest").And.Contain("limited");
+        good.Validate().Successful.Should().BeTrue();
+        new DaemonAutostartEnableCommand.Settings().Validate().Successful.Should().BeTrue();
     }
 }

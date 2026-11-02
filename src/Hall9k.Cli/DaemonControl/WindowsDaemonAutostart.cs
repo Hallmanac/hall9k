@@ -44,6 +44,20 @@ namespace Hall9k.Cli.DaemonControl;
 /// </summary>
 public sealed class WindowsDaemonAutostart : IDaemonAutostart
 {
+    private readonly IProcessElevation _elevation;
+    private readonly IScheduledTaskInspector _inspector;
+
+    public WindowsDaemonAutostart()
+        : this(new WindowsProcessElevation(), new SchtasksTaskInspector())
+    {
+    }
+
+    internal WindowsDaemonAutostart(IProcessElevation elevation, IScheduledTaskInspector inspector)
+    {
+        _elevation = elevation;
+        _inspector = inspector;
+    }
+
     /// <summary>A Task Scheduler path, not a bare name — namespaced under its own folder the
     /// way launchd's reverse-DNS label namespaces the LaunchAgent.</summary>
     public const string TaskName = @"\Hall9k\h9kd";
@@ -91,7 +105,7 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     // claiming a Task Scheduler stop that never happened (cycle-2 pre-PR review finding).
     public string StopMechanismDescription => "a graceful stop request";
 
-    public bool IsEnabled => QueryExists();
+    public bool IsEnabled => _inspector.Exists();
 
     public async Task<bool> IsLoadedAsync(CancellationToken cancellationToken)
     {
@@ -118,9 +132,32 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     internal static string StateQueryCommand() =>
         $"(Get-ScheduledTask -TaskPath '{TaskFolder}' -TaskName '{TaskLeafName}').State.ToString()";
 
+    /// <summary>
+    /// The <c>Get-ScheduledTask</c> invocation that reads the existing task's run level, the
+    /// same unlocalized route <see cref="StateQueryCommand"/> takes for <c>State</c> (an enum
+    /// member name, never schtasks display text or an exception message). Only run once
+    /// <see cref="IsEnabled"/> has said the task exists: a missing task makes
+    /// <c>Get-ScheduledTask</c> throw a long CIM exception, which is not a level.
+    /// </summary>
+    internal static string RunLevelQueryCommand() =>
+        $"(Get-ScheduledTask -TaskPath '{TaskFolder}' -TaskName '{TaskLeafName}').Principal.RunLevel.ToString()";
+
     public async Task<IReadOnlyList<string>> EnableAsync(
         string daemonBinaryPath,
         IReadOnlyList<KeyValuePair<string, string>> environment,
+        CancellationToken cancellationToken) =>
+        (await EnableAsync(daemonBinaryPath, environment, requestedRunLevel: null, cancellationToken)).RecordedVariables;
+
+    /// <summary>
+    /// Registers the logon task at the run level <see cref="ResolveRunLevelAsync"/> chooses:
+    /// <paramref name="requestedRunLevel"/> when given, otherwise the existing task's level, and
+    /// <see cref="AutostartRunLevel.Limited"/> when there is no task. Refuses, before any file is
+    /// written or schtasks runs, a registration it cannot make or choose.
+    /// </summary>
+    public async Task<WindowsAutostartRegistration> EnableAsync(
+        string daemonBinaryPath,
+        IReadOnlyList<KeyValuePair<string, string>> environment,
+        AutostartRunLevel? requestedRunLevel,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -138,6 +175,8 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
                 + "Run h9k install first.");
         }
 
+        AutostartRunLevel runLevel = await ResolveRunLevelAsync(requestedRunLevel, cancellationToken);
+
         // Written before the task is registered, so the very first logon that fires the
         // trigger already finds a script in place — overwritten on every re-enable the same
         // way the task registration itself is (schtasks /Create /F).
@@ -153,7 +192,7 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
             cancellationToken);
 
         string xmlPath = Path.Combine(Path.GetTempPath(), $"hall9k-h9kd-task-{Path.GetRandomFileName()}.xml");
-        await File.WriteAllTextAsync(xmlPath, TaskXmlContent(), Encoding.Unicode, cancellationToken);
+        await File.WriteAllTextAsync(xmlPath, TaskXmlContent(runLevel), Encoding.Unicode, cancellationToken);
         try
         {
             ExecResult result = await Exec.RunAsync(
@@ -181,7 +220,82 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
             }
         }
 
-        return RecordedVariableNames(environment);
+        return new WindowsAutostartRegistration(RecordedVariableNames(environment), runLevel);
+    }
+
+    /// <summary>
+    /// The level a registration is made at. An explicit <paramref name="requestedRunLevel"/>
+    /// wins; otherwise the existing task's level is kept, and a first enable registers
+    /// <see cref="AutostartRunLevel.Limited"/> whatever the shell's elevation, so a habit of
+    /// opening administrator terminals never quietly makes every dispatched agent an administrator.
+    /// </summary>
+    internal async Task<AutostartRunLevel> ResolveRunLevelAsync(
+        AutostartRunLevel? requestedRunLevel, CancellationToken cancellationToken)
+    {
+        ExistingTaskLevel existing = ExistingTaskLevel.Absent;
+        if (requestedRunLevel is null && _inspector.Exists())
+        {
+            string? output = await _inspector.ReadRunLevelAsync(cancellationToken);
+            AutostartRunLevel? read = output is null
+                ? null
+                : AutostartRunLevel.FromPowerShellOutput(output);
+            existing = read switch
+            {
+                not null when read == AutostartRunLevel.Highest => ExistingTaskLevel.Highest,
+                not null when read == AutostartRunLevel.Limited => ExistingTaskLevel.Limited,
+                _ => ExistingTaskLevel.Unreadable,
+            };
+        }
+
+        return ChooseRunLevel(requestedRunLevel, existing, _elevation.IsElevated);
+    }
+
+    /// <summary>
+    /// The pure half of <see cref="ResolveRunLevelAsync"/>: which level a registration is made at
+    /// for an existing task, a <c>--run-level</c>, and the shell's elevation, or an
+    /// <see cref="InvalidOperationException"/> carrying the refusal. <paramref name="isElevated"/>
+    /// is only called when the answer is <see cref="AutostartRunLevel.Highest"/>.
+    /// </summary>
+    internal static AutostartRunLevel ChooseRunLevel(
+        AutostartRunLevel? requestedRunLevel, ExistingTaskLevel existing, Func<bool> isElevated)
+    {
+        AutostartRunLevel? chosen = requestedRunLevel ?? existing switch
+        {
+            ExistingTaskLevel.Absent or ExistingTaskLevel.Limited => AutostartRunLevel.Limited,
+            ExistingTaskLevel.Highest => AutostartRunLevel.Highest,
+            _ => null,
+        };
+
+        if (chosen is null)
+        {
+            throw new InvalidOperationException(
+                $"The existing {TaskName} task's run level could not be read (or is neither Highest nor Limited), "
+                + "so enable cannot tell which level to keep. Pass --run-level highest or --run-level limited "
+                + "to say which level to register.");
+        }
+
+        if (chosen == AutostartRunLevel.Highest && !isElevated())
+        {
+            (string origin, string alternative) = requestedRunLevel is null
+                ? ($"The existing {TaskName} task runs at Highest (HighestAvailable), and enable keeps that level",
+                    "to lower the level on purpose")
+                : ("--run-level highest registers the task at Highest (HighestAvailable)",
+                    "to register it not elevated");
+            throw new InvalidOperationException(
+                $"{origin}, but this shell is not elevated, and a Highest registration is refused from a "
+                + $"non-elevated shell. Re-run from an elevated shell, or pass --run-level limited {alternative}.");
+        }
+
+        return chosen;
+    }
+
+    /// <summary>What <see cref="ResolveRunLevelAsync"/> found registered.</summary>
+    internal enum ExistingTaskLevel
+    {
+        Absent,
+        Unreadable,
+        Highest,
+        Limited,
     }
 
     /// <summary>
@@ -352,7 +466,7 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     // (cycle-3 pre-PR review finding). A single task's /Query output is far under the pipe
     // buffer, so reading it synchronously here carries none of the full-buffer deadlock risk
     // commit 8b44e6c avoided for QueryExists' own call site.
-    private static bool QueryExists()
+    internal static bool QueryExists()
     {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
@@ -411,6 +525,10 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// exit); ExecutionTimeLimit is set to PT0S (unlimited) because Task Scheduler's
     /// default of 72 hours would otherwise kill a daemon meant to run indefinitely.
     /// <para>
+    /// The principal's <c>RunLevel</c> is the one thing that varies: <paramref name="runLevel"/>'s
+    /// <see cref="AutostartRunLevel.TaskXmlValue"/>, chosen by <see cref="ResolveRunLevelAsync"/>.
+    /// </para>
+    /// <para>
     /// The action is <c>wscript.exe</c> running <see cref="LaunchScriptFile"/>, never cmd.exe
     /// directly: there is no Task Scheduler setting that suppresses a console window for an
     /// action process (<c>&lt;Hidden&gt;</c> hides the task from the Task Scheduler UI, not
@@ -433,7 +551,7 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// dismiss it.
     /// </para>
     /// </summary>
-    internal static string TaskXmlContent()
+    internal static string TaskXmlContent(AutostartRunLevel runLevel)
     {
         string arguments = SecurityElement.Escape($"//B \"{LaunchScriptFile}\"");
         string userId = SecurityElement.Escape(CurrentUserId());
@@ -453,7 +571,7 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
               <Principals>
                 <Principal id="Author">
                   <LogonType>InteractiveToken</LogonType>
-                  <RunLevel>LeastPrivilege</RunLevel>
+                  <RunLevel>{runLevel.TaskXmlValue}</RunLevel>
                 </Principal>
               </Principals>
               <Settings>

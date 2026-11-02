@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Diagnostics;
 using Hall9k.Cli.Infrastructure;
@@ -14,11 +15,44 @@ namespace Hall9k.Cli.Commands;
 /// </summary>
 public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAutostartEnableCommand.Settings>
 {
-    public sealed class Settings : CommandSettings;
+    public sealed class Settings : CommandSettings
+    {
+        [CommandOption("--run-level <LEVEL>")]
+        [Description(
+            "Windows only: the privilege level of the \\Hall9k\\h9kd logon task, and so of every daemon start that goes "
+            + "through it (logon, and h9k daemon start without --binary). 'highest' registers HighestAvailable, which "
+            + "makes the daemon and every agent it dispatches run as an administrator, and is refused from a shell "
+            + "that is not elevated; 'limited' registers LeastPrivilege. Without it, enable keeps the existing task's "
+            + "level, and registers 'limited' when there is no task, whatever this shell's elevation")]
+        public string? RunLevel { get; init; }
+
+        public override ValidationResult Validate() =>
+            RunLevel is not null && AutostartRunLevel.FromOptionValue(RunLevel) is null
+                ? ValidationResult.Error(
+                    $"--run-level takes '{AutostartRunLevel.Highest.OptionValue}' or '{AutostartRunLevel.Limited.OptionValue}', "
+                    + $"not '{RunLevel}'.")
+                : ValidationResult.Success();
+    }
+
+    /// <summary>
+    /// The refusal for <c>--run-level</c> on a platform whose autostart has no run level to set,
+    /// or <c>null</c> when the option is absent or the platform is Windows.
+    /// </summary>
+    internal static string? RunLevelRefusal(IDaemonAutostart autostart, string? runLevelOption) =>
+        runLevelOption is not null && autostart is not WindowsDaemonAutostart
+            ? "--run-level applies only to Windows, where autostart is a Task Scheduler logon task with a run level. "
+                + "It has nothing to set here; run h9k daemon autostart enable without it."
+            : null;
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         IDaemonAutostart autostart = DaemonAutostart.ForCurrentPlatform();
+        if (RunLevelRefusal(autostart, settings.RunLevel) is { } runLevelRefusal)
+        {
+            await Console.Error.WriteLineAsync(runLevelRefusal);
+            return ExitCodes.Error;
+        }
+
         if (!autostart.IsSupported)
         {
             await Console.Error.WriteLineAsync(autostart.NotSupportedMessage);
@@ -43,9 +77,23 @@ public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAuto
         // autostarted daemon runs but cannot find claude or gh.
         IReadOnlyList<KeyValuePair<string, string>> environment = DaemonEnvironment.Capture();
         IReadOnlyList<string> recordedVariables;
+        AutostartRunLevel? registeredRunLevel = null;
         try
         {
-            recordedVariables = await autostart.EnableAsync(installedBinary, environment, cancellationToken);
+            if (autostart is WindowsDaemonAutostart windows)
+            {
+                AutostartRunLevel? requested = settings.RunLevel is null
+                    ? null
+                    : AutostartRunLevel.FromOptionValue(settings.RunLevel);
+                WindowsAutostartRegistration registration =
+                    await windows.EnableAsync(installedBinary, environment, requested, cancellationToken);
+                recordedVariables = registration.RecordedVariables;
+                registeredRunLevel = registration.RunLevel;
+            }
+            else
+            {
+                recordedVariables = await autostart.EnableAsync(installedBinary, environment, cancellationToken);
+            }
         }
         catch (InvalidOperationException exception)
         {
@@ -56,6 +104,12 @@ public sealed class DaemonAutostartEnableCommand : Hall9kAsyncCommand<DaemonAuto
 
         AnsiConsole.MarkupLineInterpolated(
             $"[green]Autostart enabled[/]: {autostart.MechanismDescription} registered.");
+        if (registeredRunLevel is not null)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Registered at {registeredRunLevel.TaskXmlValue} ({registeredRunLevel.Description}): every daemon start that goes through the task, at logon and from h9k daemon start without --binary, runs at that level.[/]");
+        }
+
         AnsiConsole.MarkupLine(
             "[dim]h9kd starts at your next login and restarts after a crash (never after a clean stop). "
             + "Nothing was started now — h9k daemon start does that. Undo with h9k daemon autostart disable.[/]");
