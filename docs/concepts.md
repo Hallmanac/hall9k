@@ -1684,9 +1684,50 @@ of many: it is zero once the feed has been quiet for ten minutes, and ramps up t
 `h9k project set <name> --courier-max-wait`, sixty seconds by default — the more recently
 something new has landed. A park, a dispute, daemon trouble, a message from a person, or a reply to a review you left
 dispatches at once regardless of that wait, as does another owner ending one of your tasks; a per-day spawn cap (five hundred by default) is the
-backstop against a genuine storm even of those. A manual `h9k orchestrator feed --drain` holds a
+last-resort guard against a genuine storm even of those, sitting behind the failure backoff below. A manual `h9k orchestrator feed --drain` holds a
 short lease on the project's own cursor while it runs, and the courier never spawns into that
 window.
+
+**Repeated failures back off, and are visible.** A courier can fail for reasons nothing in the feed
+shows: a window registered under a session name the mesh cannot resolve, a daemon and a window
+running at different privilege levels, a session that ends without an outcome line. Respawning one
+every minute until the day cap is spent would cost real money and say nothing, so each project
+keeps a failure streak. After *n* failed couriers in a row the wait before the next is
+`min(base x 2^(n-1), ceiling)`, where the base is the project's courier max wait but never less
+than sixty seconds (so a max wait of zero no longer lets a failing project respawn on every ten
+second sweep tick) and the ceiling is `Hall9k__CourierFailureBackoffCeiling`, thirty minutes by
+default and never less than the base. At the defaults the waits run one, two, four, eight and
+sixteen minutes and then thirty, so a project that never delivers spends about fifty couriers a
+day rather than the five hundred the cap allows. Every failure counts, whatever its reason: a
+failed marker, a timeout, a session that ended without an outcome line, or a daemon error. During a
+streak the ordinary quiet-based ramp never applies, since it would fall to zero as the stuck item
+aged.
+
+The streak lives in the daemon's database, one small document per project, so a daemon restart or
+`h9k update --restart` does not lose it and the CLI describes it without needing the daemon's
+options. It resets to zero when a courier delivers, and when an orchestrator registers for the
+project with a launch time newer than the streak's last failure. A register from the same process
+with the same session name and CLI appends nothing and so resets nothing; one that changes the
+session name or the CLI, a new window, or a `--replace` appends a new launch and does reset it,
+because the address the couriers deliver to has changed. A courier the daemon itself ended, stopped
+at shutdown or adopted as stranded after a crash, neither counts toward the streak nor resets it,
+but it holds the next spawn off for one step from its own completion, so nothing spawns at once
+after a restart. The first sweep tick after the daemon starts then pulls the next attempt in to no
+later than that tick plus the base wait, leaving the count alone: a restart that fixed the cause is
+confirmed within about a minute, and a crash loop still gets at most one courier per restart.
+
+An urgent item gets one early attempt through the backoff. If it is newer than anything a failed
+courier of the streak carried, it may spawn a courier at any step once at least the base wait has
+passed since the last courier completed. That attempt does not reset the doubling: if it fails the
+next wait is the next step up, and since that courier carried the item it gets no second bypass, so
+a burst of urgent items spawns at most one courier per base interval. With no streak running,
+urgent items bypass the wait exactly as before.
+
+Failure is visible in two places. The courier line of `h9k status` reads `failing`, with the
+count, when the streak began, when the next try is, and the last reason; and `h9k doctor` has a
+courier section that warns on a streak of five or more, on a spent day cap, and on a feed item
+left undrained for over an hour under a live window. Both are described in
+[cli.md's Orchestrator windows](cli.md#orchestrator-windows).
 
 **The courier's own prompt is deliberately small** — no recipe, no AGENTS.md, none of the
 repository context an ordinary dispatch carries. It is the feed items exactly as `--drain` itself
