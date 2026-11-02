@@ -18,6 +18,10 @@ namespace Hall9k.Domain.Features.Plan.Events;
 /// <param name="StartedByOwnerId">Who started the plan, who gave any attestation, and who is recorded as the publisher.</param>
 /// <param name="StartedAt">When the verb was run.</param>
 /// <param name="IdeaId">The idea a plan started with <c>--idea</c> runs discovery on, or null for a plan started from drafts.</param>
+/// <param name="FeedbackStepTaskId">
+/// The task whose feedback step this plan carries, or null for an ordinary plan. The daemon starts such a plan itself, for one
+/// draft, with the cap of one challenge round and the purposes that fit a task that was already published once.
+/// </param>
 public sealed record PlanStarted(
     Guid Id,
     Guid ProjectId,
@@ -27,4 +31,5 @@ public sealed record PlanStarted(
     bool UntrackedAttested,
     Guid StartedByOwnerId,
     DateTimeOffset StartedAt,
-    Guid? IdeaId = null);
+    Guid? IdeaId = null,
+    Guid? FeedbackStepTaskId = null);

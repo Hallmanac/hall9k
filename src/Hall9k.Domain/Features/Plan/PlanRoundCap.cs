@@ -9,4 +9,7 @@ public static class PlanRoundCap
 {
     /// <summary>Two: none of the 27 verdicts recorded before plans existed was a flat do not publish, and only one draft ever had a second challenge.</summary>
     public const int Default = 2;
+
+    /// <summary>One: a task's feedback step refines, challenges once, and judges that verdict; a do not publish verdict parks it for a person.</summary>
+    public const int FeedbackStep = 1;
 }

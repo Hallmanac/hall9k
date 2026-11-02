@@ -2,8 +2,10 @@ using System.Collections.Concurrent;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Challenge;
 using Hall9k.Daemon.Execution;
+using Hall9k.Daemon.Feedback;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
@@ -73,7 +75,8 @@ public sealed class PlanEngine(
     LaunchHoldEngine launchHold,
     DaemonConnection connection,
     IOptions<DaemonOptions> options,
-    ILogger<PlanEngine> logger) : IDisposable
+    ILogger<PlanEngine> logger,
+    LocalFleetProvider? fleets = null) : IDisposable
 {
     /// <summary>How long the shutdown path gets to record an outcome: it runs while the daemon is stopping.</summary>
     private static readonly TimeSpan ShutdownRecordTimeout = TimeSpan.FromSeconds(5);
@@ -111,7 +114,8 @@ public sealed class PlanEngine(
         string Prompt,
         AgentModel Model,
         AgentEffort Effort,
-        IReadOnlyList<SolutionMemberTask>? MemberTasks);
+        IReadOnlyList<SolutionMemberTask>? MemberTasks,
+        bool FeedbackStep = false);
 
     /// <summary>What recording a session's end is told: how it ended and what it cost.</summary>
     private sealed record SessionEnd(
@@ -282,7 +286,7 @@ public sealed class PlanEngine(
             {
                 return await SavePlanAsync(
                     session, fence, PlanDecider.AfterChallenge(
-                        plan, draft, outcome, _options.PlanRoundCap, now,
+                        plan, draft, outcome, plan.IsFeedbackStep ? PlanRoundCap.FeedbackStep : _options.PlanRoundCap, now,
                         draftChangedSinceJudged: task.LatestChallengeVerdictJudgedOlderDraft || task.RevisedSinceLastDraftSession),
                     cancellationToken);
             }
@@ -350,6 +354,17 @@ public sealed class PlanEngine(
             if (!startable)
             {
                 continue;
+            }
+
+            // A feedback step's plan asks for one challenge, ever, however the draft came back to challenge (a person's resume
+            // included). A second ask parks the plan instead, and the park never reaches a session or a challenge.
+            if (step == PlanStepKind.RequestChallenge && !PlanDecider.MayRequestChallenge(plan, draft))
+            {
+                logger.LogWarning(
+                    "Plan {PlanId}: draft {DraftId} would be challenged a second time, which a feedback step never does; parking it",
+                    plan.Id, draft.DraftId);
+                return await SavePlanAsync(
+                    session, fence, [PlanDecider.ParkOneChallengeOnly(plan, draft, now)], cancellationToken);
             }
 
             if (await LaunchGateAsync(session, plan, project, cancellationToken) is not null)
@@ -573,7 +588,7 @@ public sealed class PlanEngine(
         // read, so applying the verdict to it would publish it unjudged. The plan parks as draft changed; when a person has
         // already resumed a park on this draft (the revision is what they resumed for) it goes straight back to a challenge
         // of the draft as it now stands instead of parking a second time for the same thing.
-        if (purpose == RefinementPurpose.ApplyVerdict && aggregate.RevisedSinceLastDraftSession)
+        if ((purpose == RefinementPurpose.ApplyVerdict || purpose == RefinementPurpose.JudgeVerdict) && aggregate.RevisedSinceLastDraftSession)
         {
             if (draft.ResumedFromPark)
             {
@@ -645,11 +660,22 @@ public sealed class PlanEngine(
             IReadOnlyList<SiblingDraftFacts> siblings = await SiblingsOfAsync(session, plan, taskId, cancellationToken);
             string? discoveryReport = await DiscoveryReportOfAsync(session, plan, cancellationToken);
             IReadOnlyList<SolutionMemberTask>? memberTasks = await OtherMemberTasksOfAsync(session, current, cancellationToken);
+
+            // A feedback step's session is told why the task is back in Draft: the notes its blockers left, read the way the
+            // check read them, so a note the trust rule holds back is in neither prompt.
+            FeedbackStepPromptFacts? feedback = plan.IsFeedbackStep && current.FeedbackStep is { } started
+                ? new FeedbackStepPromptFacts(await FeedbackNotes.LoadAsync(
+                    session, started.BlockerIds, node.NodeId,
+                    fleets is null
+                        ? null
+                        : async token => (await fleets.GetAsync(project.Id, token))?.NodeIds,
+                    cancellationToken))
+                : null;
             string prompt = AgentPromptBuilder.BuildPlanRefinement(
                 current, project,
                 new PlanRefinementPromptFacts(
                     purpose, projectHome, checkout, commit, refresh, reportPath, revisionPath, sessionDirectory, ideaWorkspace,
-                    journal, journalToWrite, prior, siblings, discoveryReport, memberTasks));
+                    journal, journalToWrite, prior, siblings, discoveryReport, memberTasks, feedback));
 
             // Recorded before anything is spawned, RunLauncher's order, and on both streams in one save: committing first
             // is what makes a crash lose too, and the plan never claims a session the task does not know about.
@@ -671,7 +697,8 @@ public sealed class PlanEngine(
             }
 
             RefinementJob job = new(
-                plan.Id, taskId, sessionId, purpose, checkout, sessionDirectory, reportPath, revisionPath, prompt, model, effort, memberTasks);
+                plan.Id, taskId, sessionId, purpose, checkout, sessionDirectory, reportPath, revisionPath, prompt, model, effort, memberTasks,
+                plan.IsFeedbackStep);
             CancellationTokenSource cancel = new();
             TaskCompletionSource finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
             _sessions[sessionId] = new RunningSession(plan.Id, taskId, cancel, finished);
@@ -887,6 +914,18 @@ public sealed class PlanEngine(
 
         try
         {
+            // A feedback step changes the objective, criteria, and context and nothing else: a revision that names a dependency,
+            // a stack link, a type, an epic, or a model is refused whole, and the step parks for a person.
+            if (job.FeedbackStep && FeedbackRevisionRules.FirstKeyBeyondText(text) is { } beyond)
+            {
+                logger.LogWarning(
+                    "Draft {TaskId}: the revision of a feedback step names {Key}, which a feedback step does not change; refused", job.TaskId, beyond);
+                await WriteRefusalAsync(
+                    job, $"The revision names {beyond}, and a feedback step changes only the objective, criteria, and context, so it was not applied.",
+                    cancellationToken);
+                return RefinementFailureReason.RevisionBeyondText;
+            }
+
             if (FrontmatterYaml.Parse(text).Scalar("model").IsNotBlank())
             {
                 logger.LogWarning("Draft {TaskId}: the revision names a model, which a refinement does not set; refused", job.TaskId);
@@ -1037,7 +1076,9 @@ public sealed class PlanEngine(
             ? PlanParkReason.DraftChanged
             : failure == RefinementFailureReason.RevisionRefused
                 ? PlanParkReason.RevisionRefused
-                : PlanParkReason.SessionFailed;
+                : failure == RefinementFailureReason.RevisionBeyondText
+                    ? PlanParkReason.RevisionBeyondText
+                    : PlanParkReason.SessionFailed;
 
     /// <summary>
     /// The live plan whose draft was running this session (or, for a dispatch refused before any session, the live plan

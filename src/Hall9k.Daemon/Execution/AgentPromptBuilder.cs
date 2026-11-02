@@ -4858,6 +4858,24 @@ public static class AgentPromptBuilder
             AppendMemberTasks(prompt, file, memberTasks);
         }
 
+        if (facts.FeedbackStep is { } feedback)
+        {
+            prompt.AppendLine();
+            prompt.AppendLine(Fragment(file, "feedback-heading"));
+            prompt.AppendLine();
+            prompt.AppendLine(Fragment(file, "feedback-intro"));
+            prompt.AppendLine();
+            prompt.AppendLine(Fragment(file, "feedback-notes-intro"));
+            prompt.AppendLine(RelayedText.Fenced(string.Join(
+                '\n', feedback.Notes.Notes.Select(note => $"{note.ShortTaskId}: {OneLine(note.Text)}"))));
+            if (feedback.Notes.LeftOut > 0)
+            {
+                prompt.AppendLine();
+                prompt.AppendLine(Fragment(
+                    file, "feedback-notes-left-out", ("Count", feedback.Notes.LeftOut.ToString(CultureInfo.InvariantCulture))));
+            }
+        }
+
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "purpose-heading"));
         prompt.AppendLine();
@@ -4870,6 +4888,10 @@ public static class AgentPromptBuilder
         {
             "ApplyVerdict" => Fragment(file, "purpose-apply", ("QuestionPlace", questionPlace)),
             "AnswerVerdict" => Fragment(file, facts.JournalToWrite is null ? "purpose-answer-no-journal" : "purpose-answer"),
+            "FeedbackRefine" => Fragment(file, "purpose-feedback-refine"),
+            "JudgeVerdict" => facts.JournalToWrite is null
+                ? Fragment(file, "purpose-judge-no-journal")
+                : Fragment(file, "purpose-judge", ("JournalToWrite", OneLine(facts.JournalToWrite))),
             _ when facts.PriorVerdict is not null => Fragment(file, "purpose-refine-again"),
             _ => Fragment(file, "purpose-refine"),
         });
@@ -4891,7 +4913,21 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "job-heading"));
         prompt.AppendLine();
-        AppendFragment(prompt, file, "job", ("QuestionPlace", questionPlace));
+        if (facts.Purpose == RefinementPurpose.JudgeVerdict)
+        {
+            AppendFragment(prompt, file, "job-judge");
+        }
+        else
+        {
+            AppendFragment(prompt, file, "job", ("QuestionPlace", questionPlace));
+        }
+
+        if (facts.FeedbackStep is not null && facts.Purpose == RefinementPurpose.FeedbackRefine)
+        {
+            prompt.AppendLine();
+            prompt.AppendLine(Fragment(file, "feedback-scope"));
+        }
+
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "rules-heading"));
         prompt.AppendLine();
@@ -4915,7 +4951,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine(Fragment(file, "report-heading"));
         prompt.AppendLine();
         AppendFragment(
-            prompt, file, "report",
+            prompt, file, facts.FeedbackStep is null ? "report" : "report-feedback",
             ("ReportPath", OneLine(facts.ReportPath)),
             ("RevisionPath", OneLine(facts.RevisionPath)),
             ("OutcomeMarker", Plan.RefinementReport.OutcomeMarker),

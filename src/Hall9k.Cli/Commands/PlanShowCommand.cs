@@ -44,7 +44,8 @@ public sealed class PlanShowCommand : Hall9kAsyncCommand<PlanShowCommand.Setting
         DiscoveryShowFacts? discovery = await ReadDiscoveryAsync(session, plan, project, cancellationToken);
         foreach (string line in PlanShowComposer.Compose(
             plan, project, drafts.ToDictionary(task => task.Id),
-            new PlanShowFacts(DaemonProcess.Probe() is not null, gate, discovery), PlanRoundCap.Default))
+            new PlanShowFacts(DaemonProcess.Probe() is not null, gate, discovery),
+            plan.IsFeedbackStep ? PlanRoundCap.FeedbackStep : PlanRoundCap.Default))
         {
             AnsiConsole.MarkupLine(line);
         }
