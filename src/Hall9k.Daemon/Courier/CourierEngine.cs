@@ -179,21 +179,31 @@ public sealed class CourierEngine(
         CourierBackoffWaits waits = CourierBackoffWaits.For(
             project.CourierMaxWaitSeconds, _options.CourierFailureBackoffCeiling);
 
-        CourierFailureStreak? streak = await session.LoadAsync<CourierFailureStreak>(project.Id, cancellationToken);
-        if (CourierFailureStreak.WasResetByRegistration(streak, presence.LaunchedAt))
-        {
-            // A window that registered after the streak's last failure has a delivery address the
-            // failed couriers never tried: the streak says nothing about it. An unchanged same-pid
-            // register appends no launch at all, so it never lands here.
-            session.Delete<CourierFailureStreak>(project.Id);
-            await session.SaveChangesAsync(cancellationToken);
-            streak = null;
-        }
-
         CourierRunDetails? lastRun = await session.Query<CourierRunDetails>()
             .Where(run => run.ProjectId == project.Id)
             .OrderByDescending(run => run.DispatchedAt)
             .FirstOrDefaultAsync(cancellationToken);
+
+        CourierFailureStreak? streak = await session.LoadAsync<CourierFailureStreak>(project.Id, cancellationToken);
+        if (streak is not null && CourierFailureStreak.WasResetByRegistration(streak, presence.LaunchedAt))
+        {
+            // A window that registered after the one the last failed courier addressed has a
+            // delivery address the failed couriers never tried: the streak says nothing about it.
+            // An unchanged same-pid register appends no launch at all, so it never lands here. A
+            // courier the daemon ended after that failure still keeps its own hold, since the
+            // window may have registered only after that ending was written.
+            streak = CourierFailureStreak.AfterRegistrationReset(streak, lastRun?.CompletedAt, waits);
+            if (streak is null)
+            {
+                session.Delete<CourierFailureStreak>(project.Id);
+            }
+            else
+            {
+                session.Store(streak);
+            }
+
+            await session.SaveChangesAsync(cancellationToken);
+        }
         bool courierAlreadyRunning = false;
         if (lastRun is { CompletedAt: null } running)
         {
@@ -215,7 +225,8 @@ public sealed class CourierEngine(
                     "The daemon that dispatched this courier never recorded how it ended (a stop, a "
                     + "crash, or an unclean shutdown); marked failed after it stood past its own "
                     + "timeout so future couriers for this project are not blocked.",
-                    drainableThroughSequence: 0, result: null, now, waits, failureReason: null, cancellationToken);
+                    drainableThroughSequence: 0, result: null, now, waits, failureReason: null,
+                    addressedLaunchAt: null, cancellationToken);
                 streak = await session.LoadAsync<CourierFailureStreak>(project.Id, cancellationToken);
 
                 // running is the same object lastRun points at, and RecordOutcomeAsync just wrote
@@ -493,7 +504,8 @@ public sealed class CourierEngine(
 
         await RecordOutcomeAsync(
             store, project.Id, runId, model, delivered ? CourierEnding.Delivered : CourierEnding.Failed, outcome,
-            read.DrainableThroughSequence, result, DateTimeOffset.UtcNow, waits, failureReason, cancellationToken);
+            read.DrainableThroughSequence, result, DateTimeOffset.UtcNow, waits, failureReason,
+            presence.LaunchedAt, cancellationToken);
 
         logger.LogInformation(
             "Project {ProjectName}: feed courier {Outcome}",
@@ -520,7 +532,7 @@ public sealed class CourierEngine(
                 store, projectId, runId, model, CourierEnding.EndedByDaemon,
                 "The daemon stopped while this courier was running, and it was stopped with it.",
                 drainableThroughSequence: 0, result: null, DateTimeOffset.UtcNow, waits, failureReason: null,
-                shutdown.Token);
+                addressedLaunchAt: null, shutdown.Token);
         }
         catch (Exception exception)
         {
@@ -566,6 +578,7 @@ public sealed class CourierEngine(
         DateTimeOffset completedAt,
         CourierBackoffWaits waits,
         string? failureReason,
+        DateTimeOffset? addressedLaunchAt,
         CancellationToken cancellationToken)
     {
         bool delivered = ending == CourierEnding.Delivered;
@@ -588,6 +601,7 @@ public sealed class CourierEngine(
             // In the same session as the completion, so a run never reads as finished with its
             // streak unwritten, nor the streak as moved for a run that never completed.
             CourierFailureStreak? existing = await completion.LoadAsync<CourierFailureStreak>(projectId, cancellationToken);
+            CourierRunDetails? dispatched = await completion.LoadAsync<CourierRunDetails>(runId, cancellationToken);
             switch (ending)
             {
                 case CourierEnding.Delivered:
@@ -598,11 +612,27 @@ public sealed class CourierEngine(
 
                     break;
                 case CourierEnding.Failed:
+                    // The registration this courier's own address came from, not the time it was
+                    // dispatched: the sweep reads presence before the tick's clock starts, so a
+                    // window registering in between would otherwise read as one this courier tried.
+                    // The dispatch time stands in only when the snapshot carried no launch time.
                     completion.Store(CourierFailureStreak.AfterFailure(
-                        existing, projectId, completedAt, failureReason, drainableThroughSequence, waits));
+                        existing, projectId, completedAt,
+                        addressedLaunchAt ?? dispatched?.DispatchedAt ?? completedAt, failureReason,
+                        drainableThroughSequence, waits));
                     break;
                 case CourierEnding.EndedByDaemon:
-                    completion.Store(CourierFailureStreak.AfterDaemonEnding(existing, projectId, completedAt, waits));
+                    // The window may have re-registered while this courier was in flight, which the
+                    // next tick would treat as a reset and delete the whole document, this ending's
+                    // hold with it. Applying that reset here instead keeps the hold: the failure
+                    // count goes to zero and the next attempt is still one step after this ending.
+                    OrchestratorPresenceDetails? presence = dispatched is null
+                        ? null
+                        : await completion.LoadAsync<OrchestratorPresenceDetails>(
+                            OrchestratorPresenceStreamId.For(dispatched.NodeId, projectId), cancellationToken);
+                    CourierFailureStreak? carried =
+                        CourierFailureStreak.WasResetByRegistration(existing, presence?.LaunchedAt) ? null : existing;
+                    completion.Store(CourierFailureStreak.AfterDaemonEnding(carried, projectId, completedAt, waits));
                     break;
             }
 

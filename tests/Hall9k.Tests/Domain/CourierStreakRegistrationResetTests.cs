@@ -89,11 +89,4 @@ public sealed class CourierStreakRegistrationResetTests
 
         CourierFailureStreak.WasResetByRegistration(StreakFailingSince9(), LaunchedAtAfter(decision)).Should().BeTrue();
     }
-
-    [Fact]
-    public void A_register_made_before_the_last_failure_does_not_reset()
-    {
-        // A window that registered during the run that then failed is part of that failure.
-        CourierFailureStreak.WasResetByRegistration(StreakFailingSince9(), LastFailureAt.AddMinutes(-1)).Should().BeFalse();
-    }
 }
