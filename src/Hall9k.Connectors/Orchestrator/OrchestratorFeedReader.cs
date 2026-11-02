@@ -77,13 +77,34 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
         CancellationToken cancellationToken)
     {
         long cursor = await CursorAsync(session, projectId, cancellationToken);
+        return await ReadUndrainedAfterAsync(session, projectId, level, runningVersion, cursor, now, cancellationToken);
+    }
+
+    /// <summary>
+    /// The undrained items past <paramref name="afterSequence"/> rather than past the stored
+    /// cursor, which never moves the cursor. A read-only caller (<c>h9k doctor</c>) pages a feed
+    /// whose first capped scan came back empty by passing the previous page's
+    /// <see cref="OrchestratorFeedRead.DrainableThroughSequence"/> here, so it can reach an item
+    /// a long run of unrelated events sits ahead of without draining anything.
+    /// </summary>
+    /// <param name="afterSequence">Only events with a global sequence above this are scanned.</param>
+    /// <inheritdoc cref="ReadUndrainedAsync" path="/param[@name='runningVersion' or @name='now']"/>
+    public async Task<OrchestratorFeedRead> ReadUndrainedAfterAsync(
+        IQuerySession session,
+        Guid projectId,
+        OrchestratorFeedLevel level,
+        string runningVersion,
+        long afterSequence,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
         IReadOnlyList<IEvent> raw = await session.Events.QueryAllRawEvents()
-            .Where(e => e.Sequence > cursor)
+            .Where(e => e.Sequence > afterSequence)
             .OrderBy(e => e.Sequence)
             .Take(MaxEventsPerRead)
             .ToListAsync(cancellationToken);
 
-        return await SelectAsync(session, projectId, level, runningVersion, raw, cursor, now, cancellationToken);
+        return await SelectAsync(session, projectId, level, runningVersion, raw, afterSequence, now, cancellationToken);
     }
 
     /// <summary>

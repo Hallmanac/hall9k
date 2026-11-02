@@ -663,7 +663,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                     .OrderByDescending(run => run.CompletedAt)
                     .FirstOrDefaultAsync(cancellationToken);
                 DateTimeOffset? lastDeliveredAt = lastDelivered?.CompletedAt;
-                if (CourierStatusLine.Describe(inFlight, lastDeliveredAt, now) is { } courierLine)
+                CourierStatusFacts courierFacts = new(
+                    inFlight,
+                    lastDeliveredAt,
+                    await session.LoadAsync<CourierFailureStreak>(presence.ProjectId, cancellationToken),
+                    await session.LoadAsync<CourierDaySpawnCounter>(presence.ProjectId, cancellationToken),
+                    presence.Registered,
+                    presence.LaunchedAt);
+                if (CourierStatusLine.Describe(courierFacts, now) is { } courierLine)
                 {
                     AnsiConsole.MarkupLineInterpolated($"[dim]{project?.Name ?? "unknown project"} {courierLine}[/]");
                 }
