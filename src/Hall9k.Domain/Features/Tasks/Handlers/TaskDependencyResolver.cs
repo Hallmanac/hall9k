@@ -2,6 +2,7 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
+using JasperFx.Events;
 using Marten;
 using Marten.Linq.MatchesSql;
 
@@ -158,10 +159,26 @@ public static class TaskDependencyResolver
             // and a node that does see the blocker would lift it again next cycle. Those ids record
             // nothing and the dependent stays Blocked; the surfaces name them as unknown blockers.
             IReadOnlySet<Guid> purgedHere = await PurgedHereAsync(session, missingDependencyIds, cancellationToken);
+            IReadOnlyList<IEvent>? streamEvents = null;
             foreach (Guid missingId in missingDependencyIds.Where(purgedHere.Contains))
             {
                 string reason = MissingDependencyReason(task, missingId);
                 if (task.RecordedDependencyFailure(missingId) == reason)
+                {
+                    continue;
+                }
+
+                // Said once per dependent and purged blocker, ever. The purge record never leaves
+                // this node, but the failure it produced does: a node that still has the blocker
+                // lifts it with a TaskDependencyRecovered, which clears the recorded failure here
+                // too, and this node's record keeps naming the blocker, so recording again would
+                // trade failure and recovery with that node on every sweep. The stream remembers
+                // what the aggregate forgot, and the reason is this pass's own deterministic text,
+                // so a death another node recorded for the same id is never mistaken for it.
+                streamEvents ??= await session.Events.FetchStreamAsync(task.Id, token: cancellationToken);
+                if (streamEvents.Any(e => e.Data is TaskDependencyFailed past
+                    && past.DependencyId == missingId
+                    && past.Reason == reason))
                 {
                     continue;
                 }

@@ -12,9 +12,17 @@ namespace Hall9k.Domain.Features.Tasks;
 /// </summary>
 public static class UnknownBlocker
 {
-    /// <summary>The ids among <paramref name="blockerIds"/> that name no task in <paramref name="knownTaskIds"/>.</summary>
-    public static IReadOnlyList<Guid> Among(IEnumerable<Guid> blockerIds, IReadOnlySet<Guid> knownTaskIds) =>
-        [.. blockerIds.Distinct().Where(id => !knownTaskIds.Contains(id))];
+    /// <summary>
+    /// The ids among <paramref name="blockerIds"/> that name no task in <paramref name="knownTaskIds"/>
+    /// and that the dependent has not already recorded as dead (<paramref name="deadBlockerIds"/>).
+    /// A blocker with a recorded failure is explained by that failure's own reason, which is
+    /// the case for one this node purged itself and for one a teammate's node failed and
+    /// replicated here, so calling it unknown too would send the reader to a teammate about a
+    /// deletion the recorded reason already accounts for.
+    /// </summary>
+    public static IReadOnlyList<Guid> Among(
+        IEnumerable<Guid> blockerIds, IReadOnlySet<Guid> knownTaskIds, IReadOnlyCollection<Guid> deadBlockerIds) =>
+        [.. blockerIds.Distinct().Where(id => !knownTaskIds.Contains(id) && !deadBlockerIds.Contains(id))];
 
     /// <summary>
     /// The one sentence, in the register of the existing blocked lines (lower case, no trailing

@@ -338,7 +338,7 @@ internal static class TaskStatusComposer
 
         return tasks
             .Where(task => task.State == TaskState.Blocked)
-            .Select(task => (task.Id, Unknown: UnknownBlocker.Among(task.UnmetDependencies, known)))
+            .Select(task => (task.Id, Unknown: UnknownBlocker.Among(task.UnmetDependencies, known, task.DeadDependencies)))
             .Where(entry => entry.Unknown.Count > 0)
             .ToDictionary(entry => entry.Id, entry => entry.Unknown);
     }

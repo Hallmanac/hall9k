@@ -1,5 +1,6 @@
 using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Orchestrator;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Marten;
@@ -39,10 +40,13 @@ public static class OrchestratorFeedPrinter
     }
 
     /// <summary>
-    /// How each task in this read is named: its short id and its objective, never the bare id.
-    /// One batched load rather than one per group.
+    /// How each task in this read is named: its short id and its objective, never the bare id,
+    /// plus the unknown-blocker sentence when it waits on a blocker this node has no task for
+    /// (<see cref="UnknownBlocker"/>). Public because <c>h9k orchestrator feed</c> names its groups
+    /// through this same call, so the two surfaces cannot head a task differently.
+    /// One batched load per kind rather than one per group.
     /// </summary>
-    private static async Task<IReadOnlyDictionary<Guid, string>> HeadingsAsync(
+    public static async Task<IReadOnlyDictionary<Guid, string>> HeadingsAsync(
         IQuerySession session,
         IReadOnlyList<OrchestratorFeedItem> items,
         CancellationToken cancellationToken)
@@ -54,9 +58,36 @@ public static class OrchestratorFeedPrinter
         }
 
         IReadOnlyList<TaskDetails> tasks = await session.LoadManyAsync<TaskDetails>(cancellationToken, taskIds);
+
+        // The dependency sweep records nothing for a blocker this node has no record of, so no
+        // feed item ever names it; the heading is the one place a drain can say so.
+        Guid[] blockerIds =
+        [
+            .. tasks.Where(task => task.State == TaskState.Blocked).SelectMany(task => task.UnmetDependencies).Distinct(),
+        ];
+        HashSet<Guid> knownBlockers = blockerIds.Length == 0
+            ? []
+            : [.. await session.Query<TaskListItem>()
+                .Where(task => task.Id.IsOneOf(blockerIds))
+                .Select(task => task.Id)
+                .ToListAsync(cancellationToken)];
+
         return tasks.ToDictionary(
             task => task.Id,
-            task => $"{DomainId.Short(task.Id)}  "
-                + RelayedText.Truncate(RelayedText.OneLine(task.Objective), 90));
+            task => Heading(
+                task,
+                task.State == TaskState.Blocked
+                    ? UnknownBlocker.Among(task.UnmetDependencies, knownBlockers, task.DeadDependencies)
+                    : []));
     }
+
+    /// <summary>
+    /// One group's heading: the short id and objective, then the unknown-blocker sentence when the
+    /// task is waiting on a blocker this node has no record of. The sentence names the blocker by
+    /// short id alone; its objective is not known here and is never guessed.
+    /// </summary>
+    internal static string Heading(TaskDetails task, IReadOnlyList<Guid> unknownBlockerIds) =>
+        $"{DomainId.Short(task.Id)}  "
+        + RelayedText.Truncate(RelayedText.OneLine(task.Objective), 90)
+        + (UnknownBlocker.Line(unknownBlockerIds) is { } line ? $"  ({line})" : string.Empty);
 }
