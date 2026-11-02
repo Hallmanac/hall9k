@@ -231,7 +231,7 @@ public static class TaskDependencyResolver
                 if (StackedEdgeRules.IsDead(task, dependency))
                 {
                     string reason = DeathReason(task, dependency);
-                    if (recordedFailure == reason)
+                    if (RecordsDeath(recordedFailure, task, dependency))
                     {
                         continue;
                     }
@@ -355,7 +355,30 @@ public static class TaskDependencyResolver
     /// blocker in another project is named by short id and state alone and never by its objective.
     /// </remarks>
     public static string DeathReason(TaskAggregate task, TaskDependency dependency) =>
-        $"{dependency.DescribeDeath(task.ProjectId)} (h9k task dequeue {task.Id}, then h9k task draft {task.Id}).";
+        $"{dependency.DescribeDeath(task.ProjectId)} {DeathRemedy(task)}";
+
+    /// <summary>
+    /// Whether <paramref name="recordedFailure"/>, what the task already records about this blocker, is the death the
+    /// sweep would record now: the current wording, or the older one that quoted the objective (see
+    /// <see cref="LegacyDeathReason"/>).
+    /// </summary>
+    public static bool RecordsDeath(string? recordedFailure, TaskAggregate task, TaskDependency dependency) =>
+        recordedFailure is not null
+        && (recordedFailure == DeathReason(task, dependency)
+            || recordedFailure == LegacyDeathReason(task, dependency));
+
+    /// <summary>
+    /// The sentence <see cref="DeathReason"/> read before a blocker in another project was named without its
+    /// objective, which quotes the objective whatever project the blocker is in. A node that has not taken the change
+    /// still records this form, and the ledger replicates it, so the sweep treats a recorded death in this form as the
+    /// same observation: comparing only against the current wording would have two nodes on different versions
+    /// overwrite each other's record on every pass for as long as the versions differ.
+    /// </summary>
+    private static string LegacyDeathReason(TaskAggregate task, TaskDependency dependency) =>
+        $"{dependency.DescribeDeath()} {DeathRemedy(task)}";
+
+    private static string DeathRemedy(TaskAggregate task) =>
+        $"(h9k task dequeue {task.Id}, then h9k task draft {task.Id}).";
 
     /// <summary>Why a dead-blocker hold was lifted, naming the blocker the way <see cref="DeathReason"/> does.</summary>
     public static string RecoveryReason(TaskAggregate task, TaskDependency dependency) =>

@@ -91,4 +91,28 @@ public sealed class DependencyFailedReasonTests
         TaskDependencyResolver.RecoveryReason(dependent, elsewhere).Should().NotContain(Objective).And.Contain(ShortId(elsewhere));
         TaskDependencyResolver.RecoveryReason(dependent, here).Should().Contain($"\"{Objective}\"");
     }
+
+    [Fact]
+    public void A_death_recorded_in_the_older_wording_that_quoted_the_objective_is_the_same_observation()
+    {
+        TaskDependency blocker = Blocker(DomainId.New(), TaskState.Failed);
+        TaskAggregate dependent = DependentIn(DomainId.New());
+        string older = $"{blocker.DescribeDeath()} (h9k task dequeue {dependent.Id}, then h9k task draft {dependent.Id}).";
+
+        older.Should().NotBe(TaskDependencyResolver.DeathReason(dependent, blocker), "the wording did change for a blocker in another project");
+        TaskDependencyResolver.RecordsDeath(older, dependent, blocker).Should().BeTrue();
+        TaskDependencyResolver.RecordsDeath(TaskDependencyResolver.DeathReason(dependent, blocker), dependent, blocker).Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_death_recorded_for_a_different_death_or_not_at_all_is_not_the_observation_to_record_now()
+    {
+        TaskDependency blocker = Blocker(DomainId.New(), TaskState.Failed);
+        TaskAggregate dependent = DependentIn(DomainId.New());
+        TaskDependency abandoned = blocker with { State = TaskState.Abandoned };
+        string failedWording = $"{blocker.DescribeDeath()} (h9k task dequeue {dependent.Id}, then h9k task draft {dependent.Id}).";
+
+        TaskDependencyResolver.RecordsDeath(failedWording, dependent, abandoned).Should().BeFalse();
+        TaskDependencyResolver.RecordsDeath(null, dependent, blocker).Should().BeFalse();
+    }
 }
