@@ -16,7 +16,8 @@ namespace Hall9k.Domain.Features.Tasks;
 /// branch in the child project's own repository, and a branch in another project's repository is
 /// not there to cut from (independent pre-PR review, cycle 1, adversarial lens). A plain
 /// blocked-by across projects is harmless by comparison — it never reads the blocker's branch —
-/// which is why this is read for the stacked edge alone.
+/// which is why it is read for the stacked edge and, by <see cref="IsInOtherProjectThan"/> and <see cref="DescribeFor"/>,
+/// to name a blocker in another project by id and state in a recorded reason.
 /// <para>
 /// <see cref="Guid.Empty"/> means the snapshot's producer recorded no project, and every reader
 /// treats that as unknown rather than as a project that differs (AGENTS.md's never-guess rule):
@@ -201,22 +202,56 @@ public sealed record TaskDependency(
     public string Describe() => $"{ShortId} \"{Objective}\" ({State.Value})";
 
     /// <summary>
+    /// How the dependency reads when its objective must not be repeated: the short id and the state, nothing the
+    /// blocker's author wrote. A blocker in another project is described this way anywhere the sentence is recorded
+    /// on the dependent's own stream, because that stream replicates through the dependent's project ledger and a
+    /// sibling project's objective has no business in it.
+    /// </summary>
+    public string DescribeWithoutObjective() => $"{ShortId} ({State.Value})";
+
+    /// <summary>
+    /// Whether this dependency is observed to belong to a project other than <paramref name="dependentProjectId"/>.
+    /// An unrecorded project on either side is not an observed difference (see <see cref="ProjectId"/>), so it reads
+    /// as the same project, as every other reader of that field does.
+    /// </summary>
+    public bool IsInOtherProjectThan(Guid dependentProjectId) =>
+        ProjectId != Guid.Empty && dependentProjectId != Guid.Empty && ProjectId != dependentProjectId;
+
+    /// <summary>
+    /// How this dependency is named in a sentence recorded on the stream of a task in
+    /// <paramref name="dependentProjectId"/>: with its objective when it is that project's own task, by short id and
+    /// state alone when it belongs to another project.
+    /// </summary>
+    public string DescribeFor(Guid dependentProjectId) =>
+        IsInOtherProjectThan(dependentProjectId)
+            ? DescribeWithoutObjective()
+            : Describe();
+
+    /// <summary>
     /// Why this blocker will never close out and what moves it, as the first half of the
     /// sentence a human reads on the parked dependent. Only meaningful when
     /// <see cref="IsDead"/> — the caller has already decided that.
     /// </summary>
-    public string DescribeDeath() =>
+    public string DescribeDeath() => DescribeDeath(Describe());
+
+    /// <summary>
+    /// <see cref="DescribeDeath()"/> for the sentence recorded on a task in <paramref name="dependentProjectId"/>, which
+    /// names a blocker in another project by short id and state only.
+    /// </summary>
+    public string DescribeDeath(Guid dependentProjectId) => DescribeDeath(DescribeFor(dependentProjectId));
+
+    private string DescribeDeath(string described) =>
         // Failed still has exits (retry, resolve); Abandoned is a dead end by design, so
         // its only honest remedy is on the dependent's side — never advise a lever the
         // decider will refuse (review finding, 2026-08-20). Each branch carries its own
         // remediation so the caller's trailing mechanics compose grammatically.
         State == TaskState.Failed
-            ? $"Dependency {Describe()} ended there and will never close out on its own. "
+            ? $"Dependency {described} ended there and will never close out on its own. "
               + "Retry or resolve it, or revise this task's dependencies"
             : State == TaskState.Abandoned
-                ? $"Dependency {Describe()} was abandoned and will never close out on its own; "
+                ? $"Dependency {described} was abandoned and will never close out on its own; "
                   + "abandoned is a dead end by design, so revise this task's dependencies"
-                : $"Dependency {Describe()} reads Done, but {DescribeAbsentMerge()}, so the merge observation "
+                : $"Dependency {described} reads Done, but {DescribeAbsentMerge()}, so the merge observation "
                   + $"true closeout waits on will never arrive. {DescribeDoneRemedy()}";
 
     private string DescribeAbsentMerge() =>
