@@ -220,9 +220,12 @@ public sealed class FeedbackEvaluatorsTests
         };
 
         string prompt = FeedbackEvaluatorPromptBuilder.Build(
-            item, "Bound the limiter", ["the limiter resets per window"], PullRequest, "/run/feedback-assessment-0123456789ab.md");
+            item, "Bound the limiter", ["the limiter resets per window"], PullRequest, "/run/feedback-assessment-0123456789ab.md",
+            "/run/feedback-diff-0123456789ab.diff");
 
         prompt.Should().Contain("Bound the limiter").And.Contain("the limiter resets per window");
+        prompt.Should().Contain("`/run/feedback-diff-0123456789ab.diff`", "the pull request's diff is a file the daemon wrote, named by path");
+        prompt.Should().NotContain("gh pr diff").And.NotContain("`gh pr");
         prompt.Should().Contain("/run/feedback-assessment-0123456789ab.md");
         prompt.Should().Contain("Recommendation: fix").And.Contain("Recommendation: decline").And.Contain("Recommendation: ask");
         prompt.Should().Contain("Never post anything to GitHub").And.Contain("Never push").And.Contain("Never file an idea or a task");
@@ -240,7 +243,7 @@ public sealed class FeedbackEvaluatorsTests
             "PRRT_1", NonMemberFeedbackKind.Thread, "stranger", $"{PullRequest}#discussion_r9", Now,
             NonMemberFeedbackStatus.Undecided, CommentCopies: [new ThreadCommentCopy("c1", "Please rename Limiter.")]);
 
-        string prompt = FeedbackEvaluatorPromptBuilder.Build(thread, "Bound the limiter", [], PullRequest, "/run/a.md");
+        string prompt = FeedbackEvaluatorPromptBuilder.Build(thread, "Bound the limiter", [], PullRequest, "/run/a.md", "/run/a.diff");
 
         prompt.Should().Contain("Please rename Limiter.").And.Contain("review thread");
         prompt.Should().Contain("recorded no acceptance criteria");

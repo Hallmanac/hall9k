@@ -90,7 +90,8 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
         string prompt = AgentPromptBuilder.BuildCloseoutTriage(
             "Bound the limiter", ["the limiter resets per window", "the reset is covered by a test"],
             "https://github.com/acme/web/pull/7", ["PRRT_member", "PRRT_bot"], scope,
-            "/run/closeout-triage-0123456789ab-0192f0a1b2c37d4e8f9a0b1c2d3e4f50.md");
+            "/run/closeout-triage-0123456789ab-0192f0a1b2c37d4e8f9a0b1c2d3e4f50.md",
+            "/run/closeout-triage-0123456789ab-0192f0a1b2c37d4e8f9a0b1c2d3e4f50.diff");
         AssertMatchesGolden("closeout-triage", prompt);
     }
 

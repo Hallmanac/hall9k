@@ -6713,13 +6713,16 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             triageSessions: triage);
     }
 
+    private const string TriageCannedDiff = "diff --git a/src/Limiter.cs b/src/Limiter.cs\n+canned\n";
+
     private CloseoutTriageSessions NewTriage(
         TriageExecutor executor, FakeProcessManager processes, Action<DaemonOptions>? configure = null)
     {
         DaemonOptions daemon = new() { CloseoutTriageTimeout = TimeSpan.FromSeconds(30) };
         configure?.Invoke(daemon);
         return new CloseoutTriageSessions(
-            postgres.Store, executor, processes, Options.Create(daemon), NullLogger<CloseoutTriageSessions>.Instance);
+            postgres.Store, executor, processes, Options.Create(daemon), NullLogger<CloseoutTriageSessions>.Instance,
+            (_, _, _, _) => Task.FromResult(new ProcessResult(0, TriageCannedDiff, string.Empty)));
     }
 
     private async Task<int> CountStreamEventsAsync<T>(Guid streamId, CancellationToken cancellationToken)
@@ -7073,6 +7076,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         /// <summary>Runs inside the spawn, before the session starts: what a test uses to look at the stream at that instant.</summary>
         public Func<AgentSpawnRequest, Task>? OnSpawn { get; set; }
 
+        /// <summary>What the diff file the prompt names held at the instant the session was spawned.</summary>
+        public List<string?> DiffAtSpawn { get; } = [];
+
         public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
         {
             if (OnSpawn is { } hook)
@@ -7084,6 +7090,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             lock (_gate)
             {
                 _requests.Add(request);
+                string diffPath = System.Text.RegularExpressions.Regex.Match(request.Prompt, @"`([^`]+\.diff)`").Groups[1].Value;
+                DiffAtSpawn.Add(diffPath.Length > 0 && File.Exists(diffPath) ? File.ReadAllText(diffPath) : null);
                 processId = _nextProcessId++;
                 if (HoldOpen)
                 {
@@ -7645,6 +7653,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         request.AssessmentFile.Should().StartWith(DrivenRunDirectory(driven.RunId)).And.EndWith(".md");
         request.Prompt.Should().Contain("PRRT_a").And.Contain("PRRT_b").And.Contain("Never post anything to GitHub");
         request.Prompt.Should().Contain("does not gate review feedback", "the scope the gate decided is what the session reads under");
+        request.Prompt.Should().NotContain("gh pr diff", "the session cannot run gh, so the diff is a file the daemon wrote");
+        executor.DiffAtSpawn.Should().ContainSingle().Which.Should().Be(TriageCannedDiff, "the diff is on disk, at the path the prompt names, before the session starts");
         (await CountStreamEventsAsync<TaskEvents.CloseoutTriageDispatched>(driven.TaskId, cts.Token)).Should().Be(1);
         (await CountStreamEventsAsync<TaskEvents.TaskReopened>(driven.TaskId, cts.Token)).Should().Be(0, "a triage is not a lap");
 

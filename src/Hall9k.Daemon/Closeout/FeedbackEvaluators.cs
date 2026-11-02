@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
+using Hall9k.Connectors.Processes;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Project.Projections;
@@ -61,9 +62,11 @@ public sealed class FeedbackEvaluators(
     IExecutor executor,
     IProcessManager processManager,
     IOptions<DaemonOptions> options,
-    ILogger<FeedbackEvaluators> logger) : IDisposable
+    ILogger<FeedbackEvaluators> logger,
+    ProcessRunner? processRunner = null) : IDisposable
 {
     private readonly DaemonOptions _options = options.Value;
+    private readonly ProcessRunner _gitHubReader = processRunner ?? ExternalProcess.Runner;
     private readonly CancellationTokenSource _stopping = new();
     private readonly ConcurrentDictionary<Guid, Task> _running = [];
 
@@ -159,7 +162,8 @@ public sealed class FeedbackEvaluators(
                     events.Add(new NonMemberFeedbackEvaluatorDispatched(task.Id, step.Item.Key, sessionId, assessmentPath, now));
                     jobs.Add(new EvaluatorJob(
                         task.Id, task.Objective, task.AcceptanceCriteria, task.PullRequestUrl ?? run.PullRequestUrl ?? "",
-                        step.Item, sessionId, assessmentPath, run, runDirectory,
+                        step.Item, sessionId, assessmentPath, RunPaths.FeedbackEvaluatorDiffFile(runDirectory, KeyHash(step.Item.Key), sessionId),
+                        project.RepositoryPath, run, runDirectory,
                         _options.ResolveModel(AgentRole.Review, task.Model, project.Model),
                         _options.ResolveEffort(AgentRole.Review, task.Effort, project.Effort)));
                     break;
@@ -251,8 +255,12 @@ public sealed class FeedbackEvaluators(
     private async Task<(FeedbackRecommendation? Recommendation, string? Reason)> EvaluateAsync(
         EvaluatorJob job, CancellationToken stopping)
     {
+        // The session cannot run gh, so the daemon reads the diff for it before it starts. A diff it cannot
+        // read is written as a note saying so, and the session still starts.
+        await PullRequestDiffFile.WriteAsync(
+            _gitHubReader, job.PullRequestUrl, job.RepositoryPath, job.DiffPath, logger, stopping);
         string prompt = FeedbackEvaluatorPromptBuilder.Build(
-            job.Item, job.Objective, job.AcceptanceCriteria, job.PullRequestUrl, job.AssessmentPath);
+            job.Item, job.Objective, job.AcceptanceCriteria, job.PullRequestUrl, job.AssessmentPath, job.DiffPath);
         string sessionName = SessionRoleName.For(DomainId.Short(job.TaskId), SessionRoleName.FeedbackEvaluator);
         string artifact = SessionRoleName.FeedbackEvaluatorFor(KeyHash(job.Item.Key));
         string workingDirectory = Directory.Exists(job.Run.WorktreePath) ? job.Run.WorktreePath : job.RunDirectory;
@@ -408,6 +416,8 @@ public sealed class FeedbackEvaluators(
         NonMemberFeedbackItem Item,
         Guid SessionId,
         string AssessmentPath,
+        string DiffPath,
+        string RepositoryPath,
         RunDetails Run,
         string RunDirectory,
         AgentModel Model,

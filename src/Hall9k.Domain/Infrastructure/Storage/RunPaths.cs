@@ -312,6 +312,22 @@ public static class RunPaths
         Path.Combine(runDirectory, $"feedback-assessment-{feedbackKeyHash}-{sessionId:N}.md");
 
     /// <summary>
+    /// The pull request's diff as the daemon read it for one feedback evaluator, named the way
+    /// <see cref="FeedbackAssessmentFile"/> is (a short hash of the feedback's key and the evaluator's session
+    /// id), so each evaluator has a diff of its own: several sessions can share one run directory, and an
+    /// evaluator's prompt names exactly this path.
+    /// </summary>
+    public static string FeedbackEvaluatorDiffFile(string runDirectory, string feedbackKeyHash, Guid sessionId) =>
+        Path.Combine(runDirectory, $"feedback-diff-{feedbackKeyHash}-{sessionId:N}.diff");
+
+    /// <summary>
+    /// The pull request's diff as the daemon read it for one closeout triage, named the way
+    /// <see cref="CloseoutTriageReportFile"/> is, for the same reason as <see cref="FeedbackEvaluatorDiffFile"/>.
+    /// </summary>
+    public static string CloseoutTriageDiffFile(string runDirectory, string threadSetKeyHash, Guid sessionId) =>
+        Path.Combine(runDirectory, $"closeout-triage-{threadSetKeyHash}-{sessionId:N}.diff");
+
+    /// <summary>
     /// The report a closeout triage session writes for one set of unresolved review threads (task:
     /// analysis-only closeout), named by a short hash of the set's key and the session id, so each
     /// triage has a file of its own and its permission file can name exactly that path.
