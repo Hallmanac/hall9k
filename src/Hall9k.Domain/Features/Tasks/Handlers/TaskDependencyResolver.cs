@@ -246,11 +246,7 @@ public static class TaskDependencyResolver
                 if (recordedFailure is not null)
                 {
                     TaskDependencyRecovered recovery = TaskDecider.DependencyRecovered(
-                        task,
-                        dependency.Id,
-                        $"Dependency {dependency.Describe()} is back in the pipeline and can reach "
-                        + "true closeout again, so the dead-blocker hold no longer describes anything.",
-                        now);
+                        task, dependency.Id, RecoveryReason(task, dependency), now);
                     session.Events.Append(task.Id, recovery);
                     task.Apply(recovery);
                     lifted = true;
@@ -354,8 +350,17 @@ public static class TaskDependencyResolver
     /// blocker whose death changed shape (Failed, then resolved by a human) gets a fresh
     /// record rather than keeping advice the decider would now refuse.
     /// </summary>
-    private static string DeathReason(TaskAggregate task, TaskDependency dependency) =>
-        $"{dependency.DescribeDeath()} (h9k task dequeue {task.Id}, then h9k task draft {task.Id}).";
+    /// <remarks>
+    /// The sentence is recorded on the dependent's own stream, which replicates through its project's ledger, so a
+    /// blocker in another project is named by short id and state alone and never by its objective.
+    /// </remarks>
+    public static string DeathReason(TaskAggregate task, TaskDependency dependency) =>
+        $"{dependency.DescribeDeath(task.ProjectId)} (h9k task dequeue {task.Id}, then h9k task draft {task.Id}).";
+
+    /// <summary>Why a dead-blocker hold was lifted, naming the blocker the way <see cref="DeathReason"/> does.</summary>
+    public static string RecoveryReason(TaskAggregate task, TaskDependency dependency) =>
+        $"Dependency {dependency.DescribeFor(task.ProjectId)} is back in the pipeline and can reach "
+        + "true closeout again, so the dead-blocker hold no longer describes anything.";
 
     /// <summary>
     /// Why a blocker id that names no task at all will never close out — there is no
