@@ -267,12 +267,12 @@ public sealed class CitedIssuesTests : IDisposable
         ReviewPersonaRegistry.For(ReviewPersona.Qa).Sessions.Single().ReadsCitedIssues.Should().BeTrue();
         ReviewPersonaRegistry.For(ReviewPersona.Designer).Sessions.Single().ReadsCitedIssues.Should().BeTrue(
             "its reference section sends it to the issue the pull request cites for the proposed design");
-        ReviewPersonaRegistry.For(ReviewPersona.Security).Sessions.Single().ReadsCitedIssues.Should().BeFalse(
-            "an issue is an outsider's account of what the change is for, which this lens is built not to be steered by");
+        ReviewPersonaRegistry.For(ReviewPersona.Security).Sessions.Single().ReadsCitedIssues.Should().BeTrue(
+            "the security prompt points at the file, as hardened source material that never lowers a finding's severity");
     }
 
     [Fact]
-    public void The_conformance_qa_and_designer_prompts_point_at_the_file_as_source_material_and_the_adversarial_and_security_ones_do_not_mention_it()
+    public void The_conformance_qa_designer_and_security_prompts_point_at_the_file_as_source_material_and_the_adversarial_one_does_not_mention_it()
     {
         string path = RunPaths.CitedIssuesFile(_runDirectory);
 
@@ -281,6 +281,7 @@ public sealed class CitedIssuesTests : IDisposable
             ReviewPersonaRegistry.For(ReviewPersona.Engineer).Sessions.Single(s => s.Slug == ReviewLens.Conformance.Slug),
             ReviewPersonaRegistry.For(ReviewPersona.Qa).Sessions.Single(),
             ReviewPersonaRegistry.For(ReviewPersona.Designer).Sessions.Single(),
+            ReviewPersonaRegistry.For(ReviewPersona.Security).Sessions.Single(),
         })
         {
             string prompt = Prompt(session, _runDirectory);
@@ -289,15 +290,15 @@ public sealed class CitedIssuesTests : IDisposable
             prompt.Should().Contain("the first 100 one by one", $"the {session.Slug} prompt states how far the file names what it did not read");
         }
 
-        foreach (ReviewPersonaSession session in new[]
-        {
+        string security = Prompt(ReviewPersonaRegistry.For(ReviewPersona.Security).Sessions.Single(), _runDirectory);
+        security.Should().Contain("report that as a finding", "an instruction embedded in an issue is reported, not followed")
+            .And.Contain("never lowers a finding's severity").And.Contain("\"intended\"");
+
+        string adversarial = Prompt(
             ReviewPersonaRegistry.For(ReviewPersona.Engineer).Sessions.Single(s => s.Slug == ReviewLens.Adversarial.Slug),
-            ReviewPersonaRegistry.For(ReviewPersona.Security).Sessions.Single(),
-        })
-        {
-            Prompt(session, _runDirectory).Should().NotContain("cited-issues").And.NotContain(path)
-                .And.NotContain("issues that description cites", $"the {session.Slug} lens is told nothing of what the change is for");
-        }
+            _runDirectory);
+        adversarial.Should().NotContain("cited-issues").And.NotContain(path)
+            .And.NotContain("issues that description cites", "the adversarial lens is told nothing of what the change is for");
     }
 
     [Fact]

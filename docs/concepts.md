@@ -1130,8 +1130,10 @@ altogether, because a read-only review should use no credential it does not need
 GitHub for it instead: before a lens that is told the pull request's intent starts, it writes the
 bodies of the issues the description cites (it tries at most ten, a failed read counting toward the ten, in the
 pull request's own repository, with no comments, and the rest named as not read) into the run directory, and the
-prompt points at that file as source material rather than instruction. The security review is not given that file,
-because an issue is an outsider's account of what the change is for, which that lens is built not to be steered by. Nothing is posted to the pull request
+prompt points at that file as source material rather than instruction. The security review is pointed at it too,
+with wording that the file never lowers a finding's severity or makes a permission intended, because anyone who can
+file an issue can write that a risk is accepted into it; only the adversarial lens, which is told nothing of what the
+change is for, is not. Nothing is posted to the pull request
 without your explicit go, and never under any login but your own.
 
 **A persona is the lens the review is read through.** Each member declares the personas they hold
