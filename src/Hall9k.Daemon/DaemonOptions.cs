@@ -877,8 +877,9 @@ public sealed class DaemonOptions
 
     /// <summary>
     /// How often the daemon looks at its plans. The doorbell usually gets there first (<c>h9k plan start</c> and
-    /// <c>h9k plan resume</c> ring it, and so does a session or a challenge that ends); this is the sweep that covers a
-    /// plan started while the daemon was down, and the one that notices a draft published or abandoned by hand.
+    /// <c>h9k plan resume</c> ring it, and so does a refinement session that ends); nothing rings when a challenge ends, so
+    /// a plan's step after a verdict waits for this interval unless another doorbell comes first. It is also the sweep that
+    /// covers a plan started while the daemon was down, and the one that notices a draft published or abandoned by hand.
     /// </summary>
     public TimeSpan PlanPollInterval { get; set; } = TimeSpan.FromSeconds(30);
 
