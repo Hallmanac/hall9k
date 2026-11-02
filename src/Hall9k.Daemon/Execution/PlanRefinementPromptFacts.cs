@@ -27,6 +27,8 @@ public sealed record PriorVerdictFacts(ChallengeVerdict Verdict, int MustCount, 
 /// <param name="Journal">The draft's <c>journal.md</c> when it exists, else null.</param>
 /// <param name="JournalToWrite">Where the journal is written: its existing path, or the one in the draft's directory, or null when the draft has no directory on this node.</param>
 /// <param name="PriorVerdict">The latest challenge verdict on the draft, or null when it has never been challenged.</param>
+/// <param name="OtherDrafts">The plan's other drafts by id and objective when the plan carries more than one, else empty; the session's revision may set <c>blocked-by</c> or <c>stacked-on</c> to one of them.</param>
+/// <param name="DiscoveryReport">The report the plan's discovery session wrote, when the draft was cut from it, else null.</param>
 public sealed record PlanRefinementPromptFacts(
     RefinementPurpose Purpose,
     string? ProjectHome,
@@ -39,4 +41,44 @@ public sealed record PlanRefinementPromptFacts(
     string? IdeaWorkspace,
     string? Journal,
     string? JournalToWrite,
-    PriorVerdictFacts? PriorVerdict);
+    PriorVerdictFacts? PriorVerdict,
+    IReadOnlyList<SiblingDraftFacts>? OtherDrafts = null,
+    string? DiscoveryReport = null);
+
+/// <summary>A sibling draft in the same plan, as a refinement session is told of it: the id it can name in a revision and what it is for.</summary>
+public sealed record SiblingDraftFacts(Guid Id, string Objective);
+
+/// <summary>A task already cut from the idea a discovery session studies: its id, its state, and its objective, all quoted.</summary>
+public sealed record DiscoveryCutTaskFacts(Guid Id, string State, string Objective);
+
+/// <summary>
+/// The facts about where a plan's discovery session runs that the idea's own record cannot hold, and that the prompt has to
+/// carry because the session cannot know them: the daemon computed each one at dispatch.
+/// </summary>
+/// <param name="IdeaId">The idea.</param>
+/// <param name="IdeaNote">The idea's note as the store has it at dispatch.</param>
+/// <param name="CutTasks">The tasks already cut from the idea, with their states.</param>
+/// <param name="ProjectHome">The project home, or null for a project registered without one.</param>
+/// <param name="Checkout">The reading checkout the session runs in.</param>
+/// <param name="Commit">The commit the checkout is at, or null when it could not be read.</param>
+/// <param name="Refresh">What bringing the checkout up to the remote base branch came to, or null when the daemon did not try.</param>
+/// <param name="Workspace">The idea's workspace directory, which exists.</param>
+/// <param name="Journal">The workspace's <c>journal.md</c> when it exists, else null.</param>
+/// <param name="EarlierReports">Earlier discovery reports in the workspace.</param>
+/// <param name="ReportPath">The report the session writes.</param>
+/// <param name="SessionDirectory">The session's own directory.</param>
+/// <param name="TimeBound">How long the session may run.</param>
+public sealed record PlanDiscoveryPromptFacts(
+    Guid IdeaId,
+    string IdeaNote,
+    IReadOnlyList<DiscoveryCutTaskFacts> CutTasks,
+    string? ProjectHome,
+    string Checkout,
+    string? Commit,
+    CheckoutRefresh? Refresh,
+    string Workspace,
+    string? Journal,
+    IReadOnlyList<string> EarlierReports,
+    string ReportPath,
+    string SessionDirectory,
+    TimeSpan TimeBound);

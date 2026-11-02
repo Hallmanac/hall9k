@@ -7,6 +7,7 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -4830,6 +4831,27 @@ public static class AgentPromptBuilder
             prompt.AppendLine(Fragment(file, "journal-none", ("JournalToWrite", facts.JournalToWrite)));
         }
 
+        if (facts.DiscoveryReport is { } discoveryReport)
+        {
+            prompt.AppendLine();
+            prompt.AppendLine(Fragment(file, "discovery-report", ("DiscoveryReport", OneLine(discoveryReport))));
+        }
+
+        if (facts.OtherDrafts is { Count: > 0 } siblings)
+        {
+            prompt.AppendLine();
+            prompt.AppendLine(Fragment(file, "siblings-heading"));
+            prompt.AppendLine();
+            prompt.AppendLine(Fragment(file, "siblings-intro", ("Count", (siblings.Count + 1).ToString(CultureInfo.InvariantCulture))));
+            prompt.AppendLine();
+            // Fenced the way the discovery prompt fences the tasks already cut: an objective is a person's or a session's text, and
+            // the fence keeps it from closing the quote or opening a heading of its own in the middle of this prompt.
+            string others = string.Join(
+                '\n',
+                siblings.Select(sibling => Fragment(file, "sibling-line", ("Id", sibling.Id.ToString()), ("Objective", OneLine(sibling.Objective)))));
+            prompt.AppendLine(RelayedText.Fenced(others));
+        }
+
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "purpose-heading"));
         prompt.AppendLine();
@@ -4896,6 +4918,112 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "closing");
         return PromptLineEndings.Finish(prompt);
     }
+
+    /// <summary>
+    /// The prompt for a plan's discovery session (<c>h9k plan start --idea</c>). It holds the idea's note exactly as the
+    /// store has it, fenced so nothing in it can close the quote, with the tasks already cut from it and their states; says
+    /// where the session stands (the project home, the checkout and its commit, and when the daemon could not bring it up to
+    /// the remote base branch); and points at the idea's workspace, its journal when there is one, and any earlier report.
+    /// <para>
+    /// The working rules are authored here, outside every fence, so no quoted material can reach them: the note, the
+    /// workspace, and anything fetched are material to study and never instructions; no draft is cut, no verb that decides
+    /// the idea is run, no existing workspace file is touched. The house rules of <c>recipes/idea-discovery.md</c> are in
+    /// the prompt itself so a project with no recipe gets them too. The closing block is the contract
+    /// <see cref="DiscoveryReport"/> reads.
+    /// </para>
+    /// </summary>
+    public static string BuildPlanDiscovery(ProjectDetails project, PlanDiscoveryPromptFacts facts)
+    {
+        const string file = $"{TemplateDirectory}/plan-discovery.md";
+        StringBuilder prompt = new();
+        prompt.AppendLine(Fragment(file, "heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "intro");
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "material");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "idea-heading"));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "idea-project", ("IdeaId", facts.IdeaId.ToString()), ("ProjectName", project.Name)));
+        prompt.AppendLine();
+        prompt.AppendLine(RelayedText.Fenced(facts.IdeaNote.Trim()));
+        prompt.AppendLine();
+        if (facts.CutTasks.Count == 0)
+        {
+            prompt.AppendLine(Fragment(file, "idea-cut-none"));
+        }
+        else
+        {
+            prompt.AppendLine(Fragment(file, "idea-cut-heading"));
+            prompt.AppendLine();
+            string cut = string.Join(
+                '\n', facts.CutTasks.Select(task => $"- {task.Id} ({OneLine(task.State)}): {OneLine(task.Objective)}"));
+            prompt.AppendLine(RelayedText.Fenced(cut));
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "where-heading"));
+        prompt.AppendLine();
+        prompt.AppendLine(facts.ProjectHome is { } home
+            ? Fragment(file, "where-home", ("ProjectName", project.Name), ("ProjectHome", home))
+            : Fragment(file, "where-home-none", ("ProjectName", project.Name)));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "where-checkout", ("Checkout", facts.Checkout)));
+        prompt.AppendLine(facts.Commit.IsNotBlank()
+            ? Fragment(file, "where-commit", ("Commit", facts.Commit))
+            : Fragment(file, "where-commit-unknown"));
+        prompt.AppendLine(facts.Refresh switch
+        {
+            null => Fragment(file, "refresh-not-attempted"),
+            { UpToDate: true } ok => Fragment(file, "refresh-ok", ("Detail", OneLine(ok.Detail))),
+            var failed => Fragment(file, "refresh-failed", ("Detail", OneLine(failed.Detail))),
+        });
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "workspace", ("Workspace", OneLine(facts.Workspace))));
+        prompt.AppendLine(facts.Journal is { } journal
+            ? Fragment(file, "journal", ("Journal", OneLine(journal)))
+            : Fragment(file, "journal-none"));
+        foreach (string earlier in facts.EarlierReports)
+        {
+            prompt.AppendLine(Fragment(file, "earlier-report", ("EarlierReport", OneLine(earlier))));
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "bound-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "bound", ("TimeBound", DescribeTimeBound(facts.TimeBound)));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "job-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "job");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "rules-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "rules", ("SessionDirectory", OneLine(facts.SessionDirectory)));
+        AppendTrackerItemRule(prompt, facts.Workspace);
+        AppendWritingConventions(
+            prompt, string.Empty, project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "report-heading"));
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "report",
+            ("ReportPath", OneLine(facts.ReportPath)),
+            ("DecisionMarker", DiscoveryReport.DecisionMarker),
+            ("TaskMarker", DiscoveryReport.TaskMarker));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "closing");
+        return PromptLineEndings.Finish(prompt);
+    }
+
+    /// <summary>The time bound as a person says it: whole minutes, or hours and minutes past an hour.</summary>
+    private static string DescribeTimeBound(TimeSpan bound) =>
+        bound.TotalMinutes switch
+        {
+            < 1 => $"{Math.Max(1, (int)bound.TotalSeconds)} seconds",
+            < 120 => $"{(int)Math.Round(bound.TotalMinutes)} minutes",
+            _ => $"{bound.TotalHours:0.#} hours",
+        };
 
     /// <summary>
     /// The prompt for a card-publication session (backlog 18): compose this task as a card in

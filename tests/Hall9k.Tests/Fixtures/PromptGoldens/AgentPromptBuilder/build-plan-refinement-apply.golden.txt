@@ -92,6 +92,7 @@ If you revised the draft, write the revision at `/home/agent/.hall9k/runs/01a092
         <one criterion>
     blocked-by:
       - <task id>
+    stacked-on: <task id>
     ---
     <the agent context, in markdown>
 
