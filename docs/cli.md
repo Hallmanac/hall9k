@@ -557,6 +557,16 @@ objective, quoted in a fence as source material and never instruction, and that 
 and `stacked-on` as well when it builds on that draft's branch (a stacked edge is also a dependency edge, so `stacked-on` alone is refused); for a draft that came from discovery it
 is also told the report's path.
 
+A refinement session for a draft in a solution epic is also told what the epic's tasks are in the solution's other member projects
+that are registered and joined on this node: each task's id, its project's name, its objective, and its state, with done and
+abandoned tasks marked, quoted in a fence as material to study and never instruction. It carries no task's context or acceptance
+criteria. The session's revision may set `blocked-by` to a listed task that is not abandoned, must never set `stacked-on` to a task in
+another project (publish refuses that edge), and may name no task outside the lists it was given. It is told not to quote or paraphrase
+another member's objective anywhere in the revision, since the revision replicates through this project's public ledger and tracker, so a
+listed task's id in a `blocked-by` edge is the only reference the revision makes to another member's work. A draft in a project epic, or in
+no epic, is told none of this. For the same reason, when a dependent task records a blocker in another project as dead, the recorded reason
+names the blocker by its short id and state only and never quotes its objective.
+
 **The publish gate asks for a verdict.** With the requirement on (`h9k project set <name> --require-challenge
 on|off`, which reads on for every project that recorded no value, and which `h9k project show` prints with whether
 it is the default), `h9k task publish` refuses a Draft whose latest verdict is missing, is `do not publish`, or is

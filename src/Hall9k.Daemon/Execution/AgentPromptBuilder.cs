@@ -6,6 +6,7 @@ using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Project;
@@ -4852,6 +4853,11 @@ public static class AgentPromptBuilder
             prompt.AppendLine(RelayedText.Fenced(others));
         }
 
+        if (facts.OtherMemberTasks is { } memberTasks)
+        {
+            AppendMemberTasks(prompt, file, memberTasks);
+        }
+
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "purpose-heading"));
         prompt.AppendLine();
@@ -4917,6 +4923,46 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "closing");
         return PromptLineEndings.Finish(prompt);
+    }
+
+    /// <summary>
+    /// The section of a refinement prompt for a draft in a solution epic: the other member projects' tasks under the epic,
+    /// fenced the way the idea's note is, then the rules for using them in the daemon's own words outside the fence. The
+    /// list holds a person's or a session's text (an objective, a project's name), so the fence is computed from it and the
+    /// rules that follow cannot be reached by it. Nothing here carries a task's context or criteria; the caller never had them.
+    /// </summary>
+    private static void AppendMemberTasks(StringBuilder prompt, string file, IReadOnlyList<SolutionMemberTask> memberTasks)
+    {
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "member-tasks-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "member-tasks-intro");
+        prompt.AppendLine();
+        if (memberTasks.Count == 0)
+        {
+            prompt.AppendLine(Fragment(file, "member-tasks-none"));
+        }
+        else
+        {
+            string lines = string.Join(
+                '\n',
+                memberTasks.Select(task => Fragment(
+                    file,
+                    task.State switch
+                    {
+                        _ when task.State == TaskState.Done => "member-task-line-done",
+                        _ when task.State == TaskState.Abandoned => "member-task-line-abandoned",
+                        _ => "member-task-line",
+                    },
+                    ("Id", task.Id.ToString()),
+                    ("ProjectName", OneLine(task.ProjectName)),
+                    ("State", OneLine(task.State.Value)),
+                    ("Objective", OneLine(task.Objective)))));
+            prompt.AppendLine(RelayedText.Fenced(lines));
+        }
+
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "member-tasks-rules");
     }
 
     /// <summary>
