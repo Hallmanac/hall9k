@@ -456,7 +456,16 @@ public sealed class PlanDiscoveryEngineTests(PostgresFixture postgres) : IClassF
         processes.Terminations.Should().NotBeEmpty("the session was stopped");
         (await StreamAsync(planId, cts.Token)).OfType<PlanDiscoveryParked>().Should().BeEmpty();
         Directory.GetFiles(workspace).Should().BeEmpty();
-        (await PlanAsync(planId, cts.Token)).State.Should().Be(PlanState.Cancelled);
+        PlanDetails cancelled = await PlanAsync(planId, cts.Token);
+        cancelled.State.Should().Be(PlanState.Cancelled);
+
+        // The job stopped its own session, so the process file that marks a crash's leftover is gone, and a later sweep does not
+        // take this ordinary cancel for one.
+        Guid sessionId = cancelled.Discovery!.RunningSessionId!.Value;
+        File.Exists(RunPaths.DiscoveryProcessFile(sessionId)).Should().BeFalse();
+        int terminationsBefore = processes.Terminations.Count;
+        await engine.PollOnceAsync(cts.Token);
+        processes.Terminations.Should().HaveCount(terminationsBefore, "a cancel is not a session a crash left behind");
         await using IQuerySession query = postgres.Store.QuerySession();
         (await query.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!.State.Should().Be(IdeaState.Captured);
     }

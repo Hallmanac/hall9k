@@ -134,7 +134,7 @@ public static class OrchestratorFeedDescription
             PlanParked parked => PlanParkLine(parked),
             PlanDiscoveryParked discoveryParked => PlanDiscoveryParkLine(discoveryParked),
             PlanStopped stopped =>
-                $"plan {DomainId.Short(stopped.Id)} ended stopped at discovery's gate; the idea {DomainId.Short(stopped.IdeaId)} is still Captured, and "
+                $"plan {DomainId.Short(stopped.Id)} ended stopped at discovery's gate; the idea {DomainId.Short(stopped.IdeaId)} was left as it was, and "
                 + "concluding or archiving it stays yours",
             PlanPublished published => PlanPublishedLine(published),
             PlanCancelled cancelled =>

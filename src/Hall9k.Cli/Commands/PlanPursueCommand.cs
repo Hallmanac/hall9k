@@ -107,10 +107,12 @@ public sealed class PlanPursueCommand : Hall9kAsyncCommand<PlanPursueCommand.Set
 
         // Each draft is what `h9k task add --from-idea <idea> --objective "<objective>"` creates: the whole note as context, the
         // discovery workspace beneath it, the idea's provenance, and no criteria (refinement writes them). The context names the
-        // idea and never the report or the plan: a draft's context replicates to every node, and the report's path is this node's
-        // alone. The refinement prompt tells the session where the report is from the plan's own record.
+        // idea and the report's file name, which sits in the workspace directory the context already names. Only the file name is
+        // written, never a path: a draft's context replicates to every node, and the name is the same on all of them while the
+        // directory is this node's. The refinement prompt tells the session the full path from the plan's own record.
         string context1 = IdeaPromoteCommand.AgentContext(idea, idea.Text.Trim()).TrimEnd();
-        string draftContext = $"{context1}\n\nThis task was proposed by a discovery of idea {TaskListCommand.ShortId(idea.Id)}.";
+        string draftContext = $"{context1}\n\nThis task was proposed by a discovery of idea {TaskListCommand.ShortId(idea.Id)}, "
+            + $"whose report is {DiscoveryWorkspace.ReportFileName(plan.Id)} in the workspace above.";
         List<(TaskAdded Added, IdeaTaskCut Cut)> drafts = [];
         bool recordsNoExistingItem = false;
         bool recordsUntracked = false;

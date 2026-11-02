@@ -205,7 +205,7 @@ stop, the proposed objectives, the report's path, and a line to paste to resume 
 refused at the gate (after a failed session it runs discovery again). The two answers:
 `h9k plan pursue <plan> [--epic-title "<t>"] [--no-existing-item|--untracked]` reads the report from the workspace at that
 moment (an edit counts) and in one save cuts a draft per `TASK` line (what `h9k task add --from-idea <idea> --objective "…"`
-would create, with a context that also names the idea) and moves the plan to refinement, with the drafts then fixed; and
+would create, with a context that also names the idea and the report's file name) and moves the plan to refinement, with the drafts then fixed; and
 `h9k plan stop <plan> --reason "<why>"` ends it as Stopped, a normal ending that leaves the idea Captured. `h9k plan cancel` before
 drafts exist stops the session, copies nothing, and leaves the idea as it was. Concluding or archiving the idea is never a plan's
 act.

@@ -548,7 +548,7 @@ would read as go.
 
 `h9k plan show` and `h9k plan list` name the idea of a plan started from one. On the node that ran it, `h9k idea show` names
 the idea's newest plan with its state and phase, and at the gate the two answers; on any other node nothing mentions the plan
-or the report, because a cut draft's context names the idea and never the report's path. A refinement session for a draft in a plan of more than one draft is told the plan's other drafts by id and
+or the report, because a cut draft's context names the idea and the report's file name (`discovery-<plan short id>.md`, in the workspace directory the context already names) and never the report's path. A refinement session for a draft in a plan of more than one draft is told the plan's other drafts by id and
 objective, quoted in a fence as source material and never instruction, and that its revision may set `blocked-by` to one of them
 and `stacked-on` as well when it builds on that draft's branch (a stacked edge is also a dependency edge, so `stacked-on` alone is refused); for a draft that came from discovery it
 is also told the report's path.

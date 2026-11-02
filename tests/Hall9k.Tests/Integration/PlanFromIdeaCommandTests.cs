@@ -301,7 +301,8 @@ public sealed class PlanFromIdeaCommandTests : IClassFixture<PostgresFixture>, I
         drafts.Should().OnlyContain(draft => draft.AcceptanceCriteria.Count == 0);
         TaskDetails first = drafts[0];
         first.AgentContext.Should().Contain("Let a plan start from an idea. It needs a gate.").And.Contain(IdeaPaths.WorkspaceDirectory(IdeaPaths.GlobalDirectory(ideaId)))
-            .And.Contain($"discovery of idea {DomainId.Short(ideaId)}", "the context names the idea").And.NotContain(reportPath, "a draft replicates, and the report is this node alone");
+            .And.Contain($"discovery of idea {DomainId.Short(ideaId)}", "the context names the idea")
+            .And.Contain(DiscoveryWorkspace.ReportFileName(planId), "the context names the report file").And.NotContain(reportPath, "a draft replicates, so it carries the file name and not this node's path");
 
         PlanDetails plan = await OnlyPlanAsync(cts.Token);
         (plan.InDiscovery, plan.IsParked, plan.State, plan.Phase).Should().Be((false, false, PlanState.Live, PlanPhase.Refinement));
@@ -442,6 +443,23 @@ public sealed class PlanFromIdeaCommandTests : IClassFixture<PostgresFixture>, I
 
         (await RunCliAsync(cts.Token, "plan", "pursue", plan.Id.ToString())).Should().BeOfType<DomainConflictException>().Which.Message.Should().Contain("has not finished discovery");
         (await RunCliAsync(cts.Token, "plan", "stop", plan.Id.ToString(), "--reason", "no")).Should().BeOfType<DomainConflictException>().Which.Message.Should().Contain("cannot be stopped");
+    }
+
+    [Fact]
+    public async Task Stop_names_the_state_the_idea_is_in_when_it_was_concluded_while_the_plan_waited_at_the_gate()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ideaId = await SeedIdeaAsync(cts.Token);
+        (Guid planId, _) = await PlanAtGateAsync(ideaId, "Nothing to build.\n\nDISCOVERY: stop\n", cts.Token);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.Append(ideaId, IdeaDecider.Conclude(await IdeaAsync(ideaId, cts.Token), "done another way", Now, _me.OwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        string output = await CaptureAsync(() => RunCliAsync(cts.Token, "plan", "stop", DomainId.Short(planId), "--reason", "done elsewhere"));
+
+        output.Should().Contain("stopped").And.Contain("is Concluded").And.NotContain("is Captured");
     }
 
     [Fact]

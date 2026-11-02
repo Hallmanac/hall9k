@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Plan.Handlers;
@@ -57,9 +58,16 @@ public sealed class PlanStopCommand : Hall9kAsyncCommand<PlanStopCommand.Setting
 
         await Doorbell.RingAsync($"plan-stopped:{plan.Id}", cancellationToken);
         string idea = TaskListCommand.ShortId(stopped.IdeaId);
+
+        // Stopping touches only the plan, and a plan at the gate can outlive its idea's Captured state for a sweep (concluded or
+        // archived while the daemon was down), so the idea is read rather than assumed.
+        IdeaAggregate? ideaNow = await session.Events.AggregateStreamAsync<IdeaAggregate>(stopped.IdeaId, token: cancellationToken);
+        string ideaState = ideaNow is null
+            ? "not readable on this node"
+            : ideaNow.State.Value;
         AnsiConsole.MarkupLine($"[blue]Plan {TaskListCommand.ShortId(plan.Id)} stopped[/] at discovery's gate, a normal ending");
         AnsiConsole.MarkupLine(
-            $"[dim]  Idea {idea} is still Captured, and its workspace, the report in it, and any task already cut from it are untouched. "
+            $"[dim]  Idea {idea} is {ideaState.EscapeMarkup()}, and its workspace, the report in it, and any task already cut from it are untouched. "
             + "Nothing was cut and no session runs.[/]");
         AnsiConsole.MarkupLine($"  h9k idea conclude {idea} --reason \"…\"   [dim]: something came of it[/]");
         AnsiConsole.MarkupLine($"  h9k idea archive {idea} --reason \"…\"    [dim]: nothing did[/]");

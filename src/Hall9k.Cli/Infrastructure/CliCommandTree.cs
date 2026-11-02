@@ -2425,7 +2425,7 @@ public static class CliCommandTree
                     "Answer discovery's gate by pursuing the idea. Reads the report from the idea's workspace now, so an edit you made to "
                     + "it counts, and in one save cuts one draft per TASK line of its closing block (each is what h9k task add "
                     + "--from-idea <idea> --objective \"<objective>\" would create on the plan's project, with a context that also names "
-                    + "the report) and moves the plan to refinement. The plan's drafts are fixed from there and it runs a plan's "
+                    + "the idea and the report's file name) and moves the plan to refinement. The plan's drafts are fixed from there and it runs a plan's "
                     + "ordinary path to Published. Refused, with nothing cut and the plan still at the gate, when the plan is not at "
                     + "the gate, the report is missing or unreadable or says stop, the idea is no longer Captured or has moved to "
                     + "another project, the project is archived or scheduled for purge, or, on a project whose publish asks for a "
