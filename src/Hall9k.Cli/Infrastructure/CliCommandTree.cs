@@ -896,7 +896,8 @@ public static class CliCommandTree
                     .WithDescription(
                         "Register the platform's start-at-login mechanism: h9kd starts at login and restarts "
                         + "after a crash — never after a clean stop, and h9k daemon stop always still means stopped")
-                    .WithExample("daemon", "autostart", "enable");
+                    .WithExample("daemon", "autostart", "enable")
+                    .WithExample("daemon", "autostart", "enable", "--run-level", "highest");
                 autostart.AddCommand<DaemonAutostartDisableCommand>("disable")
                     .WithDescription("Fully unregister start-at-login (stops an autostart-owned daemon and says so)")
                     .WithExample("daemon", "autostart", "disable");
