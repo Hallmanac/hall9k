@@ -187,15 +187,21 @@ public static class TaskDependencyResolver
                 // past failure do not count either: one that replayed as a no-op because the task was
                 // not Blocked when it landed (a claim committed between a sweep's read and its
                 // unfenced append), which a later release leaves unrecorded, and one observed before
-                // this node's purge, which only a pre-purge sweep could have written and which
-                // describes no purge at all.
+                // this node's purge, which an earlier build's unconditional sweep wrote and which
+                // describes no purge at all. A sweep that began before the purge committed still
+                // reads the purge record before it appends, so its failure is stamped no earlier
+                // than the purge (below) and is never mistaken for one of those.
                 streamEvents ??= await session.Events.FetchStreamAsync(task.Id, token: cancellationToken);
                 if (await AlreadySaidAsync(session, task.Id, streamEvents, purge, reason, cancellationToken))
                 {
                     continue;
                 }
 
-                TaskDependencyFailed died = TaskDecider.DependencyFailed(task, missingId, reason, now);
+                // The sweep's clock was read before it started, so a purge that committed meanwhile
+                // can carry a later PurgedAt than this sweep's `now`. The purge record is read here,
+                // so this failure was observed after the purge whatever `now` says.
+                DateTimeOffset observedAt = now < purge.PurgedAt ? purge.PurgedAt : now;
+                TaskDependencyFailed died = TaskDecider.DependencyFailed(task, missingId, reason, observedAt);
                 session.Events.Append(task.Id, died);
                 task.Apply(died);
                 held = reason;

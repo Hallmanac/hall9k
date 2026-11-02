@@ -16,8 +16,9 @@ namespace Hall9k.Connectors.Orchestrator;
 /// <c>OrchestratorFeedCommand.PrintItemsAsync</c> composes (<see cref="OrchestratorFeedRenderer.Group"/>,
 /// <see cref="OrchestratorFeedRenderer.Render"/>, and <see cref="RelayedText.OneLine"/> — the same
 /// function <c>Cli.Infrastructure.ExternalText.OneLine</c> forwards to), so a courier's message
-/// and a plain <c>h9k orchestrator feed</c> read of the identical items print identically without
-/// the two implementations sharing a single call.
+/// and a plain <c>h9k orchestrator feed</c> read of the identical items print identically. The
+/// task headings are the one piece they share outright: <see cref="HeadingsAsync"/> is public and
+/// the Cli's feed command calls it, so a heading change lands here once.
 /// </summary>
 public static class OrchestratorFeedPrinter
 {

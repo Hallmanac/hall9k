@@ -71,8 +71,16 @@ public sealed class TaskDependencyMissingBlockerTests(PostgresFixture postgres) 
         await AssertBlockedWithNoFailureAsync(store, dependentId, expectFailureEvents: failureAndRecoveryAlreadyReplicated, cts.Token);
     }
 
-    [Fact]
-    public async Task A_node_that_purged_the_blocker_records_the_failure_once_and_leaves_it_lifted_after_another_node_recovers_it()
+    /// <summary>
+    /// The second case is a purge that committed after the sweep took its clock reading: the purge
+    /// record is dated later than the sweep's <c>now</c>, yet the failure the sweep then records
+    /// still counts as said, so the recovery that replicates back is not answered with a second one.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_node_that_purged_the_blocker_records_the_failure_once_and_leaves_it_lifted_after_another_node_recovers_it(
+        bool purgeCommittedAfterTheSweepStarted)
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         IDocumentStore store = postgres.Store;
@@ -82,7 +90,8 @@ public sealed class TaskDependencyMissingBlockerTests(PostgresFixture postgres) 
             store, DomainId.New(), DomainId.New(), ownerId, cts.Token);
         await using (IDocumentSession session = store.LightweightSession())
         {
-            session.Store(new PurgedTaskRecord(blockerId, DomainId.New(), Now));
+            session.Store(new PurgedTaskRecord(
+                blockerId, DomainId.New(), purgeCommittedAfterTheSweepStarted ? Now.AddMinutes(1) : Now));
             await session.SaveChangesAsync(cts.Token);
         }
 
