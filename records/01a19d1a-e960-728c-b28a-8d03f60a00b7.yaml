@@ -1,0 +1,37 @@
+hall9k-task-record: 1
+task-id: 01a19d1a-e960-728c-b28a-8d03f60a00b7
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#848
+objective: On Windows, h9k daemon autostart enable keeps the logon task's run level across a re-enable instead of silently resetting it to LeastPrivilege, and raises or lowers it only when asked
+criteria:
+  - |-
+    On Windows, h9k daemon autostart enable keeps the existing \Hall9k\h9kd task's run level when one is registered, and registers LeastPrivilege when none is, whatever the shell's elevation. A new option, --run-level highest|limited, is the only way to change the level: highest registers HighestAvailable, limited registers LeastPrivilege. The success line names the level registered, as elevated or not elevated, and says every daemon start that goes through the task (logon, and h9k daemon start without --binary) runs at that level
+  - |-
+    Any registration at HighestAvailable, whether kept from the existing task or asked for with --run-level highest, is refused before schtasks runs when the shell is not elevated. The refusal names the level and both ways forward: re-run from an elevated shell, or pass --run-level limited to lower it on purpose. Elevation is the current process's own TokenElevation, read behind a seam
+  - An absent task is IsEnabled false (the existing schtasks /Query exit-code route); only an existing task's level is read, through (Get-ScheduledTask -TaskPath '\Hall9k\' -TaskName h9kd).Principal.RunLevel.ToString(), the unlocalized route IsLoadedAsync uses for State, never schtasks display text or an exception message. An existing task whose read fails or returns neither Highest nor Limited counts as unreadable, and enable then requires an explicit --run-level and says why
+  - On macOS, and wherever autostart is unsupported, --run-level is refused with a message that it applies only to Windows; enable without it behaves exactly as today
+  - |-
+    docs/INSTALL.md's Windows daemon section and docs/cli.md's daemon autostart rows describe the kept level, the option, the refusal, the two starts that do not go through the task (h9k daemon start --binary, and any start with autostart not registered, which inherit the shell's elevation), that --run-level highest makes the daemon and every agent it dispatches run as an administrator, and that the operator's Claude windows and the daemon must be at the same elevation for the feed courier to reach a window. docs/getting-started.md's re-run advice (the Decisions Log #222 paragraph) says that a re-run keeps the level, and that on an elevated task it must be run from an elevated shell
+  - Tests cover the task XML at each run level (the rest of TaskXmlContent unchanged), the level chosen for every combination of existing task (absent, Highest, Limited, unreadable), --run-level (none, highest, limited), and shell elevation, each refusal's wording, and the non-Windows refusal. The shell's elevation and the existing level are read behind seams so these run on both CI legs. No test or doc line states schtasks' own behaviour for a non-elevated HighestAvailable registration as measured
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a04de3-7a23-75c0-8a06-9314ef6ab27d
+origin-node-name: HALL-AGELESSRX
+origin-branch: task/f60a00b7-on-windows-h9k-daemon-autostar
+published: 2026-11-02 17:27:48Z
+context: |-
+  Why: idea 6f838a3b (`ideas/6f838a3b-the-feed-courier-on-this-windows-node-has-never-delivered-ev/workspace/journal.md`). On this Windows node the daemon ran non-elevated while every Claude window ran elevated, so the feed courier, which inherits the daemon's elevation, could never open a window's named pipe and never delivered. Brian keeps his windows elevated, so on 2026-11-01 at 19:14 EST he raised the logon task \Hall9k\h9kd to RunLevel Highest by hand (Set-ScheduledTask) and restarted the daemon; it has delivered since. When autostart is registered, every `h9k daemon start` without `--binary` goes through that task (schtasks /Run), so the task's level is the daemon's level. Today one `h9k daemon autostart enable` silently undoes the fix, because the registration hardcodes LeastPrivilege. Cut from draft 956bd97e, which builds after this task and names `--run-level highest` in its fix text.
+
+  Why keep-existing rather than following the shell: Windows operators often open admin terminals by habit, and a level that followed the shell would quietly make every dispatched agent, which already runs with --dangerously-skip-permissions, an administrator. Keeping the existing level fixes the reported bug and keeps today's conservative default for a first enable (challenge in 956bd97e's workspace/challenge.md, finding f60a00b7-1).
+
+  Where the code is (origin/main d83eb53a):
+  - `src/Hall9k.Cli/DaemonControl/WindowsDaemonAutostart.cs`: `TaskXmlContent` hardcodes `<RunLevel>LeastPrivilege</RunLevel>`. The Task Scheduler XML values are `LeastPrivilege` and `HighestAvailable`; PowerShell's `Limited` and `Highest` are the same two levels under other names. `EnableAsync` registers with `schtasks /Create /XML ... /F`. `IsEnabled` is `QueryExists()` (schtasks /Query exit code). `IsLoadedAsync` and `StateQueryCommand` show the Get-ScheduledTask pattern. A missing task makes Get-ScheduledTask throw a long CIM exception, which is why absence is read from IsEnabled instead. A non-elevated shell reading a Highest task's Principal.RunLevel was measured to work on this node.
+  - `src/Hall9k.Cli/DaemonControl/DaemonLifecycle.cs`: `startThroughAutostart` and the `--binary` bypass.
+  - `src/Hall9k.Cli/DaemonControl/IDaemonAutostart.cs`: `EnableAsync` is the cross-platform seam; `LaunchdDaemonAutostart` and `DeferredDaemonAutostart` implement it too.
+  - `src/Hall9k.Cli/Commands/DaemonAutostartEnableCommand.cs`: options, success and refusal output. Follow the repo's CLI standards: a `[Description]` that teaches, and an example.
+  - `tests/Hall9k.Tests/Cli/WindowsDaemonAutostartTests.cs` already calls `TaskXmlContent` on every CI leg (ubuntu-latest and windows-latest).
+  - Elevation: read GetTokenInformation(TokenElevation) on the current process's own token, behind a seam, rather than WindowsPrincipal against the Administrators role. 956bd97e later generalizes this into one reader for any pid in Hall9k.Domain and points this check at it; keep this one small.
+
+  Placement: build on this Windows node (Brian places it). No dependency.
