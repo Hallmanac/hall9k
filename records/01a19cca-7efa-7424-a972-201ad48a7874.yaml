@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a19cca-7efa-7424-a972-201ad48a7874
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#845
+objective: A node that has no record of a blocker leaves the dependent task Blocked instead of recording the dependency as failed, unless this node itself purged the blocker's project, so one node's partial view never parks a correctly blocked task for every node.
+criteria:
+  - When the dependency sweep meets a blocker id that names no task on this node, it records a TaskDependencyFailed for it only when this node's own purge record names that id as a task this node destroyed while purging a project. Otherwise it records nothing and leaves the dependent Blocked, whatever project the blocker belongs to. A blocker in a project this node has not registered and joined, or one whose events have not reached this node yet, therefore never parks the dependent.
+  - Purging a project on this node records the ids of the tasks it destroyed, on this node only, in the same save that destroys them, and that record never replicates. A dependent whose blocker this node purged is still recorded as failed, with the same reason it gets today.
+  - |-
+    The pull request description states the rule and why it was chosen: a dependency edge records no project for its blocker, and a purge deletes the blocker project's own record, so neither one can tell an unseen project from a purged one. A purge this node carried out is the only evidence the sweep relies on.
+  - Tests cover these cases. A missing blocker with no purge record leaves the dependent Blocked with no TaskDependencyFailed, both when the blocker was in another project and when it was in the dependent's own project. A blocker destroyed by a purge on this node still fails the dependent, and the existing purge integration test keeps passing unchanged. A node with no purge record does not record the failure again after another node lifted the hold. The tests may be unit or integration tests. No test spawns an agent or touches GitHub.
+  - On the node that cannot see it, the blocker is shown as an unknown blocker wherever that node reports the task (h9k status, h9k task show, and the orchestrator feed the courier delivers), named by its short id only and never its objective, with a hint that it most likely belongs to a project in a solution held on a teammate's node and the user can ask that teammate about it. Wording and placement follow the existing blocked-reason lines; a golden or unit test pins the line.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/d48a7874-a-node-that-has-no-record-of-a
+published: 2026-11-02 15:09:34Z
+context: |-
+  Found by the challenge of 9b4bfd1d (its Parks section); revised by d48a7874's own challenge (/Users/brianhallmanac/.hall9k/runs/01a19cca-97c7-716e-989e-9b3822229736/challenge-report.md: both musts and both shoulds applied) and by Brian's 2026-11-02 ask that the unseen blocker be shown, not silent. The sweep runs on every node over every Blocked task (DispatchEngine.cs:709-712) and treats an unknown blocker id as gone (TaskDependencyResolver.cs:150-170, 263-266), recording TaskDependencyFailed, which is project-scoped (EventScopeRegistry.cs:107), so a teammate's node that joined only the dependent's project parks it for everyone; a node that sees the blocker lifts it again, so two views flip the hold each cycle (TaskDependencyResolver.cs:161, 208-218; TaskAggregate.cs:1818-1833). Edges are bare ids (TaskAdded.BlockedBy, TaskAssigned.UnmetDependencies), and a purge deletes the project's ProjectDetails (ProjectPurgeEngine.cs:358-360), so neither tells an unseen project from a purged one; a purge record this node wrote is the evidence. 9b4bfd1d touches the same resolver's recovery and DeathReason text but not the missing-id loop; expect at most a trivial text merge. Release note owed: the flip-flop ends only when every node in the project runs this fix. Brian wants it before v0.17.0.
