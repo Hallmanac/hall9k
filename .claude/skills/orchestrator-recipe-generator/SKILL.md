@@ -591,14 +591,13 @@ line.
 2. Pick the recipe (`recipes/idea-discovery.md`), and the tier,
    agent CLI, model, and effort from *Model and effort* above, and a short display name. Generate a
    fresh session id in this window's own tool shell (`uuidgen | tr 'A-Z' 'a-z'`, or whatever the
-   node's own shell offers for the same thing). Launch it as this window's own backgrounded call,
-   so this window is notified when the session ends; this is not `claude --bg`, which returns at
-   once with a short id and gives no end notification. Write the exact command in this section of
-   the recipe, built the same way the platform builds any launch line, but pointed at the scoped
-   recipe instead of the anchor, naming the model and effort explicitly so neither is ever left to
-   inherit from `recipes/settings.json`:
+   node's own shell offers for the same thing). This window never launches the session: it gives the
+   operator the line to run in their own terminal, and does not run it as a call of its own, backgrounded
+   or otherwise. Write the exact command in this section of the recipe, built the same way the platform
+   builds any launch line, but pointed at the scoped recipe instead of the anchor, naming the model and
+   effort explicitly so neither is ever left to inherit from `recipes/settings.json`:
 
-       cd "<this project's working directory>" && claude --strict-mcp-config --setting-sources project --settings recipes/settings.json --dangerously-skip-permissions --model '<exact model id>' --effort <level> -n '<name>' --session-id <uuid> -p --append-system-prompt-file recipes/idea-discovery.md "<opening message naming the subject and its hand-off journal path>"
+       cd "<this project's working directory>" && claude --strict-mcp-config --setting-sources project --settings recipes/settings.json --dangerously-skip-permissions --model '<exact model id>' --effort <level> -n '<name>' --session-id <uuid> --append-system-prompt-file recipes/idea-discovery.md "<opening message naming the subject and its hand-off journal path>"
 
    This is a **stated exception** to *never write a launch line into a recipe* above, not a second
    rule: the orchestrator window's own launch line is a platform setting because the platform
@@ -624,12 +623,13 @@ line.
    substituting them in: on POSIX, backslash-escape `\`, `"`, `$`, and `` ` ``; in PowerShell
    (Windows), backtick-escape `` ` ``, `$`, and `"`. Never paste operator-supplied text into either
    quoted segment unescaped.
-3. Add the row to `sessions.md` before the launch returns: the model, the effort, the session id,
+3. Add the row to `sessions.md` when the line is handed over: the model, the effort, the session id,
    and the fresh-start fallback line, the same command with `--model` and `--effort` kept exactly as
-   launched, but with `-p`, `-n`, and `--session-id` dropped, so the operator can open a fresh
+   launched, but with `-n` and `--session-id` dropped, so the operator can open a fresh
    interactive session on the same subject if this one's history is ever lost.
-4. When it ends, read what it wrote into the workspace, report the result to the operator in plain
-   language, and mark the row. Give the operator a step-in line carrying exactly the working
+4. When the operator says the session has ended, read what it wrote into the workspace, report the result
+   to the operator in plain language, and mark the row; this window is not notified of the end, so it
+   learns of it from the operator. Give the operator a step-in line carrying exactly the working
    directory, `--strict-mcp-config`, `--setting-sources project`, `--settings`,
    `--dangerously-skip-permissions`, `--model`, `--effort`, `--append-system-prompt-file`, and
    `--resume <id>`, and never `-p`, `-n`, `--session-id`, or an opening message: those either
