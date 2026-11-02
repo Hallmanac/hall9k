@@ -21,3 +21,7 @@ origin-branch: task/9b4bfd1d-a-plan-s-refinement-session-fo
 published: 2026-11-02 14:54:35Z
 context: |-
   Second task from idea 56c1b467, criteria walked with Brian in the discovery session (2026-11-02) and revised by its challenge (all four must/should changes applied; report /Users/brianhallmanac/.hall9k/runs/01a19cbc-2f2f-7272-95df-56fb13bd0cd9/challenge-report.md). Brian ruled plans stay project-level and node-scoped, with the solution epic as the solution-level router; this task lets a member's plan read the other members' work through it. No blocking edge to a99713dd (plan pursue solution epic): different code, and epics from h9k epic add are already solution epics. The no-quote rule exists because the revision replicates through this project's public ledger and tracker; Brian raised member isolation as a security concern. Today a refinement session is told only its own plan's siblings (PlanRefinementPromptFacts.cs:30,48; plan-refinement.md). A dependency-failed reason is project-scoped and quotes the blocker's objective (TaskDependency.Describe and DescribeDeath, TaskDependencyResolver.DeathReason); criterion 6 keeps another project's objective out of it.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-11-02 14:54:43Z
