@@ -238,7 +238,6 @@ public sealed class DraftChallengeEngine(
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(aggregate.ProjectId, cancellationToken);
         AgentModel model = _options.ResolveChallengeModel(project?.Model);
-
         AgentEffort effort = _options.ResolveChallengeEffort(project?.Effort);
 
         // The rules the verb enforced, enforced again where the session would start: the request outlives the

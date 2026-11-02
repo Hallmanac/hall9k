@@ -1339,7 +1339,6 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         }
     }
 
-
     /// <summary>
     /// A plan on this node that is parked for a person (<c>h9k plan start</c>), one line each under Needs you, with its
     /// reason from the closed list and the verb that answers it. Plans never leave their node, so these are this node's only.

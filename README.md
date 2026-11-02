@@ -580,6 +580,11 @@ dotnet run --project src/Hall9k.AppHost
 dotnet test                   # unit and integration tiers; integration needs Docker
 ```
 
+A plan (`h9k plan start`) makes the daemon run the installed `h9k` as a child process, resolved from
+`~/.hall9k/bin` and then `PATH`, never from `src/Hall9k.Cli/bin`. To exercise plans from the dev loop,
+run `h9k install --repo` first, and again after changing the CLI, or the child runs stale code (or
+nothing, and the plan parks as revision refused).
+
 ### Pointing at a different database
 
 Nothing is *started* at install time (no prompt, no provisioning, Decisions Log #58), though
