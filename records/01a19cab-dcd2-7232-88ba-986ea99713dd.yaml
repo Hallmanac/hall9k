@@ -1,0 +1,23 @@
+hall9k-task-record: 1
+task-id: 01a19cab-dcd2-7232-88ba-986ea99713dd
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#842
+objective: h9k plan pursue --epic-title, run in a project that belongs to an open solution, creates a solution epic (one copy per held member sharing a key, as h9k epic add does) and puts every cut draft in this project's copy, instead of a plain project epic the other members never see.
+criteria:
+  - When the plan's project belongs to an open solution, h9k plan pursue --epic-title creates the epic through SolutionEpicAddition.PlanAsync, the path h9k epic add uses, so it writes exactly the copies h9k epic add would write (one per member this node holds that is not scheduled for purge, all sharing one solution epic key and the title), and every cut draft joins this project's copy. The plan's PlanDraftsCut records this project's copy as its epic. Where h9k epic add would refuse (the solution is closed on a project that has not caught up with it), the pursue is refused with that reason, nothing is cut, and the plan stays at the gate.
+  - The epic copies, the drafts, the idea's cuts, and the plan's event are written in one save. When the pursue is refused, or its save loses the race on the plan or the idea, no epic copy exists in any member project and no draft exists.
+  - |-
+    A project in no open solution (in none, or in a closed one) behaves exactly as today: one plain epic, with every cut draft in it.
+  - When a solution epic is created, the pursue's output says so, gives the reference h9k epic add prints for it (the key form from EpicIdResolver.ReferenceOf), and names any member that got no copy and why, as h9k epic add does.
+  - Tests cover the solution case (a copy in every held member sharing one key, and every draft in this project's copy) and the no-solution case.
+  - The --epic-title help text, the h9k plan pursue entry in docs/cli.md, the plan-from-idea paragraph in docs/scope.md, and the hall9k-cli-reference skill's plan section all describe the solution behaviour, and no surface still says the epic is always plain (including the help text's 'A plain epic only' sentence).
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/a99713dd-h9k-plan-pursue-epic-title-run
+published: 2026-11-02 14:34:58Z
+context: |-
+  Found by idea 56c1b467's discovery, read at 8a6dfd597. Defect at src/Hall9k.Cli/Commands/PlanPursueCommand.cs:105 (EpicDecider.Add on the plan's project) and its help at :42. The right path is src/Hall9k.Cli/Commands/EpicAddCommand.cs:64, SolutionEpicAddition.PlanAsync, with its output at :92-108. Brian ruled (2026-11-02) that plans stay project-level and node-scoped and the solution epic is the solution-level router, so this path must work. The defect is unreleased: plan pursue arrived after v0.16.0 (d583de6e7), so it exists only on main, ahead of v0.17.0, which Brian is holding. Run PlanAsync against the fresh project read after the second RefuseIdea, before the one save. Challenge report: /Users/brianhallmanac/.hall9k/runs/01a19cab-f2ff-718c-9e5c-bf87eca23621/challenge-report.md (all six shoulds applied).
