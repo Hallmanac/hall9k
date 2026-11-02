@@ -653,6 +653,7 @@ public sealed class FeedbackStepEngine(
         FeedbackStepOutcomeRecorded outcome = FeedbackStepDecider.Conclude(
             task, FeedbackStepOutcome.RevisedAndRequeued, "the task was refined against its blockers' notes, challenged once, published, and queued again", now);
         session.Events.Append(task.Id, expectedVersion: fence.Version + 2, assigned, outcome);
+        _holder.StageRelease(session, task.Id, task.ProjectId, now);
         try
         {
             await session.SaveChangesAsync(cancellationToken);
@@ -691,6 +692,7 @@ public sealed class FeedbackStepEngine(
                 new PlanCancelled(plan.Id, plan.ProjectId, "the task's feedback step ended, so the plan that carried it ends too", null, now));
         }
 
+        _holder.StageRelease(session, task.Id, task.ProjectId, now);
         try
         {
             await session.SaveChangesAsync(cancellationToken);
