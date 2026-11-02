@@ -1505,7 +1505,7 @@ step by hand answers the park. A plan creates no run, lease, branch, or worktree
 the run ceiling. It needs a project that runs agents with skip-permissions. Works today: one project's drafts per plan,
 starting at refinement or challenge; starting from an idea (`h9k plan start --idea`), where a headless discovery session
 writes a report into the idea's workspace and the plan parks at a gate, `h9k plan pursue` cuts the report's proposed
-tasks as drafts (with `--epic-title` for one plain epic) and `h9k plan stop` ends it as a normal ending; and cancelling.
+tasks as drafts (with `--epic-title` for one epic: a solution epic in a project that belongs to an open solution, as `h9k epic add` makes, and a plain project epic elsewhere) and `h9k plan stop` ends it as a normal ending; and cancelling.
 Designed but not built: a drafting session (the report proposes objectives and pursue cuts them, so no third session writes
 them), adding a draft to a live plan, carrying an idea's workspace between nodes, a third gate answer for another look (stop,
 then start a new plan), a time limit on the gate, an attestation for ideas that carry a tracker link (they are refused), and
