@@ -121,7 +121,7 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
     /// <summary>
     /// Every role the config file can carry an effort for lands on the <c>DaemonOptions</c> slot of the same
     /// name, so <c>h9k config show</c> and <c>h9k daemon status</c> never report a level the daemon does not
-    /// run on. Both sides are named after the same eleven properties, which this holds true by binding each one.
+    /// run on. Both sides are named after the same thirteen properties, which this holds true by binding each one.
     /// </summary>
     [Fact]
     public async Task Effort_by_role_binds_every_role_from_the_config_file_beside_the_node_wide_effort()
@@ -142,6 +142,7 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
                 s.EffortByRole.Publication = "medium";
                 s.EffortByRole.Courier = "high";
                 s.EffortByRole.Challenge = "xhigh";
+                s.EffortByRole.FeedbackCheck = "low";
             },
             CancellationToken.None);
         ConfigurationBuilder builder = new();
@@ -165,11 +166,12 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
             (nameof(RoleEffortDefaults.Publication), bound.EffortByRole.Publication),
             (nameof(RoleEffortDefaults.Courier), bound.EffortByRole.Courier),
             (nameof(RoleEffortDefaults.Challenge), bound.EffortByRole.Challenge),
+            (nameof(RoleEffortDefaults.FeedbackCheck), bound.EffortByRole.FeedbackCheck),
         ];
         roles.Select(role => role.Value).Should().Equal(
-            "medium", "high", "xhigh", "low", "medium", "xhigh", "high", "xhigh", "low", "medium", "high", "xhigh");
+            "medium", "high", "xhigh", "low", "medium", "xhigh", "high", "xhigh", "low", "medium", "high", "xhigh", "low");
         new RoleEffortSettings().AsPairs().Select(pair => pair.Role).Should().BeEquivalentTo(
-            roles.Select(role => role.Role), "the report and the daemon name the same twelve slots");
+            roles.Select(role => role.Role), "the report and the daemon name the same thirteen slots");
     }
 
     /// <summary>

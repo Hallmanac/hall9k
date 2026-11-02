@@ -424,6 +424,24 @@ public sealed class ConfigSetCommandTests
         changed.Should().ContainSingle().Which.Should().Contain("cleared");
     }
 
+    [Fact]
+    public void The_feedback_check_model_is_stored_in_its_own_slot_and_the_word_default_clears_it()
+    {
+        OperatingSettings operating = new() { ModelByRole = new RoleModelSettings { Refinement = "opus" } };
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(new ConfigSetCommand.Settings { ModelFeedbackCheck = "claude-haiku-5-5" }, operating, changed);
+
+        operating.ModelByRole.FeedbackCheck.Should().Be("claude-haiku-5-5");
+        operating.ModelByRole.Refinement.Should().Be("opus", "the check and the refinement are set to different tiers");
+        changed.Should().ContainSingle().Which.Should().Contain("feedback-check");
+
+        ConfigSetCommand.Apply(new ConfigSetCommand.Settings { ModelFeedbackCheck = "default" }, operating, []);
+
+        operating.ModelByRole.FeedbackCheck.Should().BeNull();
+        ConfigSetCommand.Validate(new ConfigSetCommand.Settings { ModelFeedbackCheck = "claude-haiku-5-5" });
+    }
+
     public static TheoryData<string, Func<OperatingSettings, string?>> RoleEffortFlags => new()
     {
         { "--effort-build", operating => operating.EffortByRole.Build },
@@ -436,6 +454,7 @@ public sealed class ConfigSetCommandTests
         { "--effort-refinement", operating => operating.EffortByRole.Refinement },
         { "--effort-publication", operating => operating.EffortByRole.Publication },
         { "--effort-courier", operating => operating.EffortByRole.Courier },
+        { "--effort-feedback-check", operating => operating.EffortByRole.FeedbackCheck },
     };
 
     private static ConfigSetCommand.Settings SettingsFor(string flag, string value) => flag switch
@@ -450,6 +469,7 @@ public sealed class ConfigSetCommandTests
         "--effort-refinement" => new() { EffortRefinement = value },
         "--effort-publication" => new() { EffortPublication = value },
         "--effort-courier" => new() { EffortCourier = value },
+        "--effort-feedback-check" => new() { EffortFeedbackCheck = value },
         _ => throw new ArgumentOutOfRangeException(nameof(flag), flag, null),
     };
 
@@ -483,6 +503,7 @@ public sealed class ConfigSetCommandTests
             {
                 Build = "low", Fix = "low", Review = "low", ReviewVerify = "low", ReviewFinalFullPass = "low",
                 SecurityReview = "low", Synthesis = "low", Refinement = "low", Publication = "low", Courier = "low",
+                FeedbackCheck = "low",
             },
         };
         List<string> changed = [];
@@ -490,7 +511,7 @@ public sealed class ConfigSetCommandTests
         ConfigSetCommand.Apply(SettingsFor(flag, "default"), operating, changed);
 
         read(operating).Should().BeNull();
-        operating.EffortByRole.AsPairs().Count(pair => pair.Effort == "low").Should().Be(9);
+        operating.EffortByRole.AsPairs().Count(pair => pair.Effort == "low").Should().Be(10);
         changed.Should().ContainSingle().Which.Should().Contain("cleared");
     }
 

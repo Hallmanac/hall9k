@@ -135,6 +135,7 @@ public static class OperatingSettingsRendering
         // The challenge's floor of high holds under a node-wide effort of any value, so the generic
         // fallthrough would tell an operator the node-wide effort moves it when it does not.
         nameof(RoleEffortSettings.Challenge) => "high, the challenge's own floor, whatever the node-wide effort says",
+        nameof(RoleEffortSettings.FeedbackCheck) => "medium, the feedback check's own floor, whatever the node-wide effort says",
         _ => "the node-wide effort above, or the model's own default when that is not set either",
     };
 
@@ -280,6 +281,8 @@ public static class OperatingSettingsRendering
         // runs on the node's default model, so the stated fallthrough names its own constant.
         nameof(RoleModelSettings.Challenge) =>
             $"{AgentModel.ChallengeDefault}, the challenge's own floor, whatever default-model says",
+        nameof(RoleModelSettings.FeedbackCheck) =>
+            $"{AgentModel.FeedbackCheckDefault}, the feedback check's own floor, whatever default-model says",
         _ => "the platform default",
     };
 
