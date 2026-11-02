@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -158,10 +159,14 @@ public static class TaskDependencyResolver
             // project-scoped, so recording it from a partial view would park the task for every node,
             // and a node that does see the blocker would lift it again next cycle. Those ids record
             // nothing and the dependent stays Blocked; the surfaces name them as unknown blockers.
-            IReadOnlySet<Guid> purgedHere = await PurgedHereAsync(session, missingDependencyIds, cancellationToken);
+            IReadOnlyDictionary<Guid, PurgedTaskRecord> purgedHere =
+                await PurgedHereAsync(session, missingDependencyIds, cancellationToken);
             IReadOnlyList<IEvent>? streamEvents = null;
-            foreach (Guid missingId in missingDependencyIds.Where(purgedHere.Contains))
+            foreach (PurgedTaskRecord purge in missingDependencyIds
+                .Select(id => purgedHere.GetValueOrDefault(id))
+                .OfType<PurgedTaskRecord>())
             {
+                Guid missingId = purge.Id;
                 string reason = MissingDependencyReason(task, missingId);
                 if (task.RecordedDependencyFailure(missingId) == reason)
                 {
@@ -173,12 +178,19 @@ public static class TaskDependencyResolver
                 // lifts it with a TaskDependencyRecovered, which clears the recorded failure here
                 // too, and this node's record keeps naming the blocker, so recording again would
                 // trade failure and recovery with that node on every sweep. The stream remembers
-                // what the aggregate forgot, and the reason is this pass's own deterministic text,
-                // so a death another node recorded for the same id is never mistaken for it.
+                // what the aggregate forgot. Only a failure this node appended itself counts: the
+                // reason text is the same on every node for a given dependent and blocker, so a
+                // replicated copy (it carries the origin node header, which a local append never
+                // does) is another node's purge, not proof that this node's own purge was said.
+                // Counting it would leave every node believing another had already spoken, and the
+                // dependent Blocked with the dead hold recorded by none of them. Two more kinds of
+                // past failure do not count either: one that replayed as a no-op because the task was
+                // not Blocked when it landed (a claim committed between a sweep's read and its
+                // unfenced append), which a later release leaves unrecorded, and one observed before
+                // this node's purge, which only a pre-purge sweep could have written and which
+                // describes no purge at all.
                 streamEvents ??= await session.Events.FetchStreamAsync(task.Id, token: cancellationToken);
-                if (streamEvents.Any(e => e.Data is TaskDependencyFailed past
-                    && past.DependencyId == missingId
-                    && past.Reason == reason))
+                if (await AlreadySaidAsync(session, task.Id, streamEvents, purge, reason, cancellationToken))
                 {
                     continue;
                 }
@@ -264,18 +276,70 @@ public static class TaskDependencyResolver
         return new DependencyReevaluation(unblocked, parked, recovered);
     }
 
-    /// <summary>The ids among <paramref name="ids"/> that this node's own purge destroyed.</summary>
-    private static async Task<IReadOnlySet<Guid>> PurgedHereAsync(
+    /// <summary>The purge records for the ids among <paramref name="ids"/> that this node's own purge destroyed.</summary>
+    private static async Task<IReadOnlyDictionary<Guid, PurgedTaskRecord>> PurgedHereAsync(
         IDocumentSession session, IReadOnlyList<Guid> ids, CancellationToken cancellationToken)
     {
         if (ids.Count == 0)
         {
-            return new HashSet<Guid>();
+            return new Dictionary<Guid, PurgedTaskRecord>();
         }
 
         IReadOnlyList<PurgedTaskRecord> records = await session.LoadManyAsync<PurgedTaskRecord>(
             cancellationToken, [.. ids]);
-        return records.Select(record => record.Id).ToHashSet();
+        return records.ToDictionary(record => record.Id);
+    }
+
+    /// <summary>
+    /// Whether the dependent's own stream already holds a failure for this purge that this node
+    /// recorded and that took effect: appended locally, observed at or after the purge, and
+    /// actually recorded by the aggregate at that point (it replays to the reason where the
+    /// version before it did not), and not since ended by a recovery this node recorded itself.
+    /// </summary>
+    private static async Task<bool> AlreadySaidAsync(
+        IDocumentSession session,
+        Guid taskId,
+        IReadOnlyList<IEvent> streamEvents,
+        PurgedTaskRecord purge,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        bool recordedHere = false;
+        foreach (IEvent candidate in streamEvents)
+        {
+            // A recovery this node recorded itself (the blocker was alive here again) ends whatever
+            // an earlier failure said: the blocker has since been seen, so a purge that destroys it
+            // again is a new thing to say even when the purge record still carries its old date.
+            // A recovery that replicated in from another node does not, which is the case the
+            // once-per-dependent rule exists for.
+            if (candidate.Data is TaskDependencyRecovered recovery
+                && recovery.DependencyId == purge.Id
+                && candidate.GetHeader(ReplicationEventHeaders.OriginNodeId) is null)
+            {
+                recordedHere = false;
+                continue;
+            }
+
+            if (candidate.Data is not TaskDependencyFailed past
+                || past.DependencyId != purge.Id
+                || past.Reason != reason
+                || past.ObservedAt < purge.PurgedAt
+                || candidate.GetHeader(ReplicationEventHeaders.OriginNodeId) is not null)
+            {
+                continue;
+            }
+
+            TaskAggregate? before = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: candidate.Version - 1, token: cancellationToken);
+            TaskAggregate? after = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: candidate.Version, token: cancellationToken);
+            if (before?.RecordedDependencyFailure(purge.Id) != reason && after?.RecordedDependencyFailure(purge.Id) == reason)
+            {
+                recordedHere = true;
+            }
+        }
+
+        return recordedHere;
     }
 
     /// <summary>
