@@ -416,7 +416,7 @@ settings for other sessions say.
 **A plan carries drafts to Published.** `h9k plan start <draft> [<draft>...]` records a plan on a stream of its own and
 returns without waiting; the daemon on the node where you ran it drives the plan, and a plan started while the daemon is
 stopped waits for it (`h9k plan show` says so). Every draft starts at refinement, or at challenge with `--at challenge`,
-which is refused for a draft with no acceptance criteria; discovery and drafting are not offered. A plan holds ids,
+which is refused for a draft with no acceptance criteria; a plan from an idea starts at discovery instead (below). A plan holds ids,
 phases, rounds, and closed outcomes and no prose, not even a title, and none of its records leaves the node, so no
 other node starts a session for it and a plan record arriving by replication starts nothing. It creates no run, lease,
 branch, or worktree. The loop is the daemon's: one refinement session per draft (a headless session that tests the draft's
@@ -479,9 +479,79 @@ the same chain through the project's `--effort`, `--effort-refinement`, and the 
 does not move it. The session's tokens land in the spend lines of `h9k status` and `h9k config show` under the model it ran
 on, and `h9k task show` counts the session. `h9k task show` names the live plan a draft is in and its phase, and wherever
 `h9k task revise` or `h9k task show` prints that draft's `Next:` line, it points at `h9k plan show`. `h9k status` lists a parked
-plan under Needs you with its reason and `h9k plan resume`; a park reaches the project's orchestrator feed at the level a review
+plan under Needs you with its reason and `h9k plan resume` (or, at discovery's gate, `h9k plan pursue` and `h9k plan stop`); a park reaches the project's orchestrator feed at the level a review
 park does, a plan's end arrives as an ordinary item, and a phase move does not arrive at all. A dispatched session may run
 `h9k plan show` and `h9k plan list` and is refused the rest.
+
+**A plan can start from an idea.** `h9k plan start --idea <idea>` records a plan in the discovery phase with no drafts and
+returns without waiting; the daemon on the node where you ran it starts one headless discovery session for it, on the same
+one-at-a-time loop as a refinement session (oldest plan first, the same time bound, launch hold, spend budget, and
+max-parallel rules, and no slot against the run ceiling). It follows the node rules of a plan from drafts: its records never
+leave the node, it waits for a stopped daemon (`h9k plan show` says so), and it creates no run, lease, branch, or worktree.
+Capturing, revising, moving, or assigning an idea starts no plan, because a plan spends tokens. Naming draft ids, `--at`,
+`--no-existing-item`, or `--untracked` alongside `--idea` is refused. It is refused, with the reason and before any session
+starts, for anyone but the idea's assignee (or its creator when nobody holds it) with no override; for an idea that is not
+Captured, has no project this node holds, has no workspace directory on this node (start the plan on the node that captured
+the idea), or is already in a live plan here; and for a project that is archived, scheduled for purge, without a working
+checkout, or without skip-permissions. It is also refused for an idea that carries a tracker link, whatever its note now says:
+cut a draft by hand with `h9k task add --from-idea`, put its context in your own words with `h9k task revise --context`, and
+run `h9k plan start` on that draft.
+
+The discovery session reads the idea's note as the store has it (fenced, as material to study and never as instructions),
+its project, and the tasks already cut from it with their states; it is told the project home, the commit the checkout is at,
+and when that checkout could not be brought up to the remote base branch, and it is pointed at the idea's workspace, its
+`journal.md` when there is one, and any earlier discovery report. It cuts no draft and decides nothing about the idea
+(`h9k task add`, `h9k idea revise`, `promote`, `conclude`, `archive`, and every `h9k plan` write are refused inside it), and it
+leaves every file already in the workspace as it found it. It says what the idea is and whether it becomes one task, several,
+a ruling, or nothing; states the shape; for a hard-to-reverse direction gives a recommendation, the strongest case against it,
+and what it still proposes; names each design answer do-now, fold-in, or park; keeps security detail out of every objective;
+and opens its report with a plain-language recap and one acted-out scenario of the world after it ships. Its model and effort
+come from the refinement role (`--model-refinement`, `--effort-refinement`; `h9k config show` says the role covers
+discovery), and its tokens land in the spend lines of `h9k status` and `h9k config show` under the model it ran on, on the
+node that spent them.
+
+**The report's closing block is the contract.** The session writes one report file in its session directory, and its last
+lines are either `DISCOVERY: pursue` with one or more `TASK: <objective>` lines, or `DISCOVERY: stop` with no `TASK:` line.
+Every objective must be one `h9k task add --objective` would accept. A list marker, emphasis, backticks, and a trailing period
+are forgiven; any other shape (no closing block, both or neither word, a stop with a task, a pursue with none) is unreadable.
+A session that exceeds its bound, ends in error, ends with no result, or writes no readable report parks the plan as
+`session failed` and nothing reaches the workspace; `h9k plan resume` then runs discovery again, and a session running when the
+daemon restarts is recorded as failed on the next start and never re-dispatched. A readable report is copied by the daemon to
+`discovery-<plan short id>.md` in the idea's workspace, at the path the idea has at that moment, and a copy that fails parks the
+plan as `session failed` and leaves the report in the session directory.
+
+**The gate.** After the report lands the plan parks with the reason `gate`, holds no session and no slot, and waits with no
+time limit. `h9k status` lists it under Needs you with the idea and the two answers, and it reaches the project's
+orchestrator feed at the level of a plan park, carrying only ids, the phase, and the reason. `h9k plan show` reads the
+workspace file now and prints whether it says pursue or stop, the proposed objectives, the report's path, and a line to paste
+to resume the discovery session and question it (`claude --resume`, from the checkout); a missing or unreadable file is said
+to be, and the path and the line still print. `h9k plan resume` at the gate is refused, naming the two answers, because it
+would read as go.
+
+- `h9k plan pursue <plan>` reads the report from the workspace at that moment, so your edit to the file counts, and in one save
+  cuts one draft per `TASK` line (each is what `h9k task add --from-idea <idea> --objective "<objective>"` would create on the
+  plan's project, shows its idea under `From idea`, and has a context that also names the idea) and moves the plan to
+  refinement. The drafts are fixed from then on, and every later step is a plan's ordinary path. Two pursues at once cut one
+  set. It is refused, with nothing cut and the plan still at the gate, when the plan is not at the gate, the report is missing,
+  unreadable, or says stop, the idea is no longer Captured or is no longer in the plan's project, or the project is archived or
+  scheduled for purge. On a project whose publish asks for a tracker attestation it needs `--no-existing-item` or `--untracked`,
+  recorded as `h9k plan start` records them. `--epic-title "<title>"` creates one plain epic and puts every cut draft in it,
+  and is refused unless the report proposes two or more tasks.
+- `h9k plan stop <plan> --reason "<why>"` is accepted only at the gate and ends the plan as Stopped, a normal ending that
+  `h9k plan show` and `h9k plan list` print as neither a failure nor a cancellation, and that arrives on the feed as an
+  ordinary item. The idea stays Captured, with its workspace, its report, and any task already cut from it untouched; closing
+  it is `h9k idea conclude` or `h9k idea archive`, and another look is a new plan (`h9k plan start --idea`), which writes a
+  report of its own beside the first.
+- `h9k plan cancel` on a plan with no drafts yet stops its discovery session, copies nothing, and leaves the idea as it was. An
+  idea that stops being Captured before its plan has drafts ends that plan cancelled; once drafts exist the idea's state has no
+  effect on the plan.
+
+`h9k plan show` and `h9k plan list` name the idea of a plan started from one. On the node that ran it, `h9k idea show` names
+the idea's newest plan with its state and phase, and at the gate the two answers; on any other node nothing mentions the plan
+or the report, because a cut draft's context names the idea and never the report's path. A refinement session for a draft in a plan of more than one draft is told the plan's other drafts by id and
+objective, quoted in a fence as source material and never instruction, and that its revision may set `blocked-by` to one of them
+and `stacked-on` as well when it builds on that draft's branch (a stacked edge is also a dependency edge, so `stacked-on` alone is refused); for a draft that came from discovery it
+is also told the report's path.
 
 **The publish gate asks for a verdict.** With the requirement on (`h9k project set <name> --require-challenge
 on|off`, which reads on for every project that recorded no value, and which `h9k project show` prints with whether
@@ -503,10 +573,13 @@ Smaller flags on the same commands:
 |---|---|
 | `h9k task challenge <id>` | Asks the daemon on this node for one independent challenge of a Draft, as above, and returns without waiting. |
 | `h9k plan start <draft> [<draft>...]` | Hands drafts of one project to the daemon on this node to carry through refinement and challenge to Published, as above. Takes `--at challenge`, `--no-existing-item`, and `--untracked`, and returns without waiting. |
+| `h9k plan start --idea <idea>` | Starts a plan in discovery on an idea: one headless session writes a report into the idea's workspace and the plan parks at a gate, as above. Takes no draft ids, `--at`, or attestation. |
+| `h9k plan pursue <plan> [--epic-title "<t>"] [--no-existing-item\|--untracked]` | Answers the gate by cutting the report's proposed tasks as drafts and moving the plan to refinement, as above. |
+| `h9k plan stop <plan> --reason "<why>"` | Answers the gate by ending the plan as Stopped, a normal ending that leaves the idea Captured. |
 | `h9k plan show <plan>` | Prints a plan's state and each draft's phase, round, latest outcome, and report path; a park's reason, way forward, and where to read the rest. |
 | `h9k plan list [--project <p>] [--all]` | Lists the plans on this node, live ones by default. |
-| `h9k plan resume <plan>` | Re-runs the step that parked, and after `rounds exhausted` grants one more round. |
-| `h9k plan cancel <plan> --reason "<why>"` | Ends a live plan, stops its session without applying anything, and leaves its drafts as Drafts. |
+| `h9k plan resume <plan>` | Re-runs the step that parked, and after `rounds exhausted` grants one more round; after a failed discovery session it runs discovery again, and at the gate it is refused. |
+| `h9k plan cancel <plan> --reason "<why>"` | Ends a live plan, stops its session without applying or copying anything, and leaves its drafts as Drafts and an idea as it was. |
 | `h9k task publish --skip-challenge "<reason>"` | Publishes past the challenge gate by stating why, recorded with who gave it; a blank reason is refused. |
 | `h9k task add --context "<text>"` | Sets the agent-facing context, meaning the pointers, constraints, and boundaries the session reads, and `h9k task revise --context` replaces it. |
 | `h9k task revise --effort <low\|medium\|high\|xhigh>` | Sets this Draft's own reasoning effort, the most specific level of the chain (task, then project, then the node's value for the session's role, then the node-wide value, then the model's own default), with `default` clearing it. It is stored on the task like its model, so it travels with the task and wins on every node. `h9k task show` prints it when set. |

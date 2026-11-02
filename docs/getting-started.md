@@ -277,7 +277,8 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
 
   Resolution is task override, then the project's own `--model`, then this node's per-role
   default, then the node's `--default-model`, which is the platform fallback until you change it.
-  The refinement role is the session a plan (`h9k plan start`) dispatches to refine a draft; a draft's own
+  The refinement role is the session a plan (`h9k plan start`) dispatches to refine a draft, and to discover an idea
+  (`h9k plan start --idea`); a draft's own
   model does not move it, and with `--model-refinement` unset it runs on the node's default, so set it (and
   `--effort-refinement`) before your first plan if you want a particular tier.
 - **The platform default, `--default-model`, and the orchestrator window's own model,

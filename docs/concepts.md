@@ -365,6 +365,12 @@ exhausted, a session or challenge that failed, a revision or publish that was re
 reason, and starts nothing new for any of the plan's drafts until a person runs `h9k plan resume` or publishes or abandons
 the parked draft by hand.
 
+A plan can also start from an idea (`h9k plan start --idea <idea>`). It then begins in a discovery phase with no drafts: the
+daemon runs one headless session that studies the idea against the code and writes a report, which is copied into the idea's
+workspace, and the plan parks at a gate. Stopping there (`h9k plan stop`) is a normal ending and leaves the idea Captured;
+pursuing (`h9k plan pursue`) is the drafting step, cutting the report's proposed tasks as drafts, after which the plan carries
+them from refinement to Published like any other. Capturing an idea never starts a plan, because a plan spends tokens.
+
 Each verb names the board column the task lands in (Decisions Log #34, and the assign/queue split):
 `assign` moves no column at all, because it records who holds a task and a Draft, a Published task and an
 idea can all be held; `publish` lands it in Ready; `queue` lands it in Queued and is the go signal; and

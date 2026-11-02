@@ -186,6 +186,30 @@ model or effort does not move it. Its spend lands in `h9k status` and `h9k confi
 plan is listed under Needs you in `h9k status` and reaches the project's orchestrator feed urgently; a plan's end arrives as an
 ordinary item. A dispatched session may run `h9k plan show` and `h9k plan list` and nothing else under `h9k plan`.
 
+**A plan can start from an idea** (`h9k plan start --idea <idea>`; no draft ids, `--at`, or attestation with it). It records a
+plan in discovery with no drafts and returns; the daemon on that node runs one headless discovery session (the same
+one-at-a-time loop, `PlanRefinementTimeout`, launch hold, spend budget, and max-parallel rules as a refinement session, no
+ceiling slot; model and effort from the refinement role, so `--model-refinement` and `--effort-refinement` cover both). It is
+refused before any session starts for anyone but the idea's assignee (or its creator when nobody holds it), with no override;
+for an idea that is not Captured, has no project this node holds, has no workspace directory on this node (start it on the
+node that captured the idea), or is already in a live plan here; for an archived or purge-scheduled project, one with no
+working checkout, or one without skip-permissions; and for an idea that carries a tracker link, whatever its note says (cut a
+draft by hand with `h9k task add --from-idea`, put its context in your own words with `h9k task revise --context`, and
+`h9k plan start` that draft). The session cuts no draft and decides nothing about the idea; `h9k task add`, `h9k idea
+revise|promote|conclude|archive`, and every `h9k plan` write are refused inside it. Its report ends with a closing block:
+`DISCOVERY: pursue` and one or more `TASK: <objective>` lines, or `DISCOVERY: stop` and no `TASK:` line (emphasis and a
+trailing period are forgiven; anything else is unreadable and parks the plan as session failed). The daemon copies a readable
+report to `discovery-<plan short id>.md` in the idea's workspace, and the plan parks with the reason `gate`, holding no session
+and no slot, with no time limit. `h9k status` lists it under Needs you; `h9k plan show` reads the file now and prints pursue or
+stop, the proposed objectives, the report's path, and a line to paste to resume the discovery session. `h9k plan resume` is
+refused at the gate (after a failed session it runs discovery again). The two answers:
+`h9k plan pursue <plan> [--epic-title "<t>"] [--no-existing-item|--untracked]` reads the report from the workspace at that
+moment (an edit counts) and in one save cuts a draft per `TASK` line (what `h9k task add --from-idea <idea> --objective "…"`
+would create, with a context that also names the idea) and moves the plan to refinement, with the drafts then fixed; and
+`h9k plan stop <plan> --reason "<why>"` ends it as Stopped, a normal ending that leaves the idea Captured. `h9k plan cancel` before
+drafts exist stops the session, copies nothing, and leaves the idea as it was. Concluding or archiving the idea is never a plan's
+act.
+
 **The same bare repo also carries a hidden ledger** (Decisions Log #189, idea
 202383dc), a set of
 git refs under `refs/hall9k/` that GitHub never shows and branch protection never sees (both match
@@ -950,9 +974,12 @@ h9k task publish <id> [--queue]                   # the readiness gate; --queue 
 h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending; under linear it also creates the Linear issue after the commit, and checks the team through Linear first (refused with the task still a Draft when that fails)
 h9k task challenge <id>                            # one independent headless session, started by the daemon on THIS node, tests the draft's claims against the code and records a verdict (publish as written | publish as revised | do not publish) with the counts of its must/should/park changes; returns without waiting, changes nothing about the draft, refused for a non-Draft, a draft with no criteria, an archived project, a missing checkout, or a challenge already requested or running. Repeat it for another. Read the outcome with h9k task show; apply what you accept with h9k task revise, then publish
 h9k plan start <draft> [<draft>...] [--at challenge] [--no-existing-item|--untracked]   # hand drafts of one project to the daemon on THIS node: refine, challenge, apply, publish (--no-queue); returns at once
+h9k plan start --idea <idea>                       # unattended discovery: one headless session writes a report into the idea's workspace, then the plan parks at a gate
+h9k plan pursue <plan> [--epic-title "<t>"] [--no-existing-item|--untracked]   # the gate: cut the report's TASK lines as drafts (read from the workspace now) and carry them on
+h9k plan stop <plan> --reason "<why>"              # the gate: end the plan as Stopped (a normal ending); the idea stays Captured
 h9k plan show <plan>                               # state, each draft's phase / round / latest outcome / report path; a park's reason, way forward, and where to read the rest
 h9k plan list [--project <p>] [--all]              # the plans on this node, live ones by default
-h9k plan resume <plan>                             # re-runs the step that parked; after rounds exhausted, grants one more round
+h9k plan resume <plan>                             # re-runs the step that parked; after rounds exhausted, grants one more round; refused at discovery's gate
 h9k plan cancel <plan> --reason "<why>"            # ends a live plan, stops its session without applying anything, leaves the drafts as Drafts
 h9k task publish <id> --skip-challenge "<reason>"  # publish past the challenge gate (on by default per project: refused for a draft whose latest verdict is missing, is do-not-publish, or is publish-as-revised holding a must the draft has not been revised for since); the reason and who gave it are recorded and shown by h9k task show; a blank reason is refused; a pr-review task and a spike are never gated
 h9k task publish <id> --untracked                 # the same gate's other exit: deliberately skip tracking for this task, attested on the stream
