@@ -11,7 +11,7 @@ namespace Hall9k.Daemon.Review;
 /// <para>
 /// It exists because of what happens next. The reviewer says yes to their orchestrator window, in
 /// a sentence, and that window has to resolve the yes to exactly one task, one run and one
-/// worktree without asking them which — a person who has just read a findings report should not
+/// checkout without asking them which — a person who has just read a findings report should not
 /// have to go and find an id for the privilege of taking up an offer somebody made them. So the
 /// report carries the identity rather than the window reconstructing it, and the command is
 /// written out in full, ready to run.
@@ -54,12 +54,12 @@ public static class LocalLaunchOffer
                 "\nA review above offered to run this branch for you, and this one cannot be taken "
                 + "up. The offer was keyed on the project having a run skill, which it does; what "
                 + "this review has not got is a checkout, because it was opened with --no-worktree "
-                + "and read a deployed environment instead. There is no worktree to stand the branch "
+                + "and read a deployed environment instead. There is no checkout to stand the branch "
                 + "up in, and `h9k task run-local` refuses for exactly that reason, so nothing here "
                 + "is worth running.\n");
             block.Append(
                 $"\nRecorded identity: task `{taskId}`, run `{runId}`, branch `{Named(branch)}`, "
-                + "worktree `not recorded`.\n");
+                + "checkout `not recorded`.\n");
             return block.ToString();
         }
 
@@ -74,7 +74,7 @@ public static class LocalLaunchOffer
             + "you stops it and says what to do; `--continue` picks up at the next one, and `--stop` "
             + "ends it. Nothing starts until you ask.\n");
         block.Append(
-            $"\nRecorded identity: task `{taskId}`, run `{runId}`, branch `{Named(branch)}`, worktree "
+            $"\nRecorded identity: task `{taskId}`, run `{runId}`, branch `{Named(branch)}`, checkout "
             + $"`{Named(worktreePath)}`.\n");
         return block.ToString();
     }
@@ -82,7 +82,7 @@ public static class LocalLaunchOffer
     /// <summary>
     /// A value that is genuinely missing said as missing rather than printed as an empty pair of
     /// backticks: a reader given a blank cannot tell a fact nobody recorded from a field the
-    /// platform failed to fill in. The missing worktree gets a whole paragraph of its own above,
+    /// platform failed to fill in. The missing checkout gets a whole paragraph of its own above,
     /// because it decides whether the offer can be taken up at all; the rest of the identity is
     /// this.
     /// </summary>

@@ -29,7 +29,7 @@ public sealed class LocalLaunchOfferTests
         block.Should().Contain($"task `{TaskId}`");
         block.Should().Contain($"run `{RunId}`");
         block.Should().Contain($"branch `{Branch}`");
-        block.Should().Contain($"worktree `{Worktree}`");
+        block.Should().Contain($"checkout `{Worktree}`");
     }
 
     /// <summary>
@@ -82,7 +82,7 @@ public sealed class LocalLaunchOfferTests
         string block = LocalLaunchOffer.Compose(plan, TaskId, RunId, string.Empty, Branch);
 
         block.Should().Contain("cannot be taken up");
-        block.Should().Contain("worktree `not recorded`");
+        block.Should().Contain("checkout `not recorded`");
         block.Should().NotContain($"h9k task run-local {TaskId}");
     }
 

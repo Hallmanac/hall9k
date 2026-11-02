@@ -1,17 +1,17 @@
 namespace Hall9k.Connectors.Prompts;
 
 /// <summary>
-/// What installing the lap's in-worktree push guard actually managed. An unpersisted in-process
+/// What installing the lap's in-checkout push guard actually managed. An unpersisted in-process
 /// outcome, so an enum (AGENTS.md's type discipline) — nothing here is ever written to a stream.
 /// </summary>
 public enum ReviewLapGuardOutcome
 {
-    /// <summary>The guard was written; any session started in this worktree is covered by it.</summary>
+    /// <summary>The guard was written; any session started in this checkout is covered by it.</summary>
     Written,
 
     /// <summary>
     /// The guard this lap itself wrote on an earlier entry is already there, byte for byte, so
-    /// the worktree is covered — nothing needed writing. Distinct from
+    /// the checkout is covered — nothing needed writing. Distinct from
     /// <see cref="AlreadyPresent"/> because they are opposite facts about whether the checkout is
     /// protected, and re-entry (closing the terminal and re-running <c>h9k pr review</c>) is an
     /// ordinary way to reach this one: reporting it as a foreign file told a reviewer the guard
@@ -19,10 +19,10 @@ public enum ReviewLapGuardOutcome
     /// </summary>
     AlreadyGuarded,
 
-    /// <summary>The worktree already carried a local settings file that is not this guard, so nothing was overwritten — the run directory's own settings file is the vehicle instead.</summary>
+    /// <summary>The checkout already carried a local settings file that is not this guard, so nothing was overwritten — the run directory's own settings file is the vehicle instead.</summary>
     AlreadyPresent,
 
-    /// <summary>There is no worktree to install a guard in (<c>--no-worktree</c>).</summary>
+    /// <summary>There is no checkout to install a guard in (<c>--no-worktree</c>).</summary>
     NoWorktree,
 
     /// <summary>The write failed. The caller says so out loud rather than letting a guard be believed in that does not exist.</summary>

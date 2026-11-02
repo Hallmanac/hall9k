@@ -469,7 +469,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// <list type="bullet">
     /// <item>
     /// Its own run is parked with a findings report — the ordinary case — so the lap rides on
-    /// that run and reuses the worktree it already has. The reviewer reads the machines' report
+    /// that run and reuses the checkout it already has. The reviewer reads the machines' report
     /// alongside their own reading, and their verdict resolves that same park.
     /// </item>
     /// <item>
@@ -702,13 +702,13 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     }
 
     /// <summary>
-    /// The recorded worktree when it is still on disk, and a fresh cut at the identical path when
+    /// The recorded checkout when it is still on disk, and a fresh cut at the identical path when
     /// it is not. The path is deterministic in the task and run ids
     /// (<c>GitWorktreeManager.WorktreePathFor</c>), so re-cutting lands exactly where the run
     /// already recorded — which is what lets this recover a pruned or hand-deleted checkout
-    /// without an event to correct the recorded path with. A prune runs first, because git still
-    /// holds an administrative record of a worktree whose directory is gone and refuses to add
-    /// the same path over it.
+    /// without an event to correct the recorded path with. A prune runs first, because it releases
+    /// the pins a checkout whose directory is gone left in the project repository, so the re-cut
+    /// starts from a repository that holds nothing for that path.
     /// </summary>
     private static async Task<string> ReuseOrRecutCheckoutAsync(
         ProjectDetails project, Guid taskId, Guid runId, RunDetails run, PullRequestSurface pullRequest, IWorktreeManager worktrees,
@@ -937,7 +937,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// <summary>
     /// The lap's own run: a read-only detached checkout of the pull request's head and a
     /// <see cref="RunDispatched"/> recording it, so everything downstream — the run directory,
-    /// the finalize that releases the worktree, <c>h9k task show</c> — reads this lap exactly as
+    /// the finalize that releases the checkout, <c>h9k task show</c> — reads this lap exactly as
     /// it reads an automated pr-review run.
     /// <para>
     /// <c>NodeId</c> is the ceiling-exempt <see cref="Guid.Empty"/> sentinel every human-held

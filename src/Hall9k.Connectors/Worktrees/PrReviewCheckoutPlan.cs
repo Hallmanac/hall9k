@@ -26,9 +26,12 @@ public static class PrReviewCheckoutPlan
         Path.Combine(checkoutPath, ".git", "objects", "info", "alternates");
 
     /// <summary>
-    /// Every pin lives under this prefix in the project's repository, one ref per checkout.
+    /// Every pin lives under this prefix in the project's repository, one ref per checkout. A
+    /// sibling of <c>refs/hall9k/</c> rather than a child, because that tree is the ledger's shared
+    /// state (<c>LedgerRefRegistry</c> names every ref under it) and these pins are local to the
+    /// node, the same way <c>refs/hall9k-verified/</c> and <c>refs/hall9k-staging/</c> are.
     /// </summary>
-    public const string PinRefPrefix = "refs/hall9k/pr-review-checkouts/";
+    public const string PinRefPrefix = "refs/hall9k-checkouts/";
 
     /// <summary>
     /// The refs in the <em>project's</em> repository that keep a checkout's commits alive for as long

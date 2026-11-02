@@ -1994,7 +1994,7 @@ public static class CliCommandTree
                 .WithExample("task", "notes", "28b19893");
             task.AddCommand<TaskRunLocalCommand>("run-local")
                 .WithDescription(
-                    "Stand this task's branch up locally, in the review worktree it already has, by the "
+                    "Stand this task's branch up locally, in the review checkout it already has, by the "
                     + "project's own run skill — the command to run when a reviewer says yes to the offer a "
                     + "QA or design review report ends with. The reviewer names no branch and no directory: "
                     + "the offer carries the identity, and this resolves the rest off the task's current run. "

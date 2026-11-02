@@ -586,7 +586,7 @@ public sealed class RunSupervisor(
         if (task.ReviewLapOpen && task.ReviewLapRunId == run.Id)
         {
             // Mirrors TokenBudgetRetryEngine.IsUnderOpenReviewLap: a human reviewer's own review
-            // lap (h9k pr review) is attached to this held run and reuses its worktree — resuming
+            // lap (h9k pr review) is attached to this held run and reuses its checkout — resuming
             // the automated pipeline here would put a second session in the checkout the reviewer
             // is reading. Left held; the next probe or clear-sweep tries again.
             logger.LogInformation(

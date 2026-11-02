@@ -281,7 +281,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             bool mapLocalBranches = !await HoldsOriginTrackingRefsAsync(repositoryPath, cancellationToken);
             IReadOnlyList<PrReviewCheckoutStep> steps = PrReviewCheckoutPlan.Steps(
                 checkoutPath, repositoryPath, trackingRef, mapLocalBranches);
-            await RunGitAsync(steps[0].WorkingDirectory, steps[0].Arguments, cancellationToken, endGitOnCancel: true);
+            await RunGitAsync(steps[0].WorkingDirectory, steps[0].Arguments, endGitOnCancel: true, cancellationToken);
 
             string alternatesFile = PrReviewCheckoutPlan.AlternatesFile(checkoutPath);
             Directory.CreateDirectory(Path.GetDirectoryName(alternatesFile)
@@ -290,7 +290,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
 
             foreach (PrReviewCheckoutStep step in steps.Skip(1))
             {
-                await RunGitAsync(step.WorkingDirectory, step.Arguments, cancellationToken, endGitOnCancel: true);
+                await RunGitAsync(step.WorkingDirectory, step.Arguments, endGitOnCancel: true, cancellationToken);
             }
 
             // The base is pinned from what the checkout itself now holds, not from a second read of
@@ -1258,6 +1258,9 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             $"'{printable}' is not a legal branch name for {role}: {refusalReason}");
     }
 
+    private Task RunGitAsync(string repositoryPath, string arguments, CancellationToken cancellationToken) =>
+        RunGitAsync(repositoryPath, arguments, endGitOnCancel: false, cancellationToken);
+
     /// <param name="endGitOnCancel">
     /// Whether a cancellation ends the git process rather than abandoning it. Only the review
     /// checkout's cut steps ask for it: they write a throwaway directory nothing else reads, and the
@@ -1266,18 +1269,22 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     /// <c>index.lock</c> or a ref lock behind in a repository or worktree that outlives the call.
     /// </param>
     private async Task RunGitAsync(
-        string repositoryPath, string arguments, CancellationToken cancellationToken, bool endGitOnCancel = false)
+        string repositoryPath, string arguments, bool endGitOnCancel, CancellationToken cancellationToken)
     {
         (int exitCode, _, string standardError) = await TryRunGitAsync(
-            repositoryPath, arguments, cancellationToken, endGitOnCancel);
+            repositoryPath, arguments, endGitOnCancel, cancellationToken);
         if (exitCode != 0)
         {
             throw new WorktreeException($"git {arguments} failed in {repositoryPath}: {standardError.Trim()}");
         }
     }
 
+    private static Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunGitAsync(
+        string repositoryPath, string arguments, CancellationToken cancellationToken) =>
+        TryRunGitAsync(repositoryPath, arguments, endGitOnCancel: false, cancellationToken);
+
     private static async Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunGitAsync(
-        string repositoryPath, string arguments, CancellationToken cancellationToken, bool endGitOnCancel = false)
+        string repositoryPath, string arguments, bool endGitOnCancel, CancellationToken cancellationToken)
     {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo

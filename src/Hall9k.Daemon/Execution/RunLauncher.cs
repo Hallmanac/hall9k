@@ -298,7 +298,7 @@ public sealed class RunLauncher(
             // afterward: a pr-review run carries no PullRequestNumber, so CloseoutEngine's
             // merge closeout never watches it, and TaskDecider.Reopen refuses the type
             // outright (adversarial review, cycle 1). Reclaiming this task's own previous
-            // pr-review worktrees right before cutting the new one is the only point left
+            // pr-review checkouts right before cutting the new one is the only point left
             // that can still reach them.
             if (isPrReview)
             {
@@ -2137,9 +2137,9 @@ public sealed class RunLauncher(
     }
 
     /// <summary>
-    /// Reclaims this task's own previous pr-review worktrees, and the tracking ref each was
+    /// Reclaims this task's own previous pr-review checkouts, and the tracking ref each was
     /// fetched against, right before cutting a fresh checkout (adversarial review, cycle 1):
-    /// a pr-review run never resumes a prior attempt's worktree the way an ordinary retry
+    /// a pr-review run never resumes a prior attempt's checkout the way an ordinary retry
     /// does, so every retry or requeue cuts a brand-new one, and no closeout sweep can ever
     /// reach the old ones afterward — a pr-review run carries no PullRequestNumber, so
     /// CloseoutEngine's merge closeout never watches it, and a pr-review task refuses to
