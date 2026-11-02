@@ -2558,7 +2558,7 @@ public static class AgentPromptBuilder
     /// </summary>
     public static string BuildPrReviewLens(
         TaskDetails task, ProjectDetails project, string branch, ReviewLens lens, string baseBranch,
-        TimeSpan? commandTimeout = null, LocalFleet? localFleet = null)
+        TimeSpan? commandTimeout = null, LocalFleet? localFleet = null, string? citedIssuesPath = null)
     {
         // A pr-review task retries through the same TaskDecider.Retry every other task type
         // does — nothing gates it to TaskType.PrReview — so an operator's `h9k task retry
@@ -2589,6 +2589,11 @@ public static class AgentPromptBuilder
                 commandTimeout: commandTimeout)
             + "\n\n" + PromptTemplates.Load(file, "foreign-pr-notice")
             + (lens == ReviewLens.Conformance ? PromptTemplates.Load(file, "conformance-basis-addendum") : string.Empty)
+            // Only the lens that is told the pull request's intent: the adversarial lens's prompt says nothing about it.
+            + (lens == ReviewLens.Conformance && citedIssuesPath is not null
+                ? PromptTemplates.Load(
+                    file, "cited-issues-addendum", new Dictionary<string, string> { ["CitedIssuesPath"] = citedIssuesPath })
+                : string.Empty)
             + (guidance.Length > 0 ? "\n\n" + guidance : string.Empty));
     }
 

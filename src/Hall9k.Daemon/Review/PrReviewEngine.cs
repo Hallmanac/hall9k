@@ -61,9 +61,11 @@ public sealed class PrReviewEngine(
     LaunchHoldEngine launchHold,
     IOptions<DaemonOptions> options,
     ILogger<PrReviewEngine> logger,
-    LocalFleetProvider? fleets = null)
+    LocalFleetProvider? fleets = null,
+    ProcessRunner? processRunner = null)
 {
     private readonly DaemonOptions _options = options.Value;
+    private readonly ProcessRunner _gitHubReader = processRunner ?? ExternalProcess.Runner;
 
     /// <summary>
     /// Writes the primary session's own result to disk under the same naming convention
@@ -706,8 +708,19 @@ public sealed class PrReviewEngine(
         LocalFleet? localFleet = ReplicatedNote.CarriesSender(task) && fleets is not null
             ? await fleets.GetAsync(project.Id, cancellationToken)
             : null;
+        // The issues the description cites, read here because this session cannot run gh; written once
+        // per run, so every lens that reads them reads the same file. Not for the adversarial lens,
+        // whose prompt says nothing about what the change is for.
+        if (personaSession.ReadsCitedIssues)
+        {
+            await CitedIssues.EnsureWrittenAsync(
+                _gitHubReader, task.ExternalReference, task.AgentContext, project.RepositoryPath, runDirectory,
+                logger, cancellationToken);
+        }
+
         string prompt = personaSession.BuildPrompt(new ReviewPersonaPromptRequest(
-            task, project, run.Branch, baseBranch, _options.VerifyGateTimeout, drive, runSkill, localFleet));
+            task, project, run.Branch, baseBranch, _options.VerifyGateTimeout, drive, runSkill, localFleet,
+            personaSession.ReadsCitedIssues ? runDirectory : null));
 
         // The QA session's own earned exception (security review idea 6be68ee2,
         // process-injection finding 1; Brian's ruling 2026-09-27): the project's own recorded

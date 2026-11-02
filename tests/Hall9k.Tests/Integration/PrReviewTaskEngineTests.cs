@@ -1960,8 +1960,12 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         public FakeProcessManager Processes { get; } = new();
 
+        /// <summary>Every spawn, in order.</summary>
+        public List<AgentSpawnRequest> Requests { get; } = [];
+
         public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
         {
+            Requests.Add(request);
             int processId = _nextProcessId++;
             if (summary is null)
             {
@@ -2355,6 +2359,44 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         File.ReadAllText(RunPaths.ReviewFindingsFile(runDirectory, 1))
             .Should().Contain("matches", "the conformance lens's own findings text lands in the report");
+    }
+
+    /// <summary>
+    /// A pr-review session cannot run <c>gh</c>, so the daemon reads the issues the description cites before the
+    /// conformance lens starts, which is told what the change is for, and writes them where that lens's prompt points.
+    /// </summary>
+    [Fact]
+    public async Task The_conformance_lens_is_given_the_issues_the_description_cites_as_a_file_before_it_starts()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(
+            store, node, cts.Token, agentContext: "Title: Remove a coupon\n\nFixes #7 and other/repo#3.");
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, PrReviewNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        List<string> commands = [];
+        ProcessRunner reader = (file, arguments, _, _) =>
+        {
+            commands.Add($"{file} {string.Join(' ', arguments)}");
+            return Task.FromResult(new ProcessResult(
+                0, """{"number":7,"title":"Coupons stick","state":"OPEN","body":"A coupon cannot be removed."}""", string.Empty));
+        };
+        ScriptedExecutor executor = new("Matches.\n\nVERDICT: merge-ready");
+        PrReviewEngine engine = NewPrReviewEngine(store, executor, executor.Processes, new NoOpWorktreeManager(), reader);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        commands.Should().Equal("gh issue view 7 --repo acme/web --json number,title,state,body");
+        string file = RunPaths.CitedIssuesFile(runDirectory);
+        File.ReadAllText(file).Should().Contain("A coupon cannot be removed.").And.Contain("other/repo#3: not read");
+        executor.Requests.Should().ContainSingle("only the conformance lens is dispatched after the primary session");
+        executor.Requests[0].Prompt.Should().Contain($"`{file}`").And.Contain("source material");
     }
 
     /// <summary>
@@ -2837,9 +2879,10 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
 
     private static PrReviewEngine NewPrReviewEngine(
-        DocumentStore store, IExecutor executor, FakeProcessManager processes, IWorktreeManager worktrees) =>
+        DocumentStore store, IExecutor executor, FakeProcessManager processes, IWorktreeManager worktrees,
+        ProcessRunner? gitHubReader = null) =>
         new(store, executor, processes, worktrees, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
-            Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
+            Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance, processRunner: gitHubReader);
 
     /// <summary>
     /// A pr-review task, published, assigned and claimed at generation 1 — exactly where
@@ -2859,7 +2902,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     /// </param>
     private async Task<(Guid TaskId, Guid RunId, string RunDirectory)> SeedClaimedPrReviewRunAsync(
         DocumentStore store, NodeContext node, CancellationToken cancellationToken, bool withoutWorktree = false,
-        bool asNowSpeedSentinel = false)
+        bool asNowSpeedSentinel = false, string? agentContext = null)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -2881,7 +2924,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
             TaskDecider.Add(
                 taskId, projectId, "Review pull request acme/web#42", ["every finding names a file and line"], TaskType.PrReview,
-                null, null, new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#42"),
+                agentContext, null, new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#42"),
                 PrReviewNow, node.OwnerId),
             node.OwnerId, PrReviewNow);
         if (asNowSpeedSentinel)
