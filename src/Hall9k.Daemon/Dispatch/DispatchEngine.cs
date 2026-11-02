@@ -552,7 +552,7 @@ public sealed class DispatchEngine(
             }
 
             (LedgerCommitter committer, LedgerSigningKey signingKey, _) =
-                await ResolveLedgerIdentityAsync(session, ownerRootFingerprint: null, cancellationToken);
+                await ResolveLedgerIdentityAsync(session, node, ownerRootFingerprint: null, cancellationToken);
             HolderReleaseResult result = await TaskLedgerHolder.TryReleaseAsync(
                 _ledger, project.RepositoryPath, taskId, node.NodeId, committer, signingKey, cancellationToken);
 
@@ -1956,7 +1956,7 @@ public sealed class DispatchEngine(
         }
 
         (LedgerCommitter committer, LedgerSigningKey signingKey, string fingerprint) =
-            await ResolveLedgerIdentityAsync(session, ownerRootFingerprint, cancellationToken);
+            await ResolveLedgerIdentityAsync(session, node, ownerRootFingerprint, cancellationToken);
         string nodeName = (await session.LoadAsync<NodeDetails>(node.NodeId, cancellationToken))?.MachineName
             ?? Environment.MachineName;
         TaskRecordHolder candidate = new(fingerprint, node.NodeId, nodeName, claimedAt);
@@ -1996,9 +1996,9 @@ public sealed class DispatchEngine(
     /// leave an absent fingerprint, so an owner that has not claimed a root yet falls back to this
     /// node's own key fingerprint, exactly as a record's own <c>origin-owner-fingerprint</c> does.
     /// </summary>
-    private async Task<(LedgerCommitter Committer, LedgerSigningKey SigningKey, string Fingerprint)>
+    internal static async Task<(LedgerCommitter Committer, LedgerSigningKey SigningKey, string Fingerprint)>
         ResolveLedgerIdentityAsync(
-            IDocumentSession session, string? ownerRootFingerprint, CancellationToken cancellationToken)
+            IDocumentSession session, NodeContext node, string? ownerRootFingerprint, CancellationToken cancellationToken)
     {
         OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(node.OwnerId, cancellationToken);
         NodeSigningKey key = await new NodeKeyStore().EnsureAsync(node.NodeId, cancellationToken);

@@ -384,6 +384,32 @@ public sealed class FeedbackStepTests
     }
 
     [Fact]
+    public void A_second_record_for_a_session_that_already_ended_does_not_replace_its_answer_in_the_aggregate_or_the_view()
+    {
+        TaskAggregate task = Held();
+        FeedbackStepStarted started = FeedbackStepDecider.Start(task, Node, Now);
+        task.Apply(started);
+        Guid session = DomainId.New();
+        FeedbackCheckDispatched dispatched = FeedbackStepDecider.DispatchCheck(task, session, Node, AgentModel.Unknown, AgentEffort.Medium, Now);
+        task.Apply(dispatched);
+        FeedbackCheckRecorded answer = new(task.Id, session, Node, FeedbackCheckAnswer.Affects, RefinementFailureReason.Unknown, Now);
+        FeedbackCheckRecorded restart = new(task.Id, session, Node, FeedbackCheckAnswer.Failed, RefinementFailureReason.DaemonRestarted, Now);
+
+        task.Apply(answer);
+        task.Apply(restart);
+
+        task.LatestFeedbackCheck!.Answer.Should().Be(FeedbackCheckAnswer.Affects, "a session ends once, and the first record is its end");
+
+        TaskDetailsProjection projection = new();
+        TaskDetails view = new();
+        projection.Apply(new FakeEvent<FeedbackStepStarted>(started), view);
+        projection.Apply(new FakeEvent<FeedbackCheckDispatched>(dispatched), view);
+        projection.Apply(new FakeEvent<FeedbackCheckRecorded>(answer), view);
+        projection.Apply(new FakeEvent<FeedbackCheckRecorded>(restart), view);
+        view.LatestFeedbackCheck!.Answer.Should().Be(FeedbackCheckAnswer.Affects);
+    }
+
+    [Fact]
     public void The_override_is_refused_once_the_task_is_held_for_its_feedback_step_with_the_reason()
     {
         TaskAggregate task = Held();

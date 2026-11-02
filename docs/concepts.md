@@ -413,8 +413,12 @@ naming `h9k task queue` and `h9k task revise --feedback-step off` as the ways fo
 say it is held for the feedback step. `h9k task dequeue` takes it out and ends the hold, and the step stands down.
 
 The daemon makes every move and starts every session; a session supplies judgment and nothing else. The step runs on one
-node only, the node the task is placed on or, with no placement, a node of the owner it is queued for, and it begins with
-an append under the task's stream version, so two nodes that see the same release start one step between them.
+node only, the node the task is placed on or, with no placement, a node of the owner it is queued for. Each node keeps its
+own database, so the stream version fences only two daemons of one database; what decides between two nodes is the task's
+ledger record, the same conditional write of its holder that the dispatcher's claim goes through. A node writes itself in as
+the holder before it begins the step, a node that finds another node named stands down, and a holder write that cannot
+complete holds the step rather than letting it begin. The holder is given back when the step ends. A task with no ledger
+record has nothing to coordinate on, so there the stream version is all that fences the step.
 
 1. **No notes, no cost.** When none of the blockers left a note that the trust rule lets into a prompt, no session runs and the
    task goes to Queued as it would without the step (outcome: *released without a check*). A note the trust rule holds back is
@@ -437,7 +441,10 @@ an append under the task's stream version, so two nodes that see the same releas
    challenge returns *do not publish* or ends with no verdict; the refinement concludes the task should not run (the closing
    word `should-not-run`); the revision names anything but the objective, criteria, or context (a dependency, a stack link, a
    type, or a model); a refinement or judging session fails, times out, or writes no readable report; or the publish or the
-   requeue is refused. Once parked, the step is over: its plan is ended, nothing in the daemon queues the task on the step's
+   requeue is refused. A task the check calls affected but that a plan may not refine, because it is a spike or because its
+   context still carries an adopted tracker item's quoted text that a person has not read into the task (the refusals
+   `h9k plan start` gives), is released as it stood instead, with that reason recorded, since the step has no person to read
+   the quote first. Once parked, the step is over: its plan is ended, nothing in the daemon queues the task on the step's
    behalf, and a person who settles the park revises, publishes, and queues it by hand.
 
 Each step records its outcome as an event on the task's stream, and `h9k task show` prints it: *released without a check*,

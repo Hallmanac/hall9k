@@ -110,14 +110,17 @@ internal static class AttentionComposer
             return new TaskAttention(AttentionLevel.NeedsYou, PreflightParkedCause(task), $"h9k task queue {id}");
         }
 
-        // A draft the feedback step gave up on: the daemon took it back to Draft to refine it against its blockers' notes and could
-        // not finish, so it waits for a person, who settles it by hand. The reason is the step's own recorded sentence.
-        if (task.State == TaskState.Draft && task.FeedbackStepOutcome == FeedbackStepOutcome.Parked)
+        // A task the feedback step gave up on: the daemon took it back to Draft to refine it against its blockers' notes and could
+        // not finish, so it waits for a person, who settles it by hand. It is a Draft when the plan parked, and Published when the
+        // plan published it and queueing it again was refused. The reason is the step's own recorded sentence.
+        if (task.FeedbackStepOutcome == FeedbackStepOutcome.Parked && (task.State == TaskState.Draft || task.State == TaskState.Published))
         {
             return new TaskAttention(
                 AttentionLevel.NeedsYou,
                 $"its feedback step parked it: {task.FeedbackStepOutcomeReason}",
-                $"h9k task show {id}");
+                task.State == TaskState.Draft
+                    ? $"h9k task show {id}"
+                    : $"h9k task queue {id}");
         }
 
         // A Queued row this node refuses to claim because the project's own current verify gate
