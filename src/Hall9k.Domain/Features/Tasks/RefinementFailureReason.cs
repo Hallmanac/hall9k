@@ -29,8 +29,9 @@ public sealed record RefinementFailureReason
 
     public static readonly RefinementFailureReason DraftClosed = new("DraftClosed", "the draft was published or abandoned while the session ran, so the session was stopped and nothing was applied");
 
-    /// <summary>No failure. Serializes as an empty string.</summary>
     public static readonly RefinementFailureReason RevisionBeyondText = new("RevisionBeyondText", "the revision named more than the objective, criteria, or context (a dependency, stack link, type, or model), which a feedback step does not apply");
+
+    /// <summary>No failure. Serializes as an empty string.</summary>
     public static readonly RefinementFailureReason Unknown = new(string.Empty, "no failure");
 
     public string Value { get; }
