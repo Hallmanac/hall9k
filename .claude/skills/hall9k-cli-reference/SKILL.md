@@ -1917,7 +1917,7 @@ written and the launch records no port of its own rather than claiming one. What
 product is up is the skill's own address with that port applied, the skill's own "how to know it is
 up", and every human step in the plan, in order.
 
-It refuses with a sentence naming the rule in each of three cases: the review worktree is gone, the
+It refuses with a sentence naming the rule in each of three cases: the review checkout is gone, the
 project has no run skill (nothing records how it is started, and this will not guess at a launch
 command), or a launch of the same task is already up — including one merely waiting on a human and
 one still part-way through its own plan, both of which are somebody's live walk of that branch even

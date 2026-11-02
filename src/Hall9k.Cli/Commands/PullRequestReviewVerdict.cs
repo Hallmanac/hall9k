@@ -241,7 +241,7 @@ internal static class PullRequestReviewVerdict
         }
 
         AnsiConsole.MarkupLineInterpolated(
-            $"[dim]Task {taskId}: the daemon releases the worktree and completes the task — no merge is ever observed for a review.[/]");
+            $"[dim]Task {taskId}: the daemon releases the checkout and completes the task — no merge is ever observed for a review.[/]");
         return ExitCodes.Ok;
     }
 

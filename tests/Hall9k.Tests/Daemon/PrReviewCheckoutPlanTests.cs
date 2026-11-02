@@ -51,8 +51,8 @@ public sealed class PrReviewCheckoutPlanTests
     [Fact]
     public void The_pin_refs_are_named_for_the_checkout_directory_outside_the_remote_tracking_namespace()
     {
-        PrReviewCheckoutPlan.HeadPinRef(Checkout).Should().Be("refs/hall9k/pr-review-checkouts/wt-aaaaaaaa-bbbbbbbb/head");
-        PrReviewCheckoutPlan.BasePinRef(Checkout).Should().Be("refs/hall9k/pr-review-checkouts/wt-aaaaaaaa-bbbbbbbb/base");
+        PrReviewCheckoutPlan.HeadPinRef(Checkout).Should().Be("refs/hall9k-checkouts/wt-aaaaaaaa-bbbbbbbb/head");
+        PrReviewCheckoutPlan.BasePinRef(Checkout).Should().Be("refs/hall9k-checkouts/wt-aaaaaaaa-bbbbbbbb/base");
         PrReviewCheckoutPlan.HeadPinRef(Checkout + "/").Should().Be(PrReviewCheckoutPlan.HeadPinRef(Checkout));
         PrReviewCheckoutPlan.HeadPinRef(Checkout).Should().NotStartWith("refs/remotes/", "fetch --prune origin removes refs under it");
     }
