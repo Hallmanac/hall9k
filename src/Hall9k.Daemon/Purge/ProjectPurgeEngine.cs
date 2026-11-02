@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Orchestrator;
+using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -17,7 +18,6 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
-using Marten.Events;
 using Microsoft.Extensions.Logging;
 
 namespace Hall9k.Daemon.Purge;
@@ -313,7 +313,7 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
 
         // The spend governor's own undercount (independent pre-PR review, cycle 1, adversarial
         // lens, medium): PeriodSpend.ReadAsync sums TokensRecorded (on a run's own stream),
-        // PublicationTokensRecorded (on a task's own stream), and CourierTokensRecorded (on a
+        // PublicationTokensRecorded (on a task's own stream), PlanTokensRecorded (on a plan's own stream), and CourierTokensRecorded (on a
         // courier run's own stream) live, across the whole install, with no regard for whether the
         // stream that recorded them still exists — so deleting them below would silently hand the
         // purged project's own in-period spend back to the node's budget. Excluding just these
@@ -325,7 +325,7 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         // both: every stream, event, and projection row for this project gone, and its own
         // already-spent tokens still counted against the node's budget for the rest of the period
         // they were recorded in.
-        Guid[] spendBearingStreamIds = [.. runIds, .. taskIds, .. courierRunIds];
+        Guid[] spendBearingStreamIds = [.. runIds, .. taskIds, .. courierRunIds, .. planIds];
         if (spendBearingStreamIds.Length > 0)
         {
             IReadOnlyList<IEvent> spendCandidates = await session.Events.QueryAllRawEvents()
@@ -340,6 +340,8 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
                     PublicationTokensRecorded e => (e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens,
                         e.Model ?? AgentModel.Unknown, e.RecordedAt),
                     CourierTokensRecorded e => (e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens,
+                        e.Model ?? AgentModel.Unknown, e.RecordedAt),
+                    PlanTokensRecorded e => (e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens,
                         e.Model ?? AgentModel.Unknown, e.RecordedAt),
                     _ => null,
                 };

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Hall9k.Domain.Features.Courier;
+using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -63,6 +64,10 @@ public sealed record AgentResult(
     /// <summary>The courier-run equivalent of <see cref="ToTokensRecorded"/>: same fields, riding a courier's own stream (see <see cref="CourierTokensRecorded"/>'s own doc for why that has to be a distinct type).</summary>
     public CourierTokensRecorded ToCourierTokensRecorded(Guid runId, DateTimeOffset recordedAt, AgentModel model) =>
         new(runId, InputTokens, OutputTokens, CostUsd, recordedAt, CacheReadInputTokens, CacheCreationInputTokens, model);
+
+    /// <summary>The discovery-session equivalent: riding the plan's own stream, which a session with no task has no other stream to ride (see <see cref="PlanTokensRecorded"/>).</summary>
+    public PlanTokensRecorded ToPlanTokensRecorded(Guid planId, DateTimeOffset recordedAt, AgentModel model) =>
+        new(planId, InputTokens, OutputTokens, CostUsd, recordedAt, CacheReadInputTokens, CacheCreationInputTokens, model);
 
     /// <summary>Every input token the session was billed for, whatever the cache did with it.</summary>
     public long TotalInputTokens => InputTokens + CacheReadInputTokens + CacheCreationInputTokens;
