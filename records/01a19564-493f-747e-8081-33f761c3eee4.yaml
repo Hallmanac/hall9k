@@ -76,7 +76,3 @@ context: |-
   ## Constraints
 
   Events stay additive so older streams replay. Keep the answer reader, the ceiling, and the offer selection pure, so each is provable without a store. Tests never create branches or touch GitHub. The closing path's test uses a fake executor that never answers.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-11-02 00:00:44Z
