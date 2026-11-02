@@ -322,31 +322,6 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
             "a pr-review session reads GitHub only through what the daemon gathered for it");
     }
 
-    /// <summary>
-    /// Least privilege for a read-only review: it holds no credential it does not need, so the allow list names
-    /// no <c>gh</c> command and the deny list refuses all of them, while the human review lap, which shares
-    /// <see cref="ClaudeSettingsFile.ReviewLapDeniedTools"/> and keeps its <c>gh</c> reads, is left exactly as it was.
-    /// </summary>
-    [Fact]
-    public void No_gh_command_is_allowed_every_one_is_denied_and_the_review_laps_own_list_is_unchanged()
-    {
-        ClaudeSettingsFile.PrReviewAllowedTools.Should().NotContain(rule => rule.StartsWith("Bash(gh", StringComparison.Ordinal));
-        ClaudeSettingsFile.PrReviewDeniedTools.Should().Contain("Bash(gh:*)");
-        ClaudeSettingsFile.PrReviewDeniedTools.Should().BeEquivalentTo(
-            [.. ClaudeSettingsFile.ReviewLapDeniedTools, "Bash(gh:*)", "Bash(claude:*)"]);
-
-        ClaudeSettingsFile.ReviewLapDeniedTools.Should().Equal(
-            "Bash(git push:*)",
-            "Bash(gh pr create:*)", "Bash(gh pr review:*)", "Bash(gh pr comment:*)", "Bash(gh pr edit:*)",
-            "Bash(gh pr merge:*)", "Bash(gh pr close:*)", "Bash(gh pr reopen:*)", "Bash(gh pr ready:*)",
-            "Bash(gh pr lock:*)", "Bash(gh pr unlock:*)", "Bash(gh pr revert:*)", "Bash(gh pr update-branch:*)",
-            "Bash(gh issue create:*)", "Bash(gh issue comment:*)", "Bash(gh issue edit:*)",
-            "Bash(gh issue close:*)", "Bash(gh issue reopen:*)", "Bash(gh issue lock:*)",
-            "Bash(gh issue unlock:*)", "Bash(gh issue delete:*)", "Bash(gh issue transfer:*)",
-            "Bash(gh issue pin:*)", "Bash(gh issue unpin:*)", "Bash(gh issue develop:*)",
-            "Bash(gh api:*)", "Bash(h9k pr approve:*)", "Bash(h9k pr request-changes:*)");
-    }
-
     [Fact]
     public void The_two_git_prefix_rules_are_the_only_git_rules()
     {
@@ -398,6 +373,29 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
         deny.Should().Contain(ClaudeSettingsFile.ReviewLapDeniedTools);
         deny.Should().Contain("Bash(gh api:*)");
         deny.Should().Contain("Bash(gh:*)", "every gh command is refused, reads included");
+        deny.Should().Contain("PowerShell(gh:*)", "the PowerShell tool is a live shell here too, as the hooks' own matcher treats it");
+        ClaudeSettingsFile.PrReviewDeniedTools.Should().BeEquivalentTo(
+            [
+                .. ClaudeSettingsFile.ReviewLapDeniedTools, "Bash(gh:*)", "PowerShell(gh:*)", "Bash(claude:*)",
+                "RemoteTrigger", "PushNotification", "DesignSync", "Workflow",
+                "CronCreate", "CronDelete", "SendToProject", "SendMessage",
+            ]);
+        deny.Should().Contain(
+            ["RemoteTrigger", "PushNotification", "DesignSync", "Workflow", "CronCreate", "CronDelete", "SendToProject", "SendMessage"],
+            "a review session reads what the daemon gathered and has no use for a tool that reaches outside the review");
+
+        // The human review lap shares this list and keeps its gh reads, which is why the blanket gh denial lives
+        // in the pr-review list and not here: pinned so it cannot drift into the lap's own.
+        ClaudeSettingsFile.ReviewLapDeniedTools.Should().Equal(
+            "Bash(git push:*)",
+            "Bash(gh pr create:*)", "Bash(gh pr review:*)", "Bash(gh pr comment:*)", "Bash(gh pr edit:*)",
+            "Bash(gh pr merge:*)", "Bash(gh pr close:*)", "Bash(gh pr reopen:*)", "Bash(gh pr ready:*)",
+            "Bash(gh pr lock:*)", "Bash(gh pr unlock:*)", "Bash(gh pr revert:*)", "Bash(gh pr update-branch:*)",
+            "Bash(gh issue create:*)", "Bash(gh issue comment:*)", "Bash(gh issue edit:*)",
+            "Bash(gh issue close:*)", "Bash(gh issue reopen:*)", "Bash(gh issue lock:*)",
+            "Bash(gh issue unlock:*)", "Bash(gh issue delete:*)", "Bash(gh issue transfer:*)",
+            "Bash(gh issue pin:*)", "Bash(gh issue unpin:*)", "Bash(gh issue develop:*)",
+            "Bash(gh api:*)", "Bash(h9k pr approve:*)", "Bash(h9k pr request-changes:*)");
         deny.Should().Contain("Bash(claude:*)",
             "the owner's own user settings allow claude:*, and a flag-file deny is the only thing " +
             "that beats a user-level allow under dontAsk (verified: claude --version ran without it)");

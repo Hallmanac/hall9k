@@ -49,14 +49,6 @@ public static class SecurityReviewPromptBuilder
     {
         StringBuilder prompt = new();
         AppendOpening(prompt, request.BaseBranch);
-        if (request.RunDirectory is not null)
-        {
-            prompt.AppendLine();
-            AppendFragment(
-                prompt, $"{TemplateDirectory}/build.md", "cited-issues",
-                ("CitedIssuesPath", RunPaths.CitedIssuesFile(request.RunDirectory)));
-        }
-
         AppendLenses(prompt);
         AppendReportShape(prompt);
 

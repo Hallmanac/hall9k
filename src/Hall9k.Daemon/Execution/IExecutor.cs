@@ -121,10 +121,12 @@ public sealed record AgentSpawnRequest(
     public Guid? TaskId { get; init; }
 
     /// <summary>
-    /// The <c>owner/repo</c> a pr-review session's <c>gh</c> reads run against, set as <c>GH_REPO</c> in
-    /// its settings file (<see cref="UsesReviewPermissions"/>). The review checkout is a standalone
-    /// clone with no remote, so without it <c>gh pr view 42</c> has no repository to resolve the
-    /// number in. Null for every session that works in a checkout with an origin.
+    /// The <c>owner/repo</c> set as <c>GH_REPO</c> in a pr-review session's settings file
+    /// (<see cref="UsesReviewPermissions"/>). The review checkout is a standalone clone with no remote, so
+    /// without it a <c>gh</c> process that resolves a bare pull request number has no repository to resolve it
+    /// in. The session itself is refused <c>gh</c> (<c>ClaudeSettingsFile.PrReviewDeniedTools</c>), so this
+    /// matters only to a process the session starts that runs it, such as a QA session's gate command. Null for
+    /// every session that works in a checkout with an origin.
     /// </summary>
     public string? GitHubRepository { get; init; }
 

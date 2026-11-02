@@ -845,7 +845,7 @@ public static class AgentPromptBuilder
     /// </summary>
     public static string BuildCloseoutTriage(
         string objective, IReadOnlyList<string> acceptanceCriteria, string pullRequestUrl,
-        IReadOnlyList<string> threadIds, ReviewReadScope? scope, string reportPath, string diffPath)
+        IReadOnlyList<string> threadIds, ReviewReadScope? scope, string reportPath, string diffPath, string commentsPath)
     {
         const string file = $"{TemplateDirectory}/closeout-triage.md";
         StringBuilder prompt = new();
@@ -873,7 +873,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "pull-request", ("PullRequestUrl", OneLine(pullRequestUrl))));
         prompt.AppendLine();
-        AppendReviewReadScope(prompt, scope);
+        AppendReviewReadScope(prompt, scope, commentsFilePath: commentsPath);
         prompt.AppendLine(Fragment(file, "threads-heading"));
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "threads-intro"));
@@ -2592,7 +2592,12 @@ public static class AgentPromptBuilder
             // Only the lens that is told the pull request's intent: the adversarial lens's prompt says nothing about it.
             + (lens == ReviewLens.Conformance && citedIssuesPath is not null
                 ? PromptTemplates.Load(
-                    file, "cited-issues-addendum", new Dictionary<string, string> { ["CitedIssuesPath"] = citedIssuesPath })
+                    file, "cited-issues-addendum",
+                    new Dictionary<string, string>
+                    {
+                        ["CitedIssuesPath"] = citedIssuesPath,
+                        ["MaxNamedNotRead"] = CitedIssues.MaxNamedNotRead.ToString(CultureInfo.InvariantCulture),
+                    })
                 : string.Empty)
             + (guidance.Length > 0 ? "\n\n" + guidance : string.Empty));
     }

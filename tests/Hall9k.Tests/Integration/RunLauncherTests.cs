@@ -11,6 +11,7 @@ using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -3854,6 +3855,88 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         run.Branch.Should().Be("pr/42", "the checkout's own branch name records which pull request this run reviewed");
         run.Model.Should().Be(new DaemonOptions().ResolveModel(AgentRole.Review, null, null),
             "a pr-review run's primary session resolves the Review role, never Build");
+    }
+
+    /// <summary>
+    /// A pr-review session cannot run <c>gh</c>, so when the primary session is one that is told what the change is
+    /// for (here QA, because the assignee declared only that persona), the launcher reads the issues the description
+    /// cites and writes them into the run directory before the session starts, and the prompt points at that file.
+    /// </summary>
+    [Fact]
+    public async Task A_pr_review_whose_primary_session_is_told_the_intent_is_given_the_cited_issues_as_a_file()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid qaOwnerId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<OwnerAggregate>(
+                qaOwnerId,
+                OwnerDecider.Register(qaOwnerId, $"qa-owner-{taskId:N}", null, Now),
+                new OwnerSettingsChanged(
+                    qaOwnerId, Optional<ReviewRerequestPolicy>.None, Now,
+                    ReviewPersonas: Optional<IReadOnlyList<ReviewPersona>>.Of([ReviewPersona.Qa])));
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"pr-review-cited-{taskId:N}", "/tmp/pr-review-cited-repo",
+                new Uri("https://github.com/acme/web"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Review pull request acme/web#44", ["every finding names a file and line"],
+                    TaskType.PrReview, "Title: Remove a coupon\n\nFixes #7.", null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#44"), Now, qaOwnerId),
+                qaOwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(aggregate, node.NodeId, qaOwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string pullRequestJson = """
+            {
+              "number": 44,
+              "title": "Remove a coupon",
+              "body": "Fixes #7.",
+              "state": "OPEN",
+              "url": "https://github.com/acme/web/pull/44",
+              "baseRefName": "main"
+            }
+            """;
+        const string issueJson = """{"number":7,"title":"Coupons stick","state":"OPEN","body":"A coupon cannot be removed."}""";
+        RecordingProcessRunner gh = new(arguments => new ProcessResult(
+            0, arguments is ["issue", ..] ? issueJson : pullRequestJson, string.Empty));
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: string.Empty, cts.Token);
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, qaOwnerId, 1, cts.Token);
+
+        executor.Request.Should().NotBeNull("the pull request was open, so dispatch proceeded");
+        string file = RunPaths.CitedIssuesFile(executor.Request!.RunDirectory);
+        try
+        {
+            File.ReadAllText(file).Should().Contain("A coupon cannot be removed.");
+        }
+        finally
+        {
+            // The run directory is the real one under the daemon's home, which the launcher made for this run.
+            File.Delete(file);
+        }
+
+        executor.Request.Prompt.Should().Contain($"`{file}`", "the QA primary session's prompt names the file the daemon wrote");
+        gh.Calls.Should().Contain(call => call.Arguments.Take(2).SequenceEqual(new[] { "issue", "view" }));
     }
 
     /// <summary>

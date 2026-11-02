@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
@@ -63,7 +64,7 @@ public static class DesignReviewPromptBuilder
         // (AgentPromptBuilder.BuildPrReviewLens's own comment).
         WorkPromptBuilder.AppendOperatorGuidanceSection(prompt, request.Task, request.LocalFleet);
         AppendTaskContextSection(prompt, request.Task);
-        AppendReferenceSection(prompt);
+        AppendReferenceSection(prompt, request.RunDirectory);
         AppendDesignSystemSection(prompt);
         AppendDriveSection(prompt, drive, request.RunSkill);
         AppendLensesSection(prompt);
@@ -166,13 +167,25 @@ public static class DesignReviewPromptBuilder
         }
     }
 
-    private static void AppendReferenceSection(StringBuilder prompt)
+    private static void AppendReferenceSection(StringBuilder prompt, string? runDirectory)
     {
         const string file = $"{TemplateDirectory}/reference.md";
         prompt.AppendLine(PromptTemplates.Load(file, "heading"));
         prompt.AppendLine();
         PromptTemplates.AppendTemplate(prompt, file, "how-to-find-it");
         prompt.AppendLine();
+        if (runDirectory is not null)
+        {
+            PromptTemplates.AppendTemplate(
+                prompt, file, "cited-issues",
+                new Dictionary<string, string>
+                {
+                    ["CitedIssuesPath"] = RunPaths.CitedIssuesFile(runDirectory),
+                    ["MaxNamedNotRead"] = CitedIssues.MaxNamedNotRead.ToString(CultureInfo.InvariantCulture),
+                });
+            prompt.AppendLine();
+        }
+
         PromptTemplates.AppendTemplate(
             prompt, file, "report-it",
             new Dictionary<string, string>
