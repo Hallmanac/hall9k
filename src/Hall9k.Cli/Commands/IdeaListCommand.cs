@@ -206,7 +206,8 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
             : $"[dim]{scope}{Elsewhere(scopedStates, settings, project, state)}[/]";
 
         return counts + "\n[dim]An idea with intent is a task, any number of times:[/] "
-            + "h9k task add --from-idea <id> --objective \"…\"";
+            + "h9k task add --from-idea <id> --objective \"…\""
+            + "\n[dim]To have it discovered unattended, with a gate for you at the end:[/] h9k plan start --idea <id>";
     }
 
     /// <summary>

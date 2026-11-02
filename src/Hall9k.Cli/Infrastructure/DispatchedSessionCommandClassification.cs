@@ -108,6 +108,8 @@ internal static class DispatchedSessionCommandClassification
             [typeof(PlanShowCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "plan show"),
             [typeof(PlanListCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "plan list"),
             [typeof(PlanResumeCommand.Settings)] = (DispatchedSessionAccess.Refused, "plan resume"),
+            [typeof(PlanPursueCommand.Settings)] = (DispatchedSessionAccess.Refused, "plan pursue"),
+            [typeof(PlanStopCommand.Settings)] = (DispatchedSessionAccess.Refused, "plan stop"),
             [typeof(PlanCancelCommand.Settings)] = (DispatchedSessionAccess.Refused, "plan cancel"),
             [typeof(TaskAssignCommand.Settings)] = (DispatchedSessionAccess.Refused, "task assign"),
             [typeof(TaskQueueCommand.Settings)] = (DispatchedSessionAccess.Refused, "task queue"),

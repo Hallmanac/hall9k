@@ -2,11 +2,9 @@ using FluentAssertions;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Plan.Events;
-using Hall9k.Domain.Features.Plan.Handlers;
 using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
-using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -174,7 +172,7 @@ public sealed class PlanCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         (plan.StartPhase, plan.Drafts[0].Phase, plan.Drafts[0].Round).Should().Be((PlanPhase.Challenge, PlanPhase.Challenge, 1));
 
         (await RunCliAsync(cts.Token, "plan", "start", ready.ToString(), "--at", "discovery"))
-            .Should().BeOfType<DomainValidationException>().Which.Message.Should().Contain("Discovery and drafting are not offered");
+            .Should().BeOfType<DomainValidationException>().Which.Message.Should().Contain("--idea");
     }
 
     [Fact]

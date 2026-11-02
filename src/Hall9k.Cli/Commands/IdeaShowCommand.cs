@@ -1,8 +1,8 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
-using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -84,7 +84,11 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
             ?? throw new DomainNotFoundException($"No idea {ideaId}.");
         await WriteFanOutAsync(session, idea, live, cancellationToken);
         await WriteSpikesAsync(session, live, cancellationToken);
-        AnnounceOutcome(idea, live);
+        PlanDetails? newestPlan = (await session.Query<PlanDetails>().ToListAsync(cancellationToken))
+            .Where(plan => plan.IdeaId == ideaId)
+            .OrderByDescending(plan => plan.StartedAt)
+            .FirstOrDefault();
+        AnnounceOutcome(idea, live, newestPlan);
         return ExitCodes.Ok;
     }
 
@@ -280,9 +284,15 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
     /// the fresh aggregate, not <paramref name="idea"/> (see <see cref="ExecuteAsync"/>'s own
     /// reasoning).
     /// </summary>
-    private static void AnnounceOutcome(IdeaDetails idea, IdeaAggregate live)
+    private static void AnnounceOutcome(IdeaDetails idea, IdeaAggregate live, PlanDetails? newestPlan)
     {
         string shortId = TaskListCommand.ShortId(idea.Id);
+        if (newestPlan is not null)
+        {
+            // Plans never leave the node they were started on, so only the node that ran one names it here.
+            AnsiConsole.MarkupLine(PlanLine(newestPlan));
+        }
+
         if (live.State == IdeaState.Concluded)
         {
             AnsiConsole.MarkupLine(
@@ -303,8 +313,24 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
             $"\n[dim]In discovery — what is this? Sharpen it:[/] h9k idea revise {shortId} \"…\" "
             + "[dim]· cut a task any time it has intent:[/] h9k task add --from-idea " + shortId
             + " --objective \"…\"" + (idea.ProjectId is null ? " --project <name>" : string.Empty)
+            + "\n[dim]Unattended? A headless discovery session writes its report into the workspace and waits at a gate for you:[/] "
+            + "h9k plan start --idea " + shortId
             + "\n[dim]Done producing? Say so:[/] h9k idea conclude " + shortId + " --reason \"…\" "
             + "[dim]or[/] h9k idea archive " + shortId + " --reason \"…\"");
+    }
+
+    /// <summary>
+    /// The idea's newest plan on this node, with its state and phase, and at the gate the two answers. Ids, states, and phases
+    /// only: the plan holds nothing the report wrote.
+    /// </summary>
+    internal static string PlanLine(PlanDetails plan)
+    {
+        string shortId = TaskListCommand.ShortId(plan.Id);
+        string state = plan.State.Value.ToLowerInvariant();
+        string line = $"\n[bold]Plan[/] {shortId} [dim]({state}, {plan.Phase.Word})[/]";
+        return plan.AtGate
+            ? line + $" [dim]waits at its gate:[/] h9k plan pursue {shortId} [dim]or[/] h9k plan stop {shortId} --reason \"…\""
+            : line + $" [dim]·[/] h9k plan show {shortId}";
     }
 
     private static string StateMarkup(IdeaState state) => state.Value switch

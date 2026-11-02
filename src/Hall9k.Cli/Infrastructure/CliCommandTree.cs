@@ -2362,7 +2362,9 @@ public static class CliCommandTree
         config.AddBranch("plan", plan =>
         {
             plan.SetDescription(
-                "Hand drafts to the daemon to carry through refinement and challenge to Published. A plan is a record of its own "
+                "Hand drafts, or an idea, to the daemon to carry through refinement and challenge to Published. A plan started from "
+                + "an idea (--idea) first runs one headless discovery session and parks at a gate: h9k plan pursue cuts the report's "
+                + "proposed tasks as the drafts, h9k plan stop ends it as a normal ending. A plan is a record of its own "
                 + "on the node where it was started: the daemon on that node refines each draft in a headless session, has it "
                 + "independently challenged (the same request, session, verdict, and failure list as h9k task challenge), applies "
                 + "what the verdict accepts, and publishes the drafts with the same behaviour as h9k task publish --no-queue when "
@@ -2371,7 +2373,8 @@ public static class CliCommandTree
                 + "hold no slot against the node's or the project's run ceiling, and nothing about it leaves the node.");
             plan.AddCommand<PlanStartCommand>("start")
                 .WithDescription(
-                    "Start a plan on one or more drafts of one project. It records the plan and returns without waiting; the daemon "
+                    "Start a plan on one or more drafts of one project, or with --idea on an idea (a headless discovery session, a "
+                    + "report in the idea's workspace, and a gate where you pursue or stop). It records the plan and returns without waiting; the daemon "
                     + "on this node drives it, and a plan started while the daemon is stopped waits for it. Every draft starts at "
                     + "refinement, or at challenge with --at challenge. Refused, with the reason and before any session starts, for "
                     + "anyone who may not publish every draft, and for a draft that is not a Draft, is a pr-review task or a spike, "
@@ -2381,7 +2384,13 @@ public static class CliCommandTree
                     + "the notice that its idea's workspace holds a tracker item (replace it in your own words with h9k task revise "
                     + "--context, and read the objective as well); and, on a project whose publish asks for a tracker attestation, "
                     + "unless --no-existing-item or --untracked is given or every draft is already linked. A plan runs at most two "
-                    + "challenge rounds per draft; only h9k plan resume grants another. Refused inside a dispatched session.")
+                    + "challenge rounds per draft; only h9k plan resume grants another. --idea is refused for anyone but the idea's "
+                    + "assignee, or its creator when nobody holds it (no override), and for an idea that is not Captured, has no project "
+                    + "this node holds, has no workspace directory on this node (start it on the node that captured the idea), carries "
+                    + "a tracker link (cut a draft by hand with h9k task add --from-idea, put its context in your own words with "
+                    + "h9k task revise --context, and plan start that draft), or is already in a live plan; it takes no draft ids, "
+                    + "--at, --no-existing-item, or --untracked. Refused inside a dispatched session.")
+                .WithExample("plan", "start", "--idea", "13403621")
                 .WithExample("plan", "start", "28b19893")
                 .WithExample("plan", "start", "28b19893", "7c41e0aa", "--no-existing-item")
                 .WithExample("plan", "start", "28b19893", "--at", "challenge", "--untracked");
@@ -2390,10 +2399,12 @@ public static class CliCommandTree
                     "One plan: its state and, for each draft, its phase (refinement, challenge, or published), its round, its latest "
                     + "outcome, and where its latest report is. A parked plan prints the draft, the reason from the closed list "
                     + "(rounds exhausted, question, verdict not applied, draft changed, revision refused, session failed, challenge "
-                    + "failed, or publish refused), the way forward, and where to read the rest, because the record holds nothing a "
+                    + "failed, publish refused, or, in discovery, gate), the way forward, and where to read the rest, because the record holds nothing a "
                     + "session wrote. While the plan is live it also says whether the daemon is running and why no session or "
                     + "challenge is starting (this node's launch hold, a spent spend budget, or a project at max parallel tasks 0), "
-                    + "and after publishing it names any draft that got no tracker item.")
+                    + "and after publishing it names any draft that got no tracker item. A plan started from an idea names the idea; at "
+                    + "the gate it reads the report in the workspace, says whether it says pursue or stop, lists the proposed objectives, "
+                    + "and prints the report's path and a line to paste to resume the discovery session and question it.")
                 .WithExample("plan", "show", "5e9a13c2");
             plan.AddCommand<PlanListCommand>("list")
                 .WithDescription(
@@ -2405,12 +2416,34 @@ public static class CliCommandTree
                 .WithDescription(
                     "Answer a parked plan: the step that parked runs again (a session, a challenge, or a publish), and a draft that "
                     + "parked on rounds exhausted is granted one more round. Publishing or abandoning a parked draft by hand answers "
-                    + "its park too, and the plan then carries on with no resume. Refused inside a dispatched session.")
+                    + "its park too, and the plan then carries on with no resume. A plan at discovery's gate is refused, naming h9k plan "
+                    + "pursue and h9k plan stop, because a resume there would read as go and spend a session on the wrong answer; after "
+                    + "a failed discovery session it runs discovery again. Refused inside a dispatched session.")
                 .WithExample("plan", "resume", "5e9a13c2");
+            plan.AddCommand<PlanPursueCommand>("pursue")
+                .WithDescription(
+                    "Answer discovery's gate by pursuing the idea. Reads the report from the idea's workspace now, so an edit you made to "
+                    + "it counts, and in one save cuts one draft per TASK line of its closing block (each is what h9k task add "
+                    + "--from-idea <idea> --objective \"<objective>\" would create on the plan's project, with a context that also names "
+                    + "the report) and moves the plan to refinement. The plan's drafts are fixed from there and it runs a plan's "
+                    + "ordinary path to Published. Refused, with nothing cut and the plan still at the gate, when the plan is not at "
+                    + "the gate, the report is missing or unreadable or says stop, the idea is no longer Captured or has moved to "
+                    + "another project, the project is archived or scheduled for purge, or, on a project whose publish asks for a "
+                    + "tracker attestation, neither --no-existing-item nor --untracked is given. --epic-title puts every draft in "
+                    + "one new epic. Refused inside a dispatched session.")
+                .WithExample("plan", "pursue", "5e9a13c2")
+                .WithExample("plan", "pursue", "5e9a13c2", "--epic-title", "\"Sharper discovery\"", "--no-existing-item");
+            plan.AddCommand<PlanStopCommand>("stop")
+                .WithDescription(
+                    "Answer discovery's gate by not pursuing the idea. Accepted only at the gate. Ends the plan as Stopped, a normal "
+                    + "ending that is neither a failure nor a cancellation; the idea stays Captured, and its workspace, the report, and "
+                    + "any tasks already cut from it are untouched. Closing the idea is yours: h9k idea conclude or h9k idea archive. "
+                    + "Another look is a new plan: h9k plan start --idea. Refused inside a dispatched session.")
+                .WithExample("plan", "stop", "5e9a13c2", "--reason", "\"an exploration; nothing to build\"");
             plan.AddCommand<PlanCancelCommand>("cancel")
                 .WithDescription(
-                    "End a live plan. The daemon stops its refinement session without applying anything, and the drafts stay Drafts, "
-                    + "free for another plan; drafts already published stay published. A plan whose drafts have all been abandoned "
+                    "End a live plan. The daemon stops its refinement or discovery session without applying or copying anything, and "
+                    + "the drafts stay Drafts, free for another plan, and an idea stays as it was; drafts already published stay published. A plan whose drafts have all been abandoned "
                     + "ends cancelled on its own. Refused inside a dispatched session.")
                 .WithExample("plan", "cancel", "5e9a13c2", "--reason", "\"the idea changed; starting over\"");
         });

@@ -2,6 +2,8 @@ using System.Buffers.Binary;
 using System.ComponentModel;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Trust;
+using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Plan.Projections;
@@ -21,7 +23,8 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// Start a plan: hand one or more drafts to the daemon on this node to carry through refinement and challenge to
-/// Published, parking for a person when it cannot finish. It records the plan on a stream of its own, rings the doorbell, and
+/// Published, parking for a person when it cannot finish, or (with <c>--idea</c>) an idea to discover, which parks at a gate where
+/// a person pursues it or stops. It records the plan on a stream of its own, rings the doorbell, and
 /// returns without waiting; nothing here runs a session.
 /// <para>
 /// Every refusal is given here, before any session starts (<see cref="PlanStartRules"/>): who may publish every draft, a draft
@@ -34,16 +37,27 @@ public sealed class PlanStartCommand : Hall9kAsyncCommand<PlanStartCommand.Setti
 {
     public sealed class Settings : CommandSettings
     {
-        [CommandArgument(0, "<DRAFTS>")]
+        [CommandArgument(0, "[DRAFTS]")]
         [Description(
             "The drafts to carry, each a task id (full, or an unambiguous fragment). All must be Drafts of one project, and you must "
-            + "be allowed to publish every one of them")]
+            + "be allowed to publish every one of them. Name none with --idea")]
         public string[] Drafts { get; init; } = [];
+
+        [CommandOption("--idea <IDEA>")]
+        [Description(
+            "Start from an idea instead of from drafts: the daemon runs one headless discovery session on it, whose report lands in "
+            + "the idea's workspace, and the plan parks at a gate (h9k status lists it under Needs you). There you answer with "
+            + "h9k plan pursue, which cuts the report's proposed tasks as drafts the plan carries to Published, or h9k plan stop, "
+            + "a normal ending that leaves the idea Captured. Only the idea's assignee, or its creator when nobody holds it, may "
+            + "start one, with no override; the idea must be Captured, in a project this node holds, with a workspace directory "
+            + "on this node, and carry no tracker link. Capturing an idea never starts a plan, because a plan spends tokens")]
+        public string? Idea { get; init; }
 
         [CommandOption("--at <PHASE>")]
         [Description(
             "Where the drafts start: refinement (the default) or challenge. At challenge the first thing that happens is the "
-            + "independent challenge; it is refused for a draft with no acceptance criteria. Discovery and drafting are not offered")]
+            + "independent challenge; it is refused for a draft with no acceptance criteria. A plan from an idea starts at discovery "
+            + "(--idea), not here")]
         public string? At { get; init; }
 
         [CommandOption("--no-existing-item")]
@@ -63,12 +77,26 @@ public sealed class PlanStartCommand : Hall9kAsyncCommand<PlanStartCommand.Setti
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        // Present, blank or not: an empty --idea next to draft ids must meet the same refusal as a named one, never fall through
+        // to starting a plan from the drafts as though the option had not been given.
+        if (settings.Idea is not null)
+        {
+            return await StartFromIdeaAsync(settings, cancellationToken);
+        }
+
+        if (settings.Drafts.Length == 0)
+        {
+            throw new DomainValidationException(
+                "A plan needs at least one draft, or an idea to discover: h9k plan start <draft> [<draft>...], or "
+                + "h9k plan start --idea <idea>. Draft ids come from h9k task list --state draft.");
+        }
+
         PlanPhase start = settings.At is null
             ? PlanPhase.Refinement
             : PlanPhase.ParseStart(settings.At)
                 ?? throw new DomainValidationException(
                     $"'{settings.At}' is not a phase a plan starts at: pass refinement (the default) or challenge. "
-                    + "Discovery and drafting are not offered.");
+                    + "A plan from an idea starts at discovery with --idea.");
 
         using DocumentStore store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
@@ -124,6 +152,80 @@ public sealed class PlanStartCommand : Hall9kAsyncCommand<PlanStartCommand.Setti
             + "challenge accepts, and publishes the drafts when every one is ready, with no run, lease, branch, or worktree. It parks "
             + "for you, and the project's orchestrator feed says so, when it cannot finish. Publishing assigns and queues nothing. "
             + "Nothing leaves this node. Read where it stands with:[/] "
+            + $"h9k plan show {shortId}");
+        if (DaemonProcess.Probe() is null)
+        {
+            AnsiConsole.MarkupLine(
+                "[yellow]  The daemon is not running.[/] [dim]A plan started while it is stopped waits for it: h9k daemon start[/]");
+        }
+
+        return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// <c>h9k plan start --idea</c>: records a plan in discovery with no drafts and returns without waiting. The daemon on this
+    /// node dispatches the one discovery session. Naming drafts, a start phase, or an attestation alongside is refused: the
+    /// drafts do not exist until a person pursues the report, and the attestations are given there.
+    /// </summary>
+    private static async Task<int> StartFromIdeaAsync(Settings settings, CancellationToken cancellationToken)
+    {
+        if (settings.Drafts.Length > 0 || settings.At is not null || settings.NoExistingItem || settings.Untracked)
+        {
+            string offered = settings.Drafts.Length > 0
+                ? "draft ids"
+                : settings.At is not null
+                    ? "--at"
+                    : settings.NoExistingItem
+                        ? "--no-existing-item"
+                        : "--untracked";
+            throw new DomainValidationException(
+                $"--idea starts a plan in discovery, before any draft exists, so it takes {offered} nowhere: the drafts are cut when you "
+                + "pursue the report at the gate, and the tracker attestations (--no-existing-item, --untracked) are given to "
+                + "h9k plan pursue then. Start from an idea with h9k plan start --idea <idea>, or from drafts with "
+                + "h9k plan start <draft> [<draft>...].");
+        }
+
+        using DocumentStore store = CliStore.Open();
+        await using IDocumentSession session = store.LightweightSession();
+
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        Guid ideaId = await IdeaIdResolver.ResolveAsync(session, settings.Idea ?? string.Empty, cancellationToken);
+        IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cancellationToken)
+            ?? throw new DomainNotFoundException($"No idea {ideaId}.");
+        bool mayAct = await IdeaOwnerGuard.MayActAsync(session, idea, context, new GitLedgerChainReader(), cancellationToken);
+        ProjectDetails? project = idea.ProjectId is { } projectId
+            ? await session.LoadAsync<ProjectDetails>(projectId, cancellationToken)
+            : null;
+        string? missingCheckout = null;
+        if (project is not null)
+        {
+            string checkout = ProjectCheckout.ForReading(project);
+            missingCheckout = !Directory.Exists(checkout) || ProjectCheckout.IsBare(checkout)
+                ? checkout
+                : null;
+        }
+
+        // The same lock a start from drafts takes, keyed on the project: a check followed by an act is only one idea in one live
+        // plan if two starts cannot overlap.
+        await RequireSoleStarterAsync(session, project?.Id ?? idea.ProjectId ?? ideaId, cancellationToken);
+        IReadOnlyList<PlanDetails> livePlans = [.. (await session.Query<PlanDetails>().ToListAsync(cancellationToken)).Where(plan => plan.IsLive)];
+
+        PlanStarted decided = PlanStartRules.DecideFromIdea(
+            idea, mayAct, project, livePlans, DiscoveryWorkspace.Exists(idea), missingCheckout, context.OwnerId, DateTimeOffset.UtcNow);
+        PlanStarted started = decided with { Id = DomainId.New() };
+        session.Events.StartStream<PlanAggregate>(started.Id, started);
+        await session.SaveChangesAsync(cancellationToken);
+        await Doorbell.RingAsync($"plan-started:{started.Id}", cancellationToken);
+
+        string shortId = TaskListCommand.ShortId(started.Id);
+        AnsiConsole.MarkupLine(
+            $"[blue]Plan {shortId} started[/] on idea {TaskListCommand.ShortId(idea.Id)} of project {(project?.Name ?? string.Empty).EscapeMarkup()}, in discovery");
+        AnsiConsole.MarkupLine(
+            "[dim]  This returns without waiting. The daemon on this node runs one headless discovery session on the idea and copies "
+            + $"its report to {DiscoveryWorkspace.ReportFileName(started.Id)} in the idea's workspace, then parks at a gate for you "
+            + "(h9k status lists it under Needs you): h9k plan pursue cuts the report's proposed tasks as drafts the plan carries to "
+            + "Published, and h9k plan stop ends it, which is a normal ending. It cuts no draft and decides nothing about the idea. "
+            + "No run, lease, branch, or worktree is created, and nothing leaves this node. Read where it stands with:[/] "
             + $"h9k plan show {shortId}");
         if (DaemonProcess.Probe() is null)
         {

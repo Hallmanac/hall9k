@@ -46,7 +46,7 @@ public static class OperatingSettingsRendering
             ("max-concurrent-agent-sessions (retired)", DescribeMaxConcurrentAgentSessions(report)),
             ("default-model", $"{report.DefaultModel.Value} ({report.DefaultModel.DescribeOrigin()})"),
             ("effort", DescribeEffort(report)),
-            .. report.EffortByRole.Select(role => ($"effort ({RoleLabel(role.Role)})", DescribeRoleEffort(role))),
+            .. report.EffortByRole.Select(role => ($"effort ({RoleLabel(role.Role)})", DescribeRoleEffort(role) + RoleNote(role.Role))),
             ("max-compliance-review-cycles",
                 $"{report.MaxComplianceReviewCycles.Value} ({report.MaxComplianceReviewCycles.DescribeOrigin()})"),
             ("max-adversarial-review-cycles",
@@ -75,7 +75,7 @@ public static class OperatingSettingsRendering
                 (_, SettingOrigin.EnvironmentVariable) =>
                     $"(empty) ({role.Model.DescribeOrigin()}) — falls through to {FallthroughDescription(role.Role)}",
                 _ => $"not set — falls through to {FallthroughDescription(role.Role)}",
-            })));
+            } + RoleNote(role.Role))));
 
         return rows;
     }
@@ -147,6 +147,14 @@ public static class OperatingSettingsRendering
         report.SpendBudgetTokens.Value is { } budget
             ? $"{budget} ({report.SpendBudgetTokens.DescribeOrigin()})"
             : $"not set ({report.SpendBudgetTokens.DescribeOrigin()}) — dispatch is unbudgeted";
+
+    /// <summary>
+    /// What a role covers beyond its name, said on its row: the refinement role is also the role of a plan's discovery session
+    /// (<c>h9k plan start --idea</c>), which has no setting of its own, so a person tuning one is told it moves both.
+    /// </summary>
+    private static string RoleNote(string role) => role == nameof(RoleModelSettings.Refinement)
+        ? "; this role also covers a plan's discovery session"
+        : string.Empty;
 
     /// <summary>
     /// The max-concurrent-task-runs row's value: plain when nothing converted it, and one of two
