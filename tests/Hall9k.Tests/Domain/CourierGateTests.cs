@@ -14,6 +14,8 @@ public sealed class CourierGateTests
 {
     private static readonly TimeSpan QuietThreshold = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan MaxWait = TimeSpan.FromSeconds(60);
+    private static readonly DateTimeOffset Now = new(2026, 11, 2, 12, 0, 0, TimeSpan.Zero);
+    private static readonly Guid ProjectId = Guid.Parse("0197a000-0000-7000-8000-000000000001");
 
     private static CourierSpawnDecision Decide(
         bool hasUndrainedItems = true,
@@ -21,15 +23,37 @@ public sealed class CourierGateTests
         bool courierAlreadyRunning = false,
         bool manualDrainLeaseHeld = false,
         bool hasUrgentItem = false,
-        bool lastCourierFailed = false,
+        long urgentSequence = 100,
+        CourierFailureStreak? streak = null,
         TimeSpan? elapsedSinceLastCourier = null,
         TimeSpan? quietFor = null,
+        TimeSpan? maxWait = null,
         int spawnsToday = 0,
         int daySpawnCap = 500) =>
         CourierGate.Decide(
-            hasUndrainedItems, orchestratorLive, courierAlreadyRunning, manualDrainLeaseHeld, hasUrgentItem,
-            lastCourierFailed, elapsedSinceLastCourier, quietFor ?? TimeSpan.Zero, QuietThreshold, MaxWait,
-            spawnsToday, daySpawnCap);
+            hasUndrainedItems, orchestratorLive, courierAlreadyRunning, manualDrainLeaseHeld,
+            hasUrgentItem ? urgentSequence : null, streak, Now, elapsedSinceLastCourier, quietFor ?? TimeSpan.Zero,
+            QuietThreshold, maxWait ?? MaxWait, spawnsToday, daySpawnCap);
+
+    /// <summary>
+    /// A streak of <paramref name="count"/> failures whose last one completed <paramref name="agoOfLastFailure"/>
+    /// before <see cref="Now"/>, with the next attempt where the defaults put it.
+    /// </summary>
+    private static CourierFailureStreak Streak(int count, TimeSpan agoOfLastFailure, long carried = 50)
+    {
+        CourierBackoffWaits waits = CourierBackoffWaits.For(null, TimeSpan.FromMinutes(30));
+        DateTimeOffset lastFailureAt = Now - agoOfLastFailure;
+        return new CourierFailureStreak
+        {
+            Id = ProjectId,
+            Count = count,
+            StartedAt = lastFailureAt - TimeSpan.FromHours(1),
+            LastFailureAt = lastFailureAt,
+            LastFailureReason = "not reachable",
+            HighestCarriedSequence = carried,
+            NextAttemptAt = lastFailureAt + waits.Step(count),
+        };
+    }
 
     [Fact]
     public void No_undrained_items_refuses_regardless_of_everything_else()
@@ -105,46 +129,125 @@ public sealed class CourierGateTests
     }
 
     [Fact]
-    public void An_urgent_item_after_a_failed_delivery_waits_out_the_ceiling_like_any_other()
+    public void An_urgent_item_already_carried_by_a_failed_courier_waits_out_the_step_like_any_other()
     {
-        // Without lastCourierFailed's own check, this would spawn at once every sweep tick with
-        // no backoff at all — the exact runaway the day cap alone used to be left to stop.
+        // Without the carried-sequence check this would spawn at once every sweep tick with no
+        // backoff at all, the runaway the day cap alone used to be left to stop.
         Decide(
-                hasUrgentItem: true, lastCourierFailed: true,
-                elapsedSinceLastCourier: TimeSpan.FromSeconds(1), quietFor: TimeSpan.Zero)
+                hasUrgentItem: true, urgentSequence: 50, streak: Streak(1, TimeSpan.FromSeconds(1), carried: 50),
+                elapsedSinceLastCourier: TimeSpan.FromSeconds(1))
             .Should().Be(CourierSpawnDecision.Waiting);
     }
 
     [Fact]
-    public void An_urgent_item_after_a_failed_delivery_spawns_once_the_wait_elapses()
+    public void An_urgent_item_already_carried_spawns_once_the_step_has_elapsed()
     {
         Decide(
-                hasUrgentItem: true, lastCourierFailed: true,
-                elapsedSinceLastCourier: TimeSpan.FromSeconds(60), quietFor: TimeSpan.Zero)
+                hasUrgentItem: true, urgentSequence: 50, streak: Streak(1, TimeSpan.FromSeconds(60), carried: 50),
+                elapsedSinceLastCourier: TimeSpan.FromSeconds(60))
             .Should().Be(CourierSpawnDecision.Spawn);
     }
 
     [Fact]
-    public void A_failed_delivery_still_waits_out_the_ceiling_even_once_the_stuck_items_own_age_reads_as_quiet()
+    public void A_failed_project_never_rides_the_quiet_ramp_down_to_zero()
     {
         // The undelivered item's own age is what quietFor measures, and it only grows while
-        // nothing new arrives — so without a wait floor of its own, a failed delivery would ride
-        // the ordinary ramp down to zero and respawn on every sweep tick once the feed has looked
-        // "quiet" for ten minutes, which is exactly backwards for a project stuck on a failing
-        // send: the day cap alone would be left to stop it.
+        // nothing new arrives, so on the ordinary ramp a failed delivery would respawn on every
+        // sweep tick once the feed looked quiet for ten minutes.
         Decide(
-                lastCourierFailed: true,
+                streak: Streak(3, TimeSpan.FromSeconds(1)),
                 elapsedSinceLastCourier: TimeSpan.FromSeconds(1), quietFor: TimeSpan.FromMinutes(15))
             .Should().Be(CourierSpawnDecision.Waiting);
     }
 
     [Fact]
-    public void A_failed_delivery_spawns_again_once_its_own_ceiling_wait_has_elapsed()
+    public void A_failed_project_spawns_again_once_its_next_attempt_time_has_passed()
     {
         Decide(
-                lastCourierFailed: true,
-                elapsedSinceLastCourier: TimeSpan.FromSeconds(60), quietFor: TimeSpan.FromMinutes(15))
+                streak: Streak(3, TimeSpan.FromMinutes(4)),
+                elapsedSinceLastCourier: TimeSpan.FromMinutes(4), quietFor: TimeSpan.FromMinutes(15))
             .Should().Be(CourierSpawnDecision.Spawn);
+    }
+
+    [Fact]
+    public void A_courier_max_wait_of_zero_does_not_let_a_failing_project_respawn_on_every_tick()
+    {
+        // The batching wait is zero here, but the streak's next attempt was derived from the
+        // sixty second floor, so a tick ten seconds after the failure waits.
+        Decide(
+                maxWait: TimeSpan.Zero, streak: Streak(1, TimeSpan.FromSeconds(10)),
+                elapsedSinceLastCourier: TimeSpan.FromSeconds(10), quietFor: TimeSpan.FromMinutes(15))
+            .Should().Be(CourierSpawnDecision.Waiting);
+    }
+
+    [Fact]
+    public void An_urgent_item_no_failed_courier_carried_gets_one_early_attempt_at_any_step()
+    {
+        // The sixth failure's wait is thirty minutes, and the courier completed two minutes ago.
+        Decide(
+                hasUrgentItem: true, urgentSequence: 51, streak: Streak(6, TimeSpan.FromMinutes(2), carried: 50),
+                elapsedSinceLastCourier: TimeSpan.FromMinutes(2))
+            .Should().Be(CourierSpawnDecision.Spawn);
+    }
+
+    [Fact]
+    public void The_early_attempt_waits_until_at_least_the_base_has_passed_since_the_last_courier()
+    {
+        // Two urgent items ten seconds apart during a streak: the first got its attempt, and the
+        // second must not spawn another courier until the base interval has passed.
+        Decide(
+                hasUrgentItem: true, urgentSequence: 52, streak: Streak(6, TimeSpan.FromSeconds(10), carried: 50),
+                elapsedSinceLastCourier: TimeSpan.FromSeconds(10))
+            .Should().Be(CourierSpawnDecision.Waiting);
+    }
+
+    [Fact]
+    public void The_early_attempt_does_not_reset_the_doubling_and_the_item_gets_no_second_bypass()
+    {
+        // The early courier carried through 51 and failed; the streak is one step further up and
+        // records 51 as carried, so the same item no longer qualifies.
+        CourierBackoffWaits waits = CourierBackoffWaits.For(null, TimeSpan.FromMinutes(30));
+        CourierFailureStreak before = Streak(6, TimeSpan.FromMinutes(2), carried: 50);
+        CourierFailureStreak after = CourierFailureStreak.AfterFailure(
+            before, ProjectId, Now, "not reachable", carriedThroughSequence: 51, waits);
+
+        after.Count.Should().Be(7, "the doubling is not reset, only the next step up taken");
+        Decide(
+                hasUrgentItem: true, urgentSequence: 51, streak: after,
+                elapsedSinceLastCourier: TimeSpan.FromMinutes(2))
+            .Should().Be(CourierSpawnDecision.Waiting);
+    }
+
+    [Fact]
+    public void The_early_attempt_applies_to_a_streak_only_not_to_a_zero_count_hold()
+    {
+        // A courier the daemon itself ended holds the gate for one base wait, urgent or not.
+        CourierFailureStreak hold = CourierFailureStreak.AfterDaemonEnding(
+            null, ProjectId, Now, CourierBackoffWaits.For(null, TimeSpan.FromMinutes(30)));
+
+        Decide(hasUrgentItem: true, streak: hold, elapsedSinceLastCourier: TimeSpan.Zero)
+            .Should().Be(CourierSpawnDecision.Waiting);
+        Decide(streak: hold, elapsedSinceLastCourier: TimeSpan.Zero, quietFor: TimeSpan.FromMinutes(15))
+            .Should().Be(CourierSpawnDecision.Waiting);
+    }
+
+    [Fact]
+    public void A_zero_count_hold_that_has_elapsed_hands_back_to_the_ordinary_wait()
+    {
+        CourierFailureStreak hold = CourierFailureStreak.AfterDaemonEnding(
+            null, ProjectId, Now - TimeSpan.FromMinutes(5), CourierBackoffWaits.For(null, TimeSpan.FromMinutes(30)));
+
+        Decide(hasUrgentItem: true, streak: hold, elapsedSinceLastCourier: TimeSpan.FromMinutes(5))
+            .Should().Be(CourierSpawnDecision.Spawn);
+    }
+
+    [Fact]
+    public void The_day_cap_still_refuses_a_failing_project_with_an_early_attempt_available()
+    {
+        Decide(
+                hasUrgentItem: true, urgentSequence: 51, streak: Streak(6, TimeSpan.FromMinutes(2), carried: 50),
+                elapsedSinceLastCourier: TimeSpan.FromMinutes(2), spawnsToday: 500)
+            .Should().Be(CourierSpawnDecision.DayCapReached);
     }
 
     [Theory]

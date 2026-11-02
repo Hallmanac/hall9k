@@ -31,6 +31,8 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 20, 9, 0, 0, TimeSpan.Zero);
 
+    private static readonly CourierBackoffWaits Waits = CourierBackoffWaits.For(null, TimeSpan.FromMinutes(30));
+
     private readonly PostgresFixture _postgres;
 
     public CourierEngineTests(PostgresFixture postgres) => _postgres = postgres;
@@ -58,8 +60,8 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
         AgentResult result = new(false, 500, 50, 0, 200, null, 4, "Sent it.");
 
         await CourierEngine.RecordOutcomeAsync(
-            _postgres.Store, projectId, runId, AgentModel.CourierDefault, delivered: true, "Delivered.",
-            drainableThroughSequence: 42, result, Now.AddSeconds(30), cts.Token);
+            _postgres.Store, projectId, runId, AgentModel.CourierDefault, CourierEnding.Delivered, "Delivered.",
+            drainableThroughSequence: 42, result, Now.AddSeconds(30), Waits, failureReason: null, cts.Token);
 
         await using IQuerySession session = _postgres.Store.QuerySession();
         long cursor = await OrchestratorFeedReader.CursorAsync(session, projectId, cts.Token);
@@ -80,9 +82,9 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
         Guid runId = await DispatchedRunAsync(projectId, cts.Token);
 
         await CourierEngine.RecordOutcomeAsync(
-            _postgres.Store, projectId, runId, AgentModel.CourierDefault, delivered: false,
+            _postgres.Store, projectId, runId, AgentModel.CourierDefault, CourierEnding.Failed,
             "The session ended without a delivered marker.", drainableThroughSequence: 42, result: null,
-            Now.AddSeconds(30), cts.Token);
+            Now.AddSeconds(30), Waits, "ended without an outcome line", cts.Token);
 
         await using IQuerySession session = _postgres.Store.QuerySession();
         long cursor = await OrchestratorFeedReader.CursorAsync(session, projectId, cts.Token);
@@ -107,9 +109,9 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
         AgentResult result = new(false, 300, 20, 0, 100, null, 2, "I couldn't find that tool.");
 
         await CourierEngine.RecordOutcomeAsync(
-            _postgres.Store, projectId, runId, AgentModel.CourierDefault, delivered: false,
+            _postgres.Store, projectId, runId, AgentModel.CourierDefault, CourierEnding.Failed,
             "The session ended without a delivered marker. It said: I couldn't find that tool.",
-            drainableThroughSequence: 7, result, Now.AddSeconds(10), cts.Token);
+            drainableThroughSequence: 7, result, Now.AddSeconds(10), Waits, "ended without an outcome line", cts.Token);
 
         await using IQuerySession session = _postgres.Store.QuerySession();
         Hall9k.Domain.Features.Run.PeriodSpend spend =
@@ -272,6 +274,395 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
             + "future tick either");
     }
 
+    private async Task<CourierFailureStreak?> StreakAsync(Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        return await query.LoadAsync<CourierFailureStreak>(projectId, cancellationToken);
+    }
+
+    [Fact]
+    public async Task A_failed_outcome_starts_a_streak_that_names_the_reason_and_the_next_attempt()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid projectId = DomainId.New();
+        Guid runId = await DispatchedRunAsync(projectId, cts.Token);
+
+        await CourierEngine.RecordOutcomeAsync(
+            _postgres.Store, projectId, runId, AgentModel.CourierDefault, CourierEnding.Failed,
+            "The session ended without a delivered marker.", drainableThroughSequence: 42, result: null,
+            Now.AddSeconds(30), Waits, "hall9k-9f is not reachable\nsecond line", cts.Token);
+
+        CourierFailureStreak? streak = await StreakAsync(projectId, cts.Token);
+        streak.Should().NotBeNull();
+        streak!.Count.Should().Be(1);
+        streak.StartedAt.Should().Be(Now.AddSeconds(30));
+        streak.LastFailureAt.Should().Be(Now.AddSeconds(30));
+        streak.LastFailureReason.Should().Be("hall9k-9f is not reachable second line");
+        streak.HighestCarriedSequence.Should().Be(42);
+        streak.NextAttemptAt.Should().Be(Now.AddSeconds(30).AddMinutes(1));
+
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        CourierRunDetails? run = await query.LoadAsync<CourierRunDetails>(runId, cts.Token);
+        run!.Outcome.Should().Be("The session ended without a delivered marker.", "the run's own Outcome is not the reason");
+    }
+
+    [Fact]
+    public async Task Consecutive_failures_double_the_wait_and_a_delivery_resets_the_streak()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid projectId = DomainId.New();
+        for (int n = 1; n <= 4; n++)
+        {
+            Guid failedRun = await DispatchedRunAsync(projectId, cts.Token);
+            await CourierEngine.RecordOutcomeAsync(
+                _postgres.Store, projectId, failedRun, AgentModel.CourierDefault, CourierEnding.Failed, "failed",
+                drainableThroughSequence: n, result: null, Now.AddMinutes(n * 10), Waits, "down", cts.Token);
+        }
+
+        CourierFailureStreak? streak = await StreakAsync(projectId, cts.Token);
+        streak!.Count.Should().Be(4);
+        streak.StartedAt.Should().Be(Now.AddMinutes(10));
+        streak.NextAttemptAt.Should().Be(Now.AddMinutes(40).AddMinutes(8));
+
+        Guid deliveredRun = await DispatchedRunAsync(projectId, cts.Token);
+        await CourierEngine.RecordOutcomeAsync(
+            _postgres.Store, projectId, deliveredRun, AgentModel.CourierDefault, CourierEnding.Delivered, "Delivered.",
+            drainableThroughSequence: 9, result: null, Now.AddMinutes(60), Waits, failureReason: null, cts.Token);
+
+        (await StreakAsync(projectId, cts.Token)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task A_courier_the_daemon_ended_rewrites_only_the_next_attempt_of_a_running_streak()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid projectId = DomainId.New();
+        Guid failedRun = await DispatchedRunAsync(projectId, cts.Token);
+        await CourierEngine.RecordOutcomeAsync(
+            _postgres.Store, projectId, failedRun, AgentModel.CourierDefault, CourierEnding.Failed, "failed",
+            drainableThroughSequence: 5, result: null, Now, Waits, "down", cts.Token);
+        CourierFailureStreak before = (await StreakAsync(projectId, cts.Token))!;
+
+        Guid stoppedRun = await DispatchedRunAsync(projectId, cts.Token);
+        await CourierEngine.RecordOutcomeAsync(
+            _postgres.Store, projectId, stoppedRun, AgentModel.CourierDefault, CourierEnding.EndedByDaemon,
+            "The daemon stopped while this courier was running, and it was stopped with it.",
+            drainableThroughSequence: 0, result: null, Now.AddMinutes(30), Waits, failureReason: null, cts.Token);
+
+        CourierFailureStreak after = (await StreakAsync(projectId, cts.Token))!;
+        after.Count.Should().Be(before.Count);
+        after.StartedAt.Should().Be(before.StartedAt);
+        after.LastFailureAt.Should().Be(before.LastFailureAt);
+        after.LastFailureReason.Should().Be(before.LastFailureReason);
+        after.HighestCarriedSequence.Should().Be(before.HighestCarriedSequence);
+        after.NextAttemptAt.Should().Be(Now.AddMinutes(30).AddMinutes(1));
+    }
+
+    [Fact]
+    public async Task A_courier_the_daemon_ended_with_no_streak_leaves_a_zero_count_hold()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid projectId = DomainId.New();
+        Guid stoppedRun = await DispatchedRunAsync(projectId, cts.Token);
+
+        await CourierEngine.RecordOutcomeAsync(
+            _postgres.Store, projectId, stoppedRun, AgentModel.CourierDefault, CourierEnding.EndedByDaemon,
+            "stopped", drainableThroughSequence: 0, result: null, Now, Waits, failureReason: null, cts.Token);
+
+        CourierFailureStreak? hold = await StreakAsync(projectId, cts.Token);
+        hold.Should().NotBeNull();
+        hold!.Count.Should().Be(0);
+        hold.NextAttemptAt.Should().Be(Now.AddMinutes(1));
+    }
+
+    /// <summary>
+    /// One project with an orchestrator window registered on a fresh node and one feed item that has
+    /// already cleared the settling window. The item is a message, which the feed admits at every
+    /// band and treats as urgent, so a tick with no streak running would spawn at once.
+    /// </summary>
+    private sealed record Seeded(NodeContext Node, Guid ProjectId, int ProcessId, DateTimeOffset ProcessStartedAt);
+
+    private async Task<Seeded> SeedProjectWithUrgentItemAsync(
+        int processId, DateTimeOffset launchedAt, CancellationToken cancellationToken, bool withItem = true)
+    {
+        DocumentStore store = _postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewIsolatedNodeAsync(store, cancellationToken);
+        Guid projectId = DomainId.New();
+        DateTimeOffset processStartedAt = launchedAt;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(projectId, ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"project-{DomainId.Short(projectId)}", "/repo", null, null, Now));
+            session.Events.StartStream<OrchestratorPresenceAggregate>(
+                OrchestratorPresenceStreamId.For(node.NodeId, projectId),
+                new OrchestratorLaunched(
+                    node.NodeId, projectId, "orchestrator", processId, "claude-code", processStartedAt, launchedAt));
+            if (withItem)
+            {
+                session.Events.StartStream<MessageAggregate>(
+                    MessageStreamId.ForMessage(DomainId.New(), projectId, 1),
+                    new MessageReceived(
+                        DomainId.New(), 1, Now, "abcdef0123456789", "project", null,
+                        MessageKind.Note.Value, "are you still on the stacked pair?", Now, projectId));
+            }
+
+            await session.SaveChangesAsync(cancellationToken);
+        }
+
+        // The item's At is its real commit time, so only real time clears the settling window.
+        if (withItem)
+        {
+            await Task.Delay(OrchestratorFeedSelection.SettlingWindow + TimeSpan.FromSeconds(2), cancellationToken);
+        }
+
+        return new Seeded(node, projectId, processId, processStartedAt);
+    }
+
+    private CourierEngine EngineFor(
+        Seeded seeded, IExecutor executor, FakeProcessManager processManager, DaemonOptions? options = null) =>
+        new(
+            _postgres.Store, seeded.Node, executor, processManager,
+            new FakeOrchestratorProcessProbe().Running(seeded.ProcessId, seeded.ProcessStartedAt),
+            Options.Create(options ?? new DaemonOptions()), NullLogger<CourierEngine>.Instance);
+
+    private async Task SeedStreakAsync(CourierFailureStreak streak, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        session.Store(streak);
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>A run that already completed as a failure at <paramref name="completedAt"/>, for the gate's elapsed-since-last-courier read.</summary>
+    private async Task SeedCompletedFailedRunAsync(
+        Seeded seeded, DateTimeOffset completedAt, CancellationToken cancellationToken)
+    {
+        Guid runId = DomainId.New();
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        session.Events.StartStream(runId, new CourierRunDispatched(
+            runId, seeded.ProjectId, seeded.Node.NodeId, AgentModel.CourierDefault, completedAt.AddSeconds(-30)));
+        session.Events.Append(runId, new CourierRunCompleted(runId, false, "failed", completedAt));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private static CourierFailureStreak RunningStreak(
+        Guid projectId, int count, DateTimeOffset lastFailureAt, DateTimeOffset nextAttemptAt, long carried) => new()
+    {
+        Id = projectId,
+        Count = count,
+        StartedAt = lastFailureAt.AddHours(-2),
+        LastFailureAt = lastFailureAt,
+        LastFailureReason = "hall9k-9f is not reachable",
+        HighestCarriedSequence = carried,
+        NextAttemptAt = nextAttemptAt,
+    };
+
+    [Fact]
+    public async Task A_courier_the_daemon_ended_is_followed_at_once_by_a_tick_that_does_not_spawn()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_301, DateTimeOffset.UtcNow.AddMinutes(-5), cts.Token);
+        Guid stoppedRun = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream(stoppedRun, new CourierRunDispatched(
+                stoppedRun, seeded.ProjectId, seeded.Node.NodeId, AgentModel.CourierDefault, DateTimeOffset.UtcNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await CourierEngine.RecordOutcomeAsync(
+            _postgres.Store, seeded.ProjectId, stoppedRun, AgentModel.CourierDefault, CourierEnding.EndedByDaemon,
+            "The daemon stopped while this courier was running, and it was stopped with it.",
+            drainableThroughSequence: 0, result: null, DateTimeOffset.UtcNow, Waits, failureReason: null, cts.Token);
+
+        CountingExecutor executor = new();
+        CourierSweepResult sweep = await EngineFor(seeded, executor, new FakeProcessManager()).SweepOnceAsync(cts.Token);
+
+        executor.Spawns.Should().BeEmpty("an urgent item must not bypass the hold a daemon-ended courier leaves");
+        sweep.Should().Be(new CourierSweepResult(0, 0, 0, 0));
+    }
+
+    [Fact]
+    public async Task The_first_tick_after_a_start_pulls_the_next_attempt_in_to_the_base_and_leaves_the_count()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_302, DateTimeOffset.UtcNow.AddHours(-3), cts.Token);
+        DateTimeOffset failedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await SeedCompletedFailedRunAsync(seeded, failedAt, cts.Token);
+        // Carried past anything the feed holds, so the urgent item has no early attempt left and
+        // only the pulled-in next attempt could ever let it through.
+        await SeedStreakAsync(
+            RunningStreak(seeded.ProjectId, 9, failedAt, DateTimeOffset.UtcNow.AddMinutes(29), carried: long.MaxValue), cts.Token);
+
+        CountingExecutor executor = new();
+        CourierEngine engine = EngineFor(seeded, executor, new FakeProcessManager());
+        DateTimeOffset before = DateTimeOffset.UtcNow;
+        await engine.SweepOnceAsync(cts.Token);
+        DateTimeOffset after = DateTimeOffset.UtcNow;
+
+        CourierFailureStreak pulled = (await StreakAsync(seeded.ProjectId, cts.Token))!;
+        pulled.Count.Should().Be(9);
+        pulled.NextAttemptAt.Should().BeOnOrAfter(before.AddSeconds(60)).And.BeOnOrBefore(after.AddSeconds(60));
+        executor.Spawns.Should().BeEmpty("the pulled-in time is a minute away");
+
+        // Only the first tick since the engine started pulls in: a later one leaves a far time alone.
+        DateTimeOffset far = DateTimeOffset.UtcNow.AddMinutes(25);
+        await SeedStreakAsync(RunningStreak(seeded.ProjectId, 9, failedAt, far, carried: long.MaxValue), cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+        (await StreakAsync(seeded.ProjectId, cts.Token))!.NextAttemptAt.Should().Be(far);
+
+        // A fresh engine is a daemon restart, and pulls in again.
+        await EngineFor(seeded, new CountingExecutor(), new FakeProcessManager()).SweepOnceAsync(cts.Token);
+        (await StreakAsync(seeded.ProjectId, cts.Token))!.NextAttemptAt.Should().BeBefore(far);
+    }
+
+    [Fact]
+    public async Task A_streak_built_up_after_the_first_tick_keeps_its_backoff()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(
+            48_309, DateTimeOffset.UtcNow.AddHours(-3), cts.Token, withItem: false);
+        CourierEngine engine = EngineFor(seeded, new CountingExecutor(), new FakeProcessManager());
+
+        // The first tick finds no streak at all, which is the engine's one chance to pull one in.
+        await engine.SweepOnceAsync(cts.Token);
+
+        DateTimeOffset far = DateTimeOffset.UtcNow.AddMinutes(25);
+        await SeedStreakAsync(
+            RunningStreak(seeded.ProjectId, 6, DateTimeOffset.UtcNow.AddMinutes(-5), far, carried: long.MaxValue), cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+
+        (await StreakAsync(seeded.ProjectId, cts.Token))!.NextAttemptAt.Should().Be(
+            far, "a streak this daemon run built up is not the restart the pull-in is for");
+    }
+
+    [Fact]
+    public async Task The_streak_survives_a_fresh_engine_over_the_same_store()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_303, DateTimeOffset.UtcNow.AddHours(-3), cts.Token);
+        DateTimeOffset failedAt = DateTimeOffset.UtcNow.AddSeconds(-20);
+        await SeedCompletedFailedRunAsync(seeded, failedAt, cts.Token);
+        await SeedStreakAsync(
+            RunningStreak(seeded.ProjectId, 5, failedAt, failedAt.AddMinutes(16), carried: long.MaxValue), cts.Token);
+
+        CountingExecutor executor = new();
+        await EngineFor(seeded, executor, new FakeProcessManager()).SweepOnceAsync(cts.Token);
+
+        executor.Spawns.Should().BeEmpty("the restarted engine read the streak back and is still waiting");
+        CourierFailureStreak streak = (await StreakAsync(seeded.ProjectId, cts.Token))!;
+        streak.Count.Should().Be(5);
+        streak.LastFailureReason.Should().Be("hall9k-9f is not reachable");
+    }
+
+    [Fact]
+    public async Task A_window_registered_after_the_last_failure_resets_the_streak_and_spawns()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_304, DateTimeOffset.UtcNow.AddMinutes(-1), cts.Token);
+        DateTimeOffset failedAt = DateTimeOffset.UtcNow.AddMinutes(-30);
+        await SeedStreakAsync(
+            RunningStreak(seeded.ProjectId, 7, failedAt, DateTimeOffset.UtcNow.AddMinutes(25), carried: long.MaxValue), cts.Token);
+
+        CountingExecutor executor = new();
+        await EngineFor(seeded, executor, new FakeProcessManager()).SweepOnceAsync(cts.Token);
+
+        executor.Spawns.Should().ContainSingle("the new window's address was never tried, so the old streak's wait is gone");
+        CourierFailureStreak streak = (await StreakAsync(seeded.ProjectId, cts.Token))!;
+        streak.Count.Should().Be(1, "the reset cleared the old streak, and this courier's own failure started a new one");
+    }
+
+    [Fact]
+    public async Task A_window_registered_before_the_last_failure_leaves_the_streak_waiting()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_305, DateTimeOffset.UtcNow.AddHours(-3), cts.Token);
+        DateTimeOffset failedAt = DateTimeOffset.UtcNow.AddSeconds(-20);
+        await SeedCompletedFailedRunAsync(seeded, failedAt, cts.Token);
+        await SeedStreakAsync(
+            RunningStreak(seeded.ProjectId, 7, failedAt, failedAt.AddMinutes(30), carried: long.MaxValue), cts.Token);
+
+        CountingExecutor executor = new();
+        await EngineFor(seeded, executor, new FakeProcessManager()).SweepOnceAsync(cts.Token);
+
+        executor.Spawns.Should().BeEmpty();
+        (await StreakAsync(seeded.ProjectId, cts.Token))!.Count.Should().Be(7);
+    }
+
+    [Fact]
+    public async Task An_urgent_item_no_failed_courier_carried_gets_one_early_attempt_and_no_second_bypass()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_306, DateTimeOffset.UtcNow.AddHours(-3), cts.Token);
+        DateTimeOffset failedAt = DateTimeOffset.UtcNow.AddMinutes(-2);
+        await SeedCompletedFailedRunAsync(seeded, failedAt, cts.Token);
+        // Six failures in: the next scheduled try is half an hour away, and no courier of the
+        // streak ever carried the urgent item that has just landed.
+        await SeedStreakAsync(
+            RunningStreak(seeded.ProjectId, 6, failedAt, DateTimeOffset.UtcNow.AddMinutes(28), carried: 0), cts.Token);
+
+        CountingExecutor executor = new();
+        CourierEngine engine = EngineFor(seeded, executor, new FakeProcessManager());
+        CourierSweepResult first = await engine.SweepOnceAsync(cts.Token);
+
+        executor.Spawns.Should().ContainSingle("the uncarried urgent item bypasses the thirty minute wait once");
+        first.Failed.Should().Be(1);
+        CourierFailureStreak afterEarly = (await StreakAsync(seeded.ProjectId, cts.Token))!;
+        afterEarly.Count.Should().Be(7, "the early attempt does not reset the doubling, it took the next step up");
+        afterEarly.StartedAt.Should().Be(failedAt.AddHours(-2));
+        afterEarly.HighestCarriedSequence.Should().BeGreaterThan(0);
+
+        CourierSweepResult second = await engine.SweepOnceAsync(cts.Token);
+
+        executor.Spawns.Should().ContainSingle("the item was carried by the failed early attempt, so it has no second bypass");
+        second.Should().Be(new CourierSweepResult(0, 0, 0, 0));
+    }
+
+    [Fact]
+    public async Task A_courier_that_times_out_records_the_timeout_as_its_reason()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_307, DateTimeOffset.UtcNow.AddHours(-3), cts.Token);
+        FakeProcessManager processManager = new();
+        processManager.MarkAlive(60_000);
+
+        CountingExecutor executor = new();
+        await EngineFor(seeded, executor, processManager, new DaemonOptions { CourierTimeout = TimeSpan.FromSeconds(2) })
+            .SweepOnceAsync(cts.Token);
+
+        CourierFailureStreak streak = (await StreakAsync(seeded.ProjectId, cts.Token))!;
+        streak.Count.Should().Be(1);
+        streak.LastFailureReason.Should().Be("timed out after 2s");
+    }
+
+    [Fact]
+    public async Task A_courier_whose_session_left_no_result_records_that_it_ended_without_an_outcome_line()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_308, DateTimeOffset.UtcNow.AddHours(-3), cts.Token);
+
+        await EngineFor(seeded, new CountingExecutor(), new FakeProcessManager()).SweepOnceAsync(cts.Token);
+
+        CourierFailureStreak streak = (await StreakAsync(seeded.ProjectId, cts.Token))!;
+        streak.Count.Should().Be(1);
+        streak.LastFailureReason.Should().Be("ended without an outcome line");
+        streak.NextAttemptAt.Should().Be(streak.LastFailureAt.AddMinutes(1));
+    }
+
+    [Fact]
+    public async Task A_courier_whose_spawn_throws_records_a_daemon_error_as_its_reason()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_311, DateTimeOffset.UtcNow.AddHours(-3), cts.Token);
+
+        await EngineFor(seeded, new ThrowingExecutor(), new FakeProcessManager()).SweepOnceAsync(cts.Token);
+
+        CourierFailureStreak streak = (await StreakAsync(seeded.ProjectId, cts.Token))!;
+        streak.Count.Should().Be(1);
+        streak.LastFailureReason.Should().StartWith(
+            "daemon error: ", "a spawn that throws is the daemon's own failure, not the session's");
+    }
+
     /// <summary>Records every spawn request without ever completing one — any call here at all
     /// is itself the failure the test above exists to catch.</summary>
     private sealed class CountingExecutor : IExecutor
@@ -283,5 +674,12 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
             Spawns.Add(request);
             return Task.FromResult(new SpawnedAgent(60_000, DateTimeOffset.UtcNow));
         }
+    }
+
+    /// <summary>Fails every spawn, the way a missing claude binary would.</summary>
+    private sealed class ThrowingExecutor : IExecutor
+    {
+        public Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the agent binary could not be started");
     }
 }

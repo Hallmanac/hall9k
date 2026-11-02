@@ -392,6 +392,9 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         // events/streams deletes above the same way every sibling on this list would be.
         session.Delete<OrchestratorFeedDrainLease>(project.Id);
         session.Delete<CourierDaySpawnCounter>(project.Id);
+        // CourierFailureStreak is the same shape once more, beside the day counter: project-id-keyed,
+        // never a stream, lazily created by the first failed courier for this project.
+        session.Delete<CourierFailureStreak>(project.Id);
 
         // RunSkillSyncPosition (idea b9b09779, piece 4) is that same shape once more, for the
         // same reason: project-id-keyed, never a stream, lazily created on this project's

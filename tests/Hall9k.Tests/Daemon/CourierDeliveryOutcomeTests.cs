@@ -78,4 +78,51 @@ public sealed class CourierDeliveryOutcomeTests
         delivered.Should().BeFalse();
         outcome.Should().Contain(Timeout.ToString());
     }
+
+    [Fact]
+    public void The_reason_is_the_text_after_the_failed_marker_when_the_session_gave_one()
+    {
+        string summary = $"Could not send.\n{CourierPromptBuilder.FailedMarkerPrefix} - hall9k-9f is not reachable";
+
+        CourierDeliveryOutcome.FailureReason(Result(summary), timedOut: false, Timeout)
+            .Should().Be("hall9k-9f is not reachable");
+    }
+
+    [Theory]
+    [InlineData("COURIER-OUTCOME: failed")]
+    [InlineData("COURIER-OUTCOME: failed -")]
+    [InlineData("COURIER-OUTCOME: failed - ")]
+    public void A_failed_marker_with_nothing_after_it_reads_as_no_reason_given(string marker)
+    {
+        CourierDeliveryOutcome.FailureReason(Result($"Nope.\n{marker}"), timedOut: false, Timeout)
+            .Should().Be("no reason given");
+    }
+
+    [Fact]
+    public void A_timeout_reads_as_timed_out_after_the_timeout()
+    {
+        CourierDeliveryOutcome.FailureReason(null, timedOut: true, TimeSpan.FromMinutes(3)).Should().Be("timed out after 3m");
+        CourierDeliveryOutcome.FailureReason(null, timedOut: true, TimeSpan.FromSeconds(90)).Should().Be("timed out after 90s");
+    }
+
+    [Fact]
+    public void A_session_with_no_outcome_line_or_no_result_reads_as_ended_without_an_outcome_line()
+    {
+        CourierDeliveryOutcome.FailureReason(Result("I couldn't find that tool."), timedOut: false, Timeout)
+            .Should().Be("ended without an outcome line");
+        CourierDeliveryOutcome.FailureReason(null, timedOut: false, Timeout)
+            .Should().Be("ended without an outcome line");
+        CourierDeliveryOutcome.FailureReason(Result("COURIER-OUTCOME: maybe"), timedOut: false, Timeout)
+            .Should().Be("ended without an outcome line", "a marker that is neither delivered nor failed says nothing");
+    }
+
+    [Fact]
+    public void The_last_outcome_line_wins_over_a_quoted_instruction()
+    {
+        string summary = $"I was asked to end with `{CourierPromptBuilder.FailedMarkerPrefix} - <reason>`.\n"
+            + $"{CourierPromptBuilder.FailedMarkerPrefix} - no session by that name";
+
+        CourierDeliveryOutcome.FailureReason(Result(summary), timedOut: false, Timeout)
+            .Should().Be("no session by that name");
+    }
 }

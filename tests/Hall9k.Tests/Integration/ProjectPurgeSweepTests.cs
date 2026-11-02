@@ -120,6 +120,8 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
                 + "shape again: project-id-keyed but never a stream of its own");
             (await query.LoadAsync<CourierDaySpawnCounter>(purgedProjectId, cts.Token)).Should().BeNull(
                 "the feed courier's own per-day spawn counter is the identical shape a third time");
+            (await query.LoadAsync<CourierFailureStreak>(purgedProjectId, cts.Token)).Should().BeNull(
+                "the courier's failure streak is project-id-keyed and never a stream, like the day counter beside it");
             (await query.LoadAsync<ProjectMemberLabels>(purgedProjectId, cts.Token)).Should().BeNull(
                 "ProjectMemberLabels (task b7d8222e) is the identical shape once more: it reads as a "
                 + "single-stream projection keyed on the project's own id, but this purge tears the "
@@ -172,6 +174,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             (await query.LoadAsync<PromptAddendaSyncPosition>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<OrchestratorFeedDrainLease>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<CourierDaySpawnCounter>(survivingProjectId, cts.Token)).Should().NotBeNull();
+            (await query.LoadAsync<CourierFailureStreak>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<ProjectMemberLabels>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<TaskDetails>(survivingTaskIds[0], cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<RunDetails>(survivingRunId, cts.Token)).Should().NotBeNull();
@@ -506,6 +509,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         await using IDocumentSession session = store.LightweightSession();
         session.Store(OrchestratorFeedDrainLease.Held(projectId, Now));
         session.Store(new CourierDaySpawnCounter { Id = projectId, Day = DateOnly.FromDateTime(Now.UtcDateTime), Count = 1 });
+        session.Store(new CourierFailureStreak { Id = projectId, Count = 3, NextAttemptAt = Now.AddMinutes(4) });
         await session.SaveChangesAsync(cancellationToken);
     }
 
