@@ -1321,6 +1321,7 @@ public sealed class PlanEngine(
             // The plan was cancelled, or its idea stopped being Captured: the session is stopped and nothing is copied.
             TerminateAgent(job.PlanId, agent);
             await RecordDiscoveryEndAsync(job.PlanId, job.SessionId, RefinementFailureReason.Cancelled, null, null, CancellationToken.None);
+            ForgetDiscoveryProcessIdentity(job);
             return;
         }
         catch (OperationCanceledException)
@@ -1345,6 +1346,7 @@ public sealed class PlanEngine(
             logger.LogError(exception, "Plan {PlanId}: the discovery session (pid {ProcessId}) could not be seen through to an outcome", job.PlanId, agent.ProcessId);
             TerminateAgent(job.PlanId, agent);
             await RecordDiscoveryEndAsync(job.PlanId, job.SessionId, RefinementFailureReason.SessionError, null, null, CancellationToken.None);
+            ForgetDiscoveryProcessIdentity(job);
             return;
         }
 
@@ -1382,7 +1384,16 @@ public sealed class PlanEngine(
         await RecordDiscoveryEndAsync(
             job.PlanId, job.SessionId, failure, result?.ToPlanTokensRecorded(job.PlanId, DateTimeOffset.UtcNow, job.Model), copied,
             CancellationToken.None);
+        ForgetDiscoveryProcessIdentity(job);
     }
+
+    /// <summary>
+    /// Removes the process file once the job has stopped its own session and recorded the outcome. The file is what marks a
+    /// session as one a crash left running, so a plan that ended while its session ran (the outcome then records only the
+    /// spend and leaves the running-session id set) would otherwise look like a crash's leftover on the next sweep. It is
+    /// kept when the outcome did not land, and on the daemon's shutdown path, where the next start needs it.
+    /// </summary>
+    private void ForgetDiscoveryProcessIdentity(DiscoveryJob job) => TryDelete(RunPaths.DiscoveryProcessFile(job.SessionId));
 
     /// <summary>
     /// Copies a readable report into the idea's workspace at the path the idea has now, which a revised note may have moved
@@ -1514,7 +1525,7 @@ public sealed class PlanEngine(
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            logger.LogWarning(exception, "Could not remove {File}, a file left for a plan that had already ended", file);
+            logger.LogWarning(exception, "Could not remove {File}, a discovery file nothing else removes", file);
         }
     }
 
@@ -1570,6 +1581,13 @@ public sealed class PlanEngine(
         foreach (PlanDetails plan in running)
         {
             if (plan.Discovery?.RunningSessionId is not { } sessionId || _sessions.ContainsKey(sessionId))
+            {
+                continue;
+            }
+
+            // An ended plan keeps its running-session id for good, so the process file alone says whether there is still a session
+            // to stop: without it there is nothing to do, and the plan is not read again on every sweep.
+            if (!plan.IsLive && !File.Exists(RunPaths.DiscoveryProcessFile(sessionId)))
             {
                 continue;
             }
