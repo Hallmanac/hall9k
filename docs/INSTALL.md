@@ -288,8 +288,8 @@ database that was just destroyed — check it before your next `h9k install` if 
 
 ## Windows notes
 
-The daemon lifecycle works the same way on Windows as on macOS — `h9k daemon start` / `stop` /
-`status`, and `h9k daemon autostart enable` / `disable` — with four Windows-specific mechanics
+The daemon lifecycle works the same way on Windows as on macOS: `h9k daemon start` / `stop` /
+`status`, and `h9k daemon autostart enable` / `disable`, with five Windows-specific mechanics
 worth knowing:
 
 - **Autostart is a Task Scheduler logon task, never a Windows service** (Decisions Log #3): a
@@ -298,6 +298,33 @@ worth knowing:
   as you, the signed-in user. `h9k daemon autostart enable` registers it (`\Hall9k\h9kd` in Task
   Scheduler's library); `disable` fully unregisters it. Nothing is registered by `h9k install` or
   `h9k update` — autostart is the same explicit, separate opt-in on every platform.
+- **The logon task keeps its run level across a re-enable, and `--run-level` is the only way to
+  change it.** `h9k daemon autostart enable` keeps the level of the `\Hall9k\h9kd` task when one
+  is registered, and registers `LeastPrivilege` (not elevated) when none is, whatever the elevation
+  of the shell you run it from. `--run-level highest` registers `HighestAvailable` (elevated) and
+  `--run-level limited` registers `LeastPrivilege`. The success line names the level it registered.
+  Every daemon start that goes through the task runs at that level: the logon start, and
+  `h9k daemon start` without `--binary`. The two starts that do not go through it,
+  `h9k daemon start --binary <path>` and any start while autostart is not registered, inherit the
+  elevation of the shell that ran them.
+  - **Any registration at `HighestAvailable` is refused from a shell that is not elevated**, before
+    `schtasks` runs, whether the level was kept from the existing task or asked for with
+    `--run-level highest`. The message names the level and the two ways forward: re-run from an
+    elevated shell, or pass `--run-level limited` (to lower an existing task on purpose, or to
+    register one that is not elevated). Elevation here is the
+    running process's own token elevation, not whether your account is an administrator.
+  - **If the existing task's level cannot be read** (the read fails, or it is neither `Highest` nor
+    `Limited`), `enable` says so and requires an explicit `--run-level`.
+  - **`--run-level highest` makes the daemon, and every agent it dispatches, run as an
+    administrator.** Dispatched agents already run with `--dangerously-skip-permissions`, so this is
+    a real step up in what a mistaken command can do; choose it deliberately. At Highest, any
+    process running as you can also gain administrator rights without a UAC prompt, because the
+    task runs the launch script (a `.vbs` file) and the binaries from your user profile, which
+    your account can write to.
+  - **Why you might want it:** the feed courier opens an orchestrator window's named pipe with the
+    daemon's own elevation. A Claude window and the daemon must be at the same elevation for the
+    courier to reach the window, so an operator who keeps their Claude windows elevated needs an
+    elevated daemon, and one who keeps them ordinary needs an ordinary one.
 - **The registration never carries `HALL9K_CONNECTION_STRING`, even when your shell has it set.**
   Every other captured variable (`PATH`, `HALL9K_CLAUDE_PATH`) travels into the registration; the
   connection string is deliberately left out, because a durable copy belongs in the platform
