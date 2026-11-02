@@ -2840,6 +2840,13 @@ public sealed class TaskAggregate
             return;
         }
 
+        // A session ends once: a second record for a session that already has one (a sweep that read the task a moment before the
+        // check's own record landed, then recorded a restart) must not replace the answer the first one gave.
+        if (@event.SessionId is { } again && LatestFeedbackCheck?.SessionId == again)
+        {
+            return;
+        }
+
         RunningFeedbackCheckSessionId = null;
         LatestFeedbackCheck = @event;
     }

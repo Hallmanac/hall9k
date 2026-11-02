@@ -1312,6 +1312,12 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
             return;
         }
 
+        // A session ends once: see TaskAggregate.Apply(FeedbackCheckRecorded).
+        if (@event.Data.SessionId is { } again && view.LatestFeedbackCheck?.SessionId == again)
+        {
+            return;
+        }
+
         view.RunningFeedbackCheckSessionId = null;
         view.LatestFeedbackCheck = @event.Data;
     }

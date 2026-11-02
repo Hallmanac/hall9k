@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
@@ -38,7 +40,8 @@ public sealed record FeedbackStepSweepResult(int Steps, int Dispatched);
 /// nothing left to wait for. The sweep takes each held task, and each task whose step is running on this node, and takes one step
 /// at a time, deciding every one over a fresh read of the task's stream. The steps, in the order a step goes: begin (the node the
 /// task is placed on, or, with no placement, a node of the owner it is queued for, appends the begun event under the stream's
-/// version, so two nodes that saw the same hold begin one step between them); release at once when no blocker left a note the
+/// version, and, because each node keeps its own database, after writing itself in as the holder of the task's ledger record, so two
+/// nodes that saw the same hold begin one step between them); release at once when no blocker left a note the
 /// trust rule lets into a prompt; otherwise run the check, one headless session with no tools; release the task when the check
 /// says the notes do not affect it or fails; and when it says they do, take the task out of the queue and back to Draft and start
 /// a plan for it (cap of one challenge, a refinement at the refinement tier, one challenge, a session that judges the verdict, a
@@ -59,6 +62,7 @@ public sealed class FeedbackStepEngine(
     DaemonConnection connection,
     IOptions<DaemonOptions> options,
     ILogger<FeedbackStepEngine> logger,
+    ILedger ledger,
     LocalFleetProvider? fleets = null) : IDisposable
 {
     /// <summary>The most steps one task takes in one sweep, so a task that cannot settle cannot hold the sweep.</summary>
@@ -69,6 +73,8 @@ public sealed class FeedbackStepEngine(
     private readonly CancellationTokenSource _stopping = new();
     private readonly ConcurrentDictionary<Guid, RunningCheck> _sessions = [];
     private readonly Dictionary<Guid, string> _reportedGate = [];
+    private readonly FeedbackStepHolder _holder = new(store, node, ledger, logger);
+    private readonly HashSet<Guid> _reportedHolderWait = [];
 
     /// <summary>Set by the loop to its own doorbell, so a check that ends wakes the next step at once.</summary>
     public Action? OnWork { get; set; }
@@ -186,7 +192,7 @@ public sealed class FeedbackStepEngine(
                 ? StepOutcome.Nothing
                 : await RecordCheckAsync(
                     task.Id, running, FeedbackCheckAnswer.Failed, RefinementFailureReason.DaemonRestarted, null, task.LatestFeedbackCheckDispatch?.Model ?? AgentModel.Unknown,
-                    cancellationToken);
+                    cancellationToken, expectedVersion: fence.Version);
         }
 
         if (task.FeedbackStepPlanId is { } planId)
@@ -200,9 +206,10 @@ public sealed class FeedbackStepEngine(
     }
 
     /// <summary>
-    /// The held task's step begins on this node, if this is the node that may run it. Appended alone under the stream's version:
-    /// two nodes that read the same hold append against the same version, and only one append lands. The other reads the begun
-    /// event on its next look and does nothing.
+    /// The held task's step begins on this node, if this is the node that may run it. The ledger record's holder is written first,
+    /// which is what decides between nodes that each keep their own database; the begun event is then appended alone under the
+    /// stream's version, which fences two daemons of one database. A node that finds another holder, or cannot write the holder,
+    /// does nothing and looks again on its next sweep.
     /// </summary>
     private async Task<StepOutcome> BeginAsync(
         IDocumentSession session, StreamState fence, TaskAggregate task, DateTimeOffset now, CancellationToken cancellationToken)
@@ -211,6 +218,29 @@ public sealed class FeedbackStepEngine(
         if (!FeedbackStepDecider.MayBeginOnThisNode(task, node.NodeId, node.OwnerId, ownerFingerprint))
         {
             return StepOutcome.Nothing;
+        }
+
+        // The stream version fences two daemons of one database; nodes keep a database each, so what decides between them is the
+        // task's ledger record holder, written before the begun event the way the dispatcher writes it before a claim.
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        if (project is not null)
+        {
+            FeedbackStepHolderVerdict verdict = await _holder.TryHoldAsync(session, task.Id, project, ownerFingerprint, now, cancellationToken);
+            if (verdict != FeedbackStepHolderVerdict.Held)
+            {
+                if (_reportedHolderWait.Add(task.Id))
+                {
+                    logger.LogInformation(
+                        "Task {TaskId}: its feedback step does not begin on this node: {Why}", task.Id,
+                        verdict == FeedbackStepHolderVerdict.HeldByOther
+                            ? "another node holds the task's ledger record"
+                            : "the ledger holder could not be written");
+                }
+
+                return StepOutcome.Nothing;
+            }
+
+            _reportedHolderWait.Remove(task.Id);
         }
 
         FeedbackStepStarted started = FeedbackStepDecider.Start(task, node.NodeId, now);
@@ -222,6 +252,7 @@ public sealed class FeedbackStepEngine(
         catch (EventStreamUnexpectedMaxEventIdException)
         {
             logger.LogDebug("Task {TaskId} changed while its feedback step was beginning; deciding it again", task.Id);
+            await _holder.ReleaseAsync(task.Id, task.ProjectId, cancellationToken);
             return StepOutcome.Nothing;
         }
 
@@ -410,10 +441,15 @@ public sealed class FeedbackStepEngine(
         await RecordCheckAsync(taskId, sessionId, answer, failure, result, model, CancellationToken.None);
     }
 
-    /// <summary>Records how the check ended on the task's stream, with the spend it reported. Appended without a version: it is a fact about a session that ran, and its apply is guarded on the session.</summary>
+    /// <summary>
+    /// Records how the check ended on the task's stream, with the spend it reported. The check's own record is appended without a
+    /// version: it is a fact about a session that ran, and its apply is guarded on the session. A sweep that finds a dispatched check
+    /// with no session passes the version it read the task at, so a record that landed in the meantime (the check finishing just
+    /// as the sweep looked) makes the append fail and the sweep decide again, rather than a restart replacing a real answer.
+    /// </summary>
     private async Task<StepOutcome> RecordCheckAsync(
         Guid taskId, Guid sessionId, FeedbackCheckAnswer answer, RefinementFailureReason failure, AgentResult? result, AgentModel model,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, long? expectedVersion = null)
     {
         await using IDocumentSession session = store.LightweightSession();
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -430,8 +466,25 @@ public sealed class FeedbackStepEngine(
 
         events.Add(new FeedbackCheckRecorded(
             taskId, sessionId, node.NodeId, answer, answer.IsAnswer ? RefinementFailureReason.Unknown : failure, now));
-        session.Events.Append(taskId, [.. events]);
-        await session.SaveChangesAsync(cancellationToken);
+        if (expectedVersion is { } read)
+        {
+            session.Events.Append(taskId, read + events.Count, [.. events]);
+        }
+        else
+        {
+            session.Events.Append(taskId, [.. events]);
+        }
+
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogDebug("Task {TaskId} changed while the end of its feedback check was being recorded; deciding it again", taskId);
+            return StepOutcome.Nothing;
+        }
+
         logger.LogInformation(
             "Task {TaskId}: the feedback check ended: {Answer}{Failure}", taskId, answer.IsAnswer ? answer.Word : "no answer",
             answer.IsAnswer ? string.Empty : $" ({failure.Value})");
@@ -470,6 +523,17 @@ public sealed class FeedbackStepEngine(
         if (details is null)
         {
             return StepOutcome.Nothing;
+        }
+
+        // The refusals `h9k plan start` gives a draft, asked here too because this path starts the plan itself: a person who runs
+        // the command reads the quoted text into the task before the plan may rewrite it, and nobody would on this path. The task
+        // is still held, so there is nothing to park it in: it is released as it stood (the outcome a step that cannot go on
+        // takes), and the recorded reason says the notes affected it.
+        if (RefinementRefusal(task) is { } refusal)
+        {
+            return await ConcludeAsync(
+                session, fence, task, FeedbackStepOutcome.ReleasedAfterFailedCheck,
+                $"the check found the blockers' notes affect the task, but it was released as it stood because {refusal}", now, cancellationToken);
         }
 
         // Read before the dequeue and the return to draft, which clear the queued-for fields, and the tracking choice the task's
@@ -600,6 +664,7 @@ public sealed class FeedbackStepEngine(
         }
 
         logger.LogInformation("Task {TaskId}: refined and queued again for its owner on its node", task.Id);
+        await _holder.ReleaseAsync(task.Id, task.ProjectId, cancellationToken);
         return StepOutcome.Stepped;
     }
 
@@ -637,8 +702,25 @@ public sealed class FeedbackStepEngine(
         }
 
         logger.LogInformation("Task {TaskId}: feedback step ended: {Outcome} ({Reason})", task.Id, ending.Description, reason);
+        await _holder.ReleaseAsync(task.Id, task.ProjectId, cancellationToken);
         return StepOutcome.Stepped;
     }
+
+    /// <summary>
+    /// Why a plan may not refine this task, or null: the two refusals <c>h9k plan start</c> gives that a person is there to answer.
+    /// A spike is a run rather than a walk and never goes through a plan, and a context that still carries a stranger's quoted
+    /// tracker text would be rewritten into the task's own words, after which nothing marks it as a stranger's.
+    /// </summary>
+    private static string? RefinementRefusal(TaskAggregate task) => task switch
+    {
+        { Type: var type } when type == TaskType.Spike =>
+            "a spike is bounded by its own exit criterion and never goes through a plan",
+        { AgentContext: var context } when WorkItemContext.CarriesQuotedDescription(context) =>
+            "its context still carries the quoted description of an adopted tracker item, which refinement would rewrite into the task's own words, and only a person reads that into the task first",
+        { AgentContext: var context } when WorkItemContext.CarriesWorkspaceItemNotice(context) =>
+            "its context says its idea's workspace holds a tracker item written by someone else, which refinement could carry into the task as if it were the owner's, and only a person reads that into the task first",
+        _ => null,
+    };
 
     private static string ParkText(PlanParkReason reason) => reason.Description;
 
