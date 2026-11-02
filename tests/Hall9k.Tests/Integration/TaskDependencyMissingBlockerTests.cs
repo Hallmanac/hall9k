@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon.Purge;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -28,52 +29,29 @@ public sealed class TaskDependencyMissingBlockerTests(PostgresFixture postgres) 
 {
     private static readonly DateTimeOffset Now = new(2026, 11, 2, 12, 0, 0, TimeSpan.Zero);
 
-    [Fact]
-    public async Task A_blocker_in_another_project_this_node_has_no_record_of_leaves_the_dependent_blocked_with_nothing_recorded()
+    /// <summary>
+    /// Every way a blocker this node has no record of can look, none of which is evidence of a purge
+    /// here: a blocker in another project, one in the dependent's own project, and one whose failure
+    /// and recovery already replicated in from a node that did purge it and a node that could see it.
+    /// </summary>
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task A_blocker_this_node_has_no_record_of_leaves_the_dependent_blocked_and_records_nothing(
+        bool sameProjectAsDependent, bool failureAndRecoveryAlreadyReplicated)
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         IDocumentStore store = postgres.Store;
         await store.Advanced.ResetAllData(cts.Token);
         Guid ownerId = DomainId.New();
+        Guid dependentProjectId = DomainId.New();
         (Guid blockerId, Guid dependentId) = await SeedDependentOfUnseenBlockerAsync(
-            store, DomainId.New(), DomainId.New(), ownerId, cts.Token);
+            store, sameProjectAsDependent ? dependentProjectId : DomainId.New(), dependentProjectId, ownerId, cts.Token);
 
-        DependencyReevaluation reevaluation = await SweepAsync(store, cts.Token);
-
-        reevaluation.Parked.Should().BeEmpty();
-        await AssertBlockedWithNoFailureAsync(store, dependentId, cts.Token);
-    }
-
-    [Fact]
-    public async Task A_blocker_in_the_dependents_own_project_this_node_has_no_record_of_leaves_it_blocked_too()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        IDocumentStore store = postgres.Store;
-        await store.Advanced.ResetAllData(cts.Token);
-        Guid ownerId = DomainId.New();
-        Guid projectId = DomainId.New();
-        (_, Guid dependentId) = await SeedDependentOfUnseenBlockerAsync(store, projectId, projectId, ownerId, cts.Token);
-
-        DependencyReevaluation reevaluation = await SweepAsync(store, cts.Token);
-
-        reevaluation.Parked.Should().BeEmpty();
-        await AssertBlockedWithNoFailureAsync(store, dependentId, cts.Token);
-    }
-
-    [Fact]
-    public async Task A_node_with_no_purge_record_does_not_record_the_failure_again_after_another_node_lifted_the_hold()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        IDocumentStore store = postgres.Store;
-        await store.Advanced.ResetAllData(cts.Token);
-        Guid ownerId = DomainId.New();
-        (Guid blockerId, Guid dependentId) = await SeedDependentOfUnseenBlockerAsync(
-            store, DomainId.New(), DomainId.New(), ownerId, cts.Token);
-
-        // The two replicated events a node that purged the blocker and then a node that could see
-        // it would have written: a failure, then the recovery that lifted it.
-        await using (IDocumentSession session = store.LightweightSession())
+        if (failureAndRecoveryAlreadyReplicated)
         {
+            await using IDocumentSession session = store.LightweightSession();
             TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(dependentId, token: cts.Token)
                 ?? throw new InvalidOperationException("seeded task must exist");
             TaskDependencyFailed failed = TaskDecider.DependencyFailed(task, blockerId, "the blocker no longer exists", Now);
@@ -88,12 +66,9 @@ public sealed class TaskDependencyMissingBlockerTests(PostgresFixture postgres) 
 
         DependencyReevaluation reevaluation = await SweepAsync(store, cts.Token);
 
-        reevaluation.Parked.Should().BeEmpty("this node cannot tell the blocker was purged, so it does not flip the hold again");
+        reevaluation.Parked.Should().BeEmpty("this node cannot tell the blocker was purged, so it records nothing");
         (await EventCountAsync(store, dependentId, cts.Token)).Should().Be(eventsBefore);
-        await using IQuerySession query = store.QuerySession();
-        TaskDetails dependent = (await query.LoadAsync<TaskDetails>(dependentId, cts.Token))!;
-        dependent.State.Should().Be(TaskState.Blocked);
-        dependent.DependencyFailureReason.Should().BeNull();
+        await AssertBlockedWithNoFailureAsync(store, dependentId, expectFailureEvents: failureAndRecoveryAlreadyReplicated, cts.Token);
     }
 
     [Fact]
@@ -117,6 +92,7 @@ public sealed class TaskDependencyMissingBlockerTests(PostgresFixture postgres) 
         // A node that still has the blocker lifts the hold, and the event replicates back here.
         await using (IDocumentSession session = store.LightweightSession())
         {
+            session.SetHeader(ReplicationEventHeaders.OriginNodeId, DomainId.New().ToString());
             TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(dependentId, token: cts.Token)
                 ?? throw new InvalidOperationException("seeded task must exist");
             session.Events.Append(
@@ -134,6 +110,162 @@ public sealed class TaskDependencyMissingBlockerTests(PostgresFixture postgres) 
         TaskDetails dependent = (await query.LoadAsync<TaskDetails>(dependentId, cts.Token))!;
         dependent.State.Should().Be(TaskState.Blocked);
         dependent.DependencyFailureReason.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task A_node_that_purged_the_blocker_records_its_own_failure_when_the_only_earlier_one_was_replicated_from_another_node()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        IDocumentStore store = postgres.Store;
+        await store.Advanced.ResetAllData(cts.Token);
+        Guid ownerId = DomainId.New();
+        (Guid blockerId, Guid dependentId) = await SeedDependentOfUnseenBlockerAsync(
+            store, DomainId.New(), DomainId.New(), ownerId, cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Store(new PurgedTaskRecord(blockerId, DomainId.New(), Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Another node purged the same blocker first: its failure has this node's exact reason text
+        // but arrives carrying the origin node header, and a node that still had the blocker then
+        // lifted it. Produced by running the sweep in a session that stamps that header.
+        await using (IDocumentSession foreign = store.LightweightSession())
+        {
+            foreign.SetHeader(ReplicationEventHeaders.OriginNodeId, DomainId.New().ToString());
+            await TaskDependencyResolver.ForEveryBlockedTaskAsync(foreign, Now, cts.Token);
+            await foreign.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(dependentId, token: cts.Token)
+                ?? throw new InvalidOperationException("seeded task must exist");
+            session.Events.Append(
+                dependentId, TaskDecider.DependencyRecovered(task, blockerId, "the blocker is back on another node", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        DependencyReevaluation reevaluation = await SweepAsync(store, cts.Token);
+
+        reevaluation.Parked.Should().ContainSingle(hold => hold.TaskId == dependentId);
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails dependent = (await query.LoadAsync<TaskDetails>(dependentId, cts.Token))!;
+        dependent.DependencyFailureReason.Should().NotBeNull("this node's own purge must be recorded, not assumed said by another node");
+    }
+
+    [Fact]
+    public async Task A_node_that_purged_the_blocker_records_the_failure_when_the_only_earlier_local_one_replayed_as_a_no_op_on_a_claimed_task()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        IDocumentStore store = postgres.Store;
+        await store.Advanced.ResetAllData(cts.Token);
+        Guid ownerId = DomainId.New();
+        (Guid blockerId, Guid dependentId) = await SeedDependentOfUnseenBlockerAsync(
+            store, DomainId.New(), DomainId.New(), ownerId, cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Store(new PurgedTaskRecord(blockerId, DomainId.New(), Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // A foreign sweep supplies the reason text without counting as this node having spoken.
+        await using (IDocumentSession foreign = store.LightweightSession())
+        {
+            foreign.SetHeader(ReplicationEventHeaders.OriginNodeId, DomainId.New().ToString());
+            await TaskDependencyResolver.ForEveryBlockedTaskAsync(foreign, Now, cts.Token);
+            await foreign.SaveChangesAsync(cts.Token);
+        }
+
+        string reason;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(dependentId, token: cts.Token)
+                ?? throw new InvalidOperationException("seeded task must exist");
+            reason = task.RecordedDependencyFailure(blockerId) ?? throw new InvalidOperationException("the foreign sweep must have recorded a failure");
+            session.Events.Append(
+                dependentId, TaskDecider.DependencyRecovered(task, blockerId, "the blocker is back on another node", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // An acknowledged claim commits between a sweep's read and its unfenced append, so this
+        // node's own failure lands on a Claimed task and replays as a no-op; the release then
+        // returns the task to Blocked with nothing recorded.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(dependentId, token: cts.Token)
+                ?? throw new InvalidOperationException("seeded task must exist");
+            session.Events.Append(
+                dependentId,
+                new TaskClaimed(dependentId, DomainId.New(), ownerId, task.LeaseGeneration + 1, DomainId.New(), Now),
+                new TaskDependencyFailed(dependentId, blockerId, reason, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(dependentId, token: cts.Token)
+                ?? throw new InvalidOperationException("seeded task must exist");
+            task.State.Should().Be(TaskState.Claimed);
+            task.RecordedDependencyFailure(blockerId).Should().BeNull("the failure landed on a claimed task and was ignored");
+            session.Events.Append(dependentId, TaskDecider.Requeue(task, RequeueReason.HumanRequested, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        DependencyReevaluation reevaluation = await SweepAsync(store, cts.Token);
+
+        reevaluation.Parked.Should().ContainSingle(hold => hold.TaskId == dependentId);
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails dependent = (await query.LoadAsync<TaskDetails>(dependentId, cts.Token))!;
+        dependent.State.Should().Be(TaskState.Blocked);
+        dependent.DependencyFailureReason.Should().NotBeNull("an ignored failure said nothing, so the purge is still unrecorded");
+    }
+
+    [Fact]
+    public async Task A_node_that_purged_the_blocker_records_the_failure_when_the_only_earlier_local_one_was_recorded_before_the_purge()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        IDocumentStore store = postgres.Store;
+        await store.Advanced.ResetAllData(cts.Token);
+        Guid ownerId = DomainId.New();
+        (Guid blockerId, Guid dependentId) = await SeedDependentOfUnseenBlockerAsync(
+            store, DomainId.New(), DomainId.New(), ownerId, cts.Token);
+
+        // The behaviour from before the purge record existed: a missing blocker was failed outright,
+        // here reproduced by a purge record dated well before the sweep, then recovered when the
+        // blocker turned up.
+        DateTimeOffset earlier = Now.AddDays(-2);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Store(new PurgedTaskRecord(blockerId, DomainId.New(), earlier));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            await TaskDependencyResolver.ForEveryBlockedTaskAsync(session, earlier, cts.Token);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(dependentId, token: cts.Token)
+                ?? throw new InvalidOperationException("seeded task must exist");
+            task.RecordedDependencyFailure(blockerId).Should().NotBeNull();
+            session.Events.Append(
+                dependentId, TaskDecider.DependencyRecovered(task, blockerId, "the blocker arrived", earlier));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The blocker's project is later purged here for real.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Store(new PurgedTaskRecord(blockerId, DomainId.New(), Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        DependencyReevaluation reevaluation = await SweepAsync(store, cts.Token);
+
+        reevaluation.Parked.Should().ContainSingle(hold => hold.TaskId == dependentId);
     }
 
     [Fact]
@@ -164,6 +296,54 @@ public sealed class TaskDependencyMissingBlockerTests(PostgresFixture postgres) 
         events.Select(e => e.Data.GetType().Name).Should().NotContain(name => name.Contains("Purged", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_node_that_purged_the_blocker_records_the_failure_again_after_it_recovered_the_hold_itself_and_the_blocker_vanished_again(
+        bool purgeRecordRefreshed)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        IDocumentStore store = postgres.Store;
+        await store.Advanced.ResetAllData(cts.Token);
+        Guid ownerId = DomainId.New();
+        (Guid blockerId, Guid dependentId) = await SeedDependentOfUnseenBlockerAsync(
+            store, DomainId.New(), DomainId.New(), ownerId, cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Store(new PurgedTaskRecord(blockerId, DomainId.New(), Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        (await SweepAsync(store, cts.Token)).Parked.Should().ContainSingle(hold => hold.TaskId == dependentId);
+
+        // The project is rejoined and the blocker is alive here again, so this node's own sweep
+        // lifts the hold. No origin header: it is this node's recovery, not a replicated one.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(dependentId, token: cts.Token)
+                ?? throw new InvalidOperationException("seeded task must exist");
+            session.Events.Append(
+                dependentId, TaskDecider.DependencyRecovered(task, blockerId, "the blocker is back here", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Then the project is purged here a second time. A real purge writes a fresh record with a
+        // later date; the false case keeps the old record, so only the recovery can tell it apart.
+        if (purgeRecordRefreshed)
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            session.Store(new PurgedTaskRecord(blockerId, DomainId.New(), Now.AddHours(1)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        DependencyReevaluation reevaluation = await SweepAsync(store, cts.Token);
+
+        reevaluation.Parked.Should().ContainSingle(hold => hold.TaskId == dependentId);
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails dependent = (await query.LoadAsync<TaskDetails>(dependentId, cts.Token))!;
+        dependent.DependencyFailureReason.Should().NotBeNull("the second purge is a new thing to say");
+    }
+
     private static async Task<DependencyReevaluation> SweepAsync(IDocumentStore store, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
@@ -171,14 +351,14 @@ public sealed class TaskDependencyMissingBlockerTests(PostgresFixture postgres) 
     }
 
     private static async Task AssertBlockedWithNoFailureAsync(
-        IDocumentStore store, Guid dependentId, CancellationToken cancellationToken)
+        IDocumentStore store, Guid dependentId, bool expectFailureEvents, CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         TaskDetails dependent = (await query.LoadAsync<TaskDetails>(dependentId, cancellationToken))!;
         dependent.State.Should().Be(TaskState.Blocked);
         dependent.DependencyFailureReason.Should().BeNull("a blocker this node never purged proves nothing about it");
         IReadOnlyList<IEvent> events = await query.Events.FetchStreamAsync(dependentId, token: cancellationToken);
-        events.Select(e => e.Data).OfType<TaskDependencyFailed>().Should().BeEmpty();
+        events.Select(e => e.Data).OfType<TaskDependencyFailed>().Any().Should().Be(expectFailureEvents);
     }
 
     private static async Task<int> EventCountAsync(IDocumentStore store, Guid streamId, CancellationToken cancellationToken)
