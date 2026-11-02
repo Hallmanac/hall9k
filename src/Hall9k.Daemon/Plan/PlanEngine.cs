@@ -847,7 +847,7 @@ public sealed class PlanEngine(
     /// Applies the revision a session wrote with the same validation and effects as <c>h9k task revise --file</c>, by
     /// running that command. Applied only to the draft the session read: if anyone changed it since dispatch the revision
     /// is not applied. A revision that names a model is refused, because a refinement sets none and <c>--file</c> would
-    /// otherwise set one, and so is one that copies another member project's task objective or project name into its
+    /// otherwise set one, and so is one that copies another member project's task objective into its
     /// objective, criteria or context (<see cref="MemberTextCopyGuard"/>). A plan that ended, or a draft that was closed, while the session ran applies nothing, however the
     /// session ended: the stop that follows reaches a job only at the top of a sweep, so the job asks the record itself. The
     /// child asks it again inside its own fenced append, which is where a cancel that lands after this check is caught.

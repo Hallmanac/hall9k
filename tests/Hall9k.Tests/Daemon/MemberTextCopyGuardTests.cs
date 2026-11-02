@@ -35,23 +35,29 @@ public sealed class MemberTextCopyGuardTests
     }
 
     [Fact]
-    public void A_revision_that_names_a_member_project_in_its_criteria_or_context_is_refused_but_a_blocked_by_reason_may_name_it()
+    public void A_member_projects_name_is_not_a_copy_wherever_a_revision_uses_it()
     {
-        MemberTextCopyGuard.Refusal(Revision("Show the cart", criterion: "Reads from Shop-Ops directly"), [CartCache])
-            .Should().Contain(DomainId.Short(CartCache.Id));
-        MemberTextCopyGuard.Refusal(Revision("Show the cart", context: "Mirror what shop-ops does."), [CartCache])
-            .Should().Contain(DomainId.Short(CartCache.Id));
+        // Project names are often ordinary words, and the draft's own project may be named like a member ("shop" and "shop-web").
+        SolutionMemberTask api = CartCache with { ProjectName = "api" };
+        SolutionMemberTask shop = CartCache with { ProjectName = "shop" };
 
-        // The fixture's blocked-by reason names shop-ops, and a revision that copies nothing else passes.
-        MemberTextCopyGuard.Refusal(Revision("Show the cart"), [CartCache]).Should().BeNull();
+        MemberTextCopyGuard.Refusal(Revision("Show the cart", criterion: "The API returns 200", context: "Needs the api client."), [api])
+            .Should().BeNull();
+        MemberTextCopyGuard.Refusal(Revision("Show the cart", criterion: "Reads from Shop-Ops directly", context: "In shop-web the cart page reads the session."), [shop])
+            .Should().BeNull();
     }
 
     [Fact]
-    public void A_revision_that_copies_nothing_passes_and_a_project_name_inside_a_longer_word_is_not_a_copy()
+    public void A_short_objective_or_one_inside_a_longer_word_is_not_a_copy_but_a_blocked_by_reason_may_name_the_project()
     {
-        SolutionMemberTask api = CartCache with { ProjectName = "api" };
+        SolutionMemberTask shortObjective = CartCache with { Objective = "Add logging" };
+        SolutionMemberTask cacheWord = CartCache with { Objective = "Provision the cart cache for the storefront" };
 
-        MemberTextCopyGuard.Refusal(Revision("Make the page rapid", context: "A capital idea."), [api]).Should().BeNull();
+        MemberTextCopyGuard.Refusal(Revision("Add logging to the parser"), [shortObjective]).Should().BeNull();
+        MemberTextCopyGuard.Refusal(Revision("Show the cart", context: "We reprovision the cart cache for the storefronts."), [cacheWord]).Should().BeNull();
+
+        // The fixture's blocked-by reason names shop-ops, and a revision that copies nothing else passes.
+        MemberTextCopyGuard.Refusal(Revision("Show the cart"), [CartCache]).Should().BeNull();
         MemberTextCopyGuard.Refusal(Revision("Show the cart"), []).Should().BeNull();
         MemberTextCopyGuard.Refusal(Revision("Show the cart"), null).Should().BeNull();
     }
