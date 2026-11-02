@@ -2717,13 +2717,25 @@ public sealed class TaskAggregate
 
     public void Apply(DraftRefinementRecorded @event)
     {
+        // An outcome for a session that is not the one running arrived late: its dispatch was already ended (the foreign-session
+        // ceiling expired it) and another has been dispatched since. It says nothing about the running session, so it must not
+        // erase that session's standing or the revision facts that session's draft check reads.
+        if (@event.SessionId is { } recordedSession && RunningRefinementSessionId is { } runningSession && recordedSession != runningSession)
+        {
+            return;
+        }
+
         RunningRefinementSessionId = null;
         LatestRefinementOutcome = @event;
 
         // The session read the draft as it stood at dispatch and its own revision does not count, so what a person changed
-        // while it ran is the one thing left that no session has read.
-        RevisedSinceLastDraftSession = RevisedWhileRefinementRan;
-        RevisedWhileRefinementRan = false;
+        // while it ran is the one thing left that no session has read. A dispatch refused before any session ran read
+        // nothing, so it leaves a revision no session has read standing.
+        if (@event.SessionId is not null)
+        {
+            RevisedSinceLastDraftSession = RevisedWhileRefinementRan;
+            RevisedWhileRefinementRan = false;
+        }
     }
 
     public void Apply(WorkItemPublicationCompleted @event)

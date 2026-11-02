@@ -85,6 +85,9 @@ public sealed class PlanEngine(
     private readonly ConcurrentDictionary<Guid, RunningSession> _sessions = [];
     private readonly Dictionary<Guid, string> _reportedGate = [];
 
+    /// <summary>The start of the spend period last confirmed spent, or null; see <see cref="LaunchGateAsync"/>. In memory, like <see cref="_reportedGate"/>.</summary>
+    private DateTimeOffset? _spendExhaustedSincePeriodStart;
+
     /// <summary>Set by the loop to its own doorbell, so a session that ends wakes the next step at once.</summary>
     public Action? OnWork { get; set; }
 
@@ -317,26 +320,36 @@ public sealed class PlanEngine(
             return StepOutcome.Nothing;
         }
 
-        if (await LaunchGateAsync(session, plan, project, cancellationToken) is not null)
-        {
-            return StepOutcome.Nothing;
-        }
-
+        // Asked before the launch gate: a plan that is only waiting on a session or a challenge has nothing to start, and
+        // the gate's spend read is not free on a budgeted node.
         foreach (PlanDraftState draft in plan.Drafts)
         {
-            switch (PlanDecider.NextStep(draft))
+            PlanStepKind step = PlanDecider.NextStep(draft);
+            bool startable = step switch
             {
                 // One at a time: a challenge the plan asked for and the challenge engine has not started would otherwise
                 // start after the plan parked on a sibling's outcome, and the plan decides again once the first lands.
-                case PlanStepKind.RequestChallenge when plan.Drafts.All(other => other.ChallengeRequestedAt is null):
-                    return await RequestChallengeAsync(session, fence, plan, draft, project, now, cancellationToken);
-                case PlanStepKind.DispatchRefinement when _sessions.IsEmpty:
-                    return await DispatchAsync(session, fence, plan, draft, project, cancellationToken);
-                default:
-                    break;
+                PlanStepKind.RequestChallenge => plan.Drafts.All(other => other.ChallengeRequestedAt is null),
+                PlanStepKind.DispatchRefinement => _sessions.IsEmpty,
+                _ => false,
+            };
+            if (!startable)
+            {
+                continue;
             }
+
+            if (await LaunchGateAsync(session, plan, project, cancellationToken) is not null)
+            {
+                return StepOutcome.Nothing;
+            }
+
+            return step == PlanStepKind.RequestChallenge
+                ? await RequestChallengeAsync(session, fence, plan, draft, project, now, cancellationToken)
+                : await DispatchAsync(session, fence, plan, draft, project, cancellationToken);
         }
 
+        // Nothing to start, so the gate is not read and a gate reported earlier is no longer in the way of anything.
+        _reportedGate.Remove(plan.Id);
         return StepOutcome.Nothing;
     }
 
@@ -382,9 +395,20 @@ public sealed class PlanEngine(
         }
         else if (_options.SpendBudgetTokens is { } budget)
         {
+            // Spend only grows within a period, so once it is confirmed spent the answer stands until the period rolls over
+            // (the dispatch engine's rule, and for the same reason: the read sums every spend event since the period began).
             DateTimeOffset periodStart = SpendPeriod.FromInput(_options.SpendPeriod).StartOf(DateTimeOffset.UtcNow);
-            PeriodSpend spend = await PeriodSpend.ReadAsync(session, periodStart, cancellationToken);
-            if (spend.TotalInputTokens >= budget)
+            bool spent = _spendExhaustedSincePeriodStart == periodStart;
+            if (!spent)
+            {
+                PeriodSpend spend = await PeriodSpend.ReadAsync(session, periodStart, cancellationToken);
+                spent = spend.TotalInputTokens >= budget;
+                _spendExhaustedSincePeriodStart = spent
+                    ? periodStart
+                    : null;
+            }
+
+            if (spent)
             {
                 reason = "this node's spend budget is spent";
             }
@@ -532,10 +556,19 @@ public sealed class PlanEngine(
         }
 
         // A verdict waiting to be applied judged the draft as it stood: a person's revision since then is text no challenge
-        // read, so applying the verdict to it would publish it unjudged. The plan parks as draft changed, and a resume
-        // challenges the draft as it now stands.
+        // read, so applying the verdict to it would publish it unjudged. The plan parks as draft changed; when a person has
+        // already resumed a park on this draft (the revision is what they resumed for) it goes straight back to a challenge
+        // of the draft as it now stands instead of parking a second time for the same thing.
         if (purpose == RefinementPurpose.ApplyVerdict && aggregate.RevisedSinceLastDraftSession)
         {
+            if (draft.ResumedFromPark)
+            {
+                logger.LogInformation(
+                    "Plan {PlanId}: draft {DraftId} was revised after the verdict waiting to be applied and a person resumed it; challenging it again",
+                    plan.Id, taskId);
+                return await SavePlanAsync(session, planFence, [PlanDecider.BackToChallenge(plan, draft, DateTimeOffset.UtcNow)], cancellationToken);
+            }
+
             logger.LogWarning(
                 "Plan {PlanId}: draft {DraftId} was revised after the verdict waiting to be applied; parking it", plan.Id, taskId);
             return await SavePlanAsync(

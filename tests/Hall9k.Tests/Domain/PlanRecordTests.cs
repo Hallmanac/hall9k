@@ -389,4 +389,84 @@ public sealed class PlanRecordTests
         view.LatestChallengeVerdictJudgedOlderDraft.Should().BeTrue();
         aggregate.LatestChallengeVerdictJudgedOlderDraft.Should().BeTrue();
     }
+
+    [Fact]
+    public void A_late_outcome_for_a_session_that_is_no_longer_the_running_one_leaves_the_running_sessions_standing_alone()
+    {
+        Guid taskId = DomainId.New();
+        Guid node = DomainId.New();
+        Guid expired = DomainId.New();
+        Guid replacement = DomainId.New();
+        TaskDetailsProjection projection = new();
+        TaskAdded added = new(taskId, DomainId.New(), "Ship it", ["it ships"], TaskType.Feature, null, null, null, Now, Guid.NewGuid());
+        TaskDetails view = projection.Create(new FakeEvent<TaskAdded>(added));
+        TaskAggregate aggregate = new();
+        aggregate.Apply(added);
+        AgentModel model = AgentModel.FromInput(AgentModel.ChallengeDefault);
+
+        // The first session's dispatch was expired and a second was dispatched, and a person revised while the second ran.
+        DraftRefinementDispatched first = new(taskId, expired, node, Now, model, AgentEffort.High, RefinementPurpose.Refine);
+        DraftRefinementRecorded expiry = new(
+            taskId, expired, node, RefinementOutcome.Unknown, RefinementFailureReason.DispatchExpired, RefinementPurpose.Unknown, model,
+            AgentEffort.High, Now);
+        DraftRefinementDispatched second = new(taskId, replacement, node, Now, model, AgentEffort.High, RefinementPurpose.Refine);
+        TaskRevised person = new(
+            taskId, Optional<string>.Of("Ship it, revised"), default, default, default, default, default, Now, Guid.NewGuid());
+        foreach (object step in new object[] { first, expiry, second, person })
+        {
+            switch (step)
+            {
+                case DraftRefinementDispatched dispatched:
+                    projection.Apply(new FakeEvent<DraftRefinementDispatched>(dispatched), view);
+                    aggregate.Apply(dispatched);
+                    break;
+                case DraftRefinementRecorded recorded:
+                    projection.Apply(new FakeEvent<DraftRefinementRecorded>(recorded), view);
+                    aggregate.Apply(recorded);
+                    break;
+                case TaskRevised revised:
+                    projection.Apply(new FakeEvent<TaskRevised>(revised), view);
+                    aggregate.Apply(revised);
+                    break;
+            }
+        }
+
+        DraftRefinementRecorded late = new(
+            taskId, expired, node, RefinementOutcome.Revised, RefinementFailureReason.Unknown, RefinementPurpose.Refine, model, AgentEffort.High, Now);
+        projection.Apply(new FakeEvent<DraftRefinementRecorded>(late), view);
+        aggregate.Apply(late);
+
+        view.RunningRefinementSessionId.Should().Be(replacement);
+        aggregate.RunningRefinementSessionId.Should().Be(replacement);
+        view.RunningRefinementNodeId.Should().Be(node, "the replacement's node and model are still on record");
+        view.RevisedWhileRefinementRan.Should().BeTrue("the draft check of the replacement session still sees the revision");
+        aggregate.RevisedWhileRefinementRan.Should().BeTrue();
+        view.LatestRefinementOutcome.Should().Be(expiry);
+        aggregate.LatestRefinementOutcome.Should().Be(expiry);
+    }
+
+    [Fact]
+    public void A_refinement_dispatch_refused_before_any_session_ran_leaves_a_revision_no_session_has_read_standing()
+    {
+        Guid taskId = DomainId.New();
+        TaskDetailsProjection projection = new();
+        TaskAdded added = new(taskId, DomainId.New(), "Ship it", ["it ships"], TaskType.Feature, null, null, null, Now, Guid.NewGuid());
+        TaskDetails view = projection.Create(new FakeEvent<TaskAdded>(added));
+        TaskAggregate aggregate = new();
+        aggregate.Apply(added);
+        TaskRevised person = new(
+            taskId, Optional<string>.Of("Ship it, revised"), default, default, default, default, default, Now, Guid.NewGuid());
+        projection.Apply(new FakeEvent<TaskRevised>(person), view);
+        aggregate.Apply(person);
+
+        DraftRefinementRecorded refused = new(
+            taskId, null, DomainId.New(), RefinementOutcome.Unknown, RefinementFailureReason.StartFailed, RefinementPurpose.ApplyVerdict,
+            AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High, Now);
+        projection.Apply(new FakeEvent<DraftRefinementRecorded>(refused), view);
+        aggregate.Apply(refused);
+
+        view.RevisedSinceLastDraftSession.Should().BeTrue("no session ran, so none read the person's text");
+        aggregate.RevisedSinceLastDraftSession.Should().BeTrue();
+        view.LatestRefinementOutcome.Should().Be(refused);
+    }
 }
