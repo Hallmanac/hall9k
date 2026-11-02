@@ -363,21 +363,25 @@ public static class ClaudeSettingsFile
     /// <para>
     /// <b>The allow list</b> is exactly what a pr-review lens actually runs: the diff and its
     /// history (<c>git diff origin/&lt;base&gt;...HEAD</c>, <c>git log</c> —
-    /// <c>review-mechanics.md</c>'s own ordinary-diff-range), the pull request itself
-    /// (<c>gh pr view</c>, <c>gh pr diff</c>, <c>gh pr checks</c>), the issues it cites
-    /// (<c>gh issue view</c> — all four named in the QA rules' own never-post line), and ordinary
-    /// reading (<c>Read</c> and <c>Grep</c>, both scoped to the checkout and the run directory so
-    /// an injected session cannot read outside them — an unscoped <c>Read</c> can reach
-    /// <c>~/.config/gh/hosts.yml</c>, and an unscoped <c>Grep</c> can read that same file's own
-    /// content a line at a time — plus <c>Glob</c>, left unscoped, since it returns matching file
-    /// names only and never reads content on its own). <c>gh api</c> is deliberately NOT allowed —
-    /// the reused deny list below holds <c>Bash(gh api:*)</c> and deny beats allow, verified — so
-    /// even a read-only <c>gh api GET</c> is refused; the lenses read through <c>gh pr view</c>/
-    /// <c>gh pr diff</c> instead.
+    /// <c>review-mechanics.md</c>'s own ordinary-diff-range) and ordinary reading (<c>Read</c> and
+    /// <c>Grep</c>, both scoped to the checkout and the run directory so an injected session cannot
+    /// read outside them — an unscoped <c>Read</c> can reach <c>~/.config/gh/hosts.yml</c>, and an
+    /// unscoped <c>Grep</c> can read that same file's own content a line at a time — plus
+    /// <c>Glob</c>, left unscoped, since it returns matching file names only and never reads
+    /// content on its own). It holds no <c>gh</c> rule at all: a read-only review should use no
+    /// credential it does not need, so the daemon reads GitHub for the session and writes what it
+    /// gathered into the run directory, where the scoped <c>Read</c> reaches it (the pull request's
+    /// diff for a feedback evaluator or a closeout triage, the issues a description cites for the
+    /// lenses that are told the pull request's intent).
     /// </para>
     /// <para>
     /// <b>The deny list</b> is <see cref="ReviewLapDeniedTools"/> — the identical write-surface
-    /// refusal a reviewer's own local lap already carries — plus <c>Bash(claude:*)</c>: the
+    /// refusal a reviewer's own local lap already carries — plus <c>Bash(gh:*)</c> and
+    /// <c>Bash(claude:*)</c>. The <c>gh</c> denial refuses every <c>gh</c> command, reads included,
+    /// because this session has no allow rule for one and a user-level allow in the owner's own
+    /// settings would otherwise still win under <c>dontAsk</c>; the human review lap shares
+    /// <see cref="ReviewLapDeniedTools"/> and keeps its <c>gh</c> reads, which is why the denial lives
+    /// in <see cref="PrReviewDeniedTools"/> and not in that list. <c>claude</c> is denied because the
     /// owner's own user settings allow it, and under <c>dontAsk</c> a user-level allow still wins
     /// unless this file denies it too (verified: without this line, <c>claude --version</c> ran
     /// under the flag file alone), which would otherwise let an injected session launch its own
@@ -459,8 +463,9 @@ public static class ClaudeSettingsFile
     /// </param>
     /// <param name="gitHubRepository">
     /// The <c>owner/repo</c> set as <c>GH_REPO</c> in the session's environment (<see cref="GitHubRepositoryEnvJson"/>).
-    /// The review checkout has no remote, so this is the only thing that tells <c>gh</c> which repository
-    /// <c>gh pr view &lt;n&gt;</c> and the other number-addressed reads mean. Null leaves the variable unset.
+    /// The review checkout has no remote, so this is the only thing that tells a <c>gh</c> process which repository
+    /// a bare pull request number means. The session itself cannot run <c>gh</c> (<see cref="PrReviewDeniedTools"/>),
+    /// so it matters only to a process the session starts that does. Null leaves the variable unset.
     /// </param>
     /// <param name="allowMentionAnswer">
     /// Whether to add the <c>Edit</c> rule for <c>mention-answer.md</c> in <paramref name="runDirectory"/>. True for
@@ -582,8 +587,10 @@ public static class ClaudeSettingsFile
     /// The tool rules <see cref="BuildForPrReview"/> allows on every pr-review session, beside the
     /// <c>Read</c>/<c>Grep</c> rules it scopes itself (worktree and run directory) and whatever
     /// <paramref name="qaGateCommands"/> a QA session earns on top. What the lenses actually run:
-    /// <c>review-mechanics.md</c>'s own ordinary-diff-range for <c>git diff</c>/<c>git log</c>,
-    /// and the QA rules' own never-post line for the four <c>gh</c> reads.
+    /// <c>review-mechanics.md</c>'s own ordinary-diff-range for <c>git diff</c>/<c>git log</c>.
+    /// There is deliberately no <c>gh</c> rule here: the session reads GitHub only through what the
+    /// daemon gathered into the run directory, and <see cref="PrReviewDeniedTools"/> refuses
+    /// <c>gh</c> outright. A test pins that no rule here names <c>gh</c>.
     /// <para>
     /// The two git rules cannot be dropped: Claude Code's built-in read-only git allowance does not
     /// apply in a dispatched linked worktree (see <see cref="BuildForPrReview"/>), so without them
@@ -612,10 +619,6 @@ public static class ClaudeSettingsFile
         "Glob",
         "Bash(git diff:*)",
         "Bash(git log:*)",
-        "Bash(gh pr view:*)",
-        "Bash(gh pr diff:*)",
-        "Bash(gh pr checks:*)",
-        "Bash(gh issue view:*)",
     ];
 
     /// <summary>
@@ -641,14 +644,30 @@ public static class ClaudeSettingsFile
     public const string GitReadOnlyGuardMatcher = "Bash|PowerShell";
 
     /// <summary>
-    /// <see cref="ReviewLapDeniedTools"/> plus <c>Bash(claude:*)</c> — see
-    /// <see cref="BuildForPrReview"/>'s own doc for why the addition is load-bearing rather than
-    /// belt-and-suspenders.
+    /// <see cref="ReviewLapDeniedTools"/> plus <c>Bash(gh:*)</c> and <c>PowerShell(gh:*)</c>, which refuse every <c>gh</c>
+    /// command a pr-review session might spell in either shell (the hooks beside it name both, see
+    /// <see cref="ReviewThreadReplyGuardMatcher"/>), reads included, and <c>Bash(claude:*)</c> — see
+    /// <see cref="BuildForPrReview"/>'s own doc for why the additions are load-bearing rather than
+    /// belt-and-suspenders. <see cref="ReviewLapDeniedTools"/> itself stays as it was, because the
+    /// human review lap shares it and keeps its <c>gh</c> reads. The bare tool names at the end (<c>RemoteTrigger</c>,
+    /// <c>PushNotification</c>, <c>DesignSync</c>, <c>Workflow</c>, <c>CronCreate</c>, <c>CronDelete</c>,
+    /// <c>SendToProject</c>, <c>SendMessage</c>) are tools a pr-review session has no use for: it reads what the daemon
+    /// gathered into its run directory, so each can only reach outside the review.
     /// </summary>
     public static readonly IReadOnlyList<string> PrReviewDeniedTools =
     [
         .. ReviewLapDeniedTools,
+        "Bash(gh:*)",
+        "PowerShell(gh:*)",
         "Bash(claude:*)",
+        "RemoteTrigger",
+        "PushNotification",
+        "DesignSync",
+        "Workflow",
+        "CronCreate",
+        "CronDelete",
+        "SendToProject",
+        "SendMessage",
     ];
 
     /// <summary>
