@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon.Review;
@@ -24,6 +25,9 @@ namespace Hall9k.Daemon.Execution;
 /// description arrives nowhere in this prompt at all, deliberately: this session hunts classes of
 /// defect over the diff itself and must not be steered by an outsider's own account of what the
 /// change is for (<see cref="ReviewPersonaSession.SeesTaskContext"/> is false on its session).
+/// The issues that description cites are the one exception, and only as hardened source material: the
+/// session cannot run <c>gh</c>, so the daemon's file of them is its only view of an intended permission,
+/// and the prompt says plainly that the file never lowers a finding's severity or makes a permission intended.
 /// </para>
 /// </summary>
 public static class SecurityReviewPromptBuilder
@@ -49,6 +53,15 @@ public static class SecurityReviewPromptBuilder
     {
         StringBuilder prompt = new();
         AppendOpening(prompt, request.BaseBranch);
+        if (request.RunDirectory is not null)
+        {
+            prompt.AppendLine();
+            AppendFragment(
+                prompt, $"{TemplateDirectory}/build.md", "cited-issues",
+                ("CitedIssuesPath", RunPaths.CitedIssuesFile(request.RunDirectory)),
+                ("MaxNamedNotRead", CitedIssues.MaxNamedNotRead.ToString(CultureInfo.InvariantCulture)));
+        }
+
         AppendLenses(prompt);
         AppendReportShape(prompt);
 
