@@ -57,3 +57,7 @@ context: |-
   ## Out of scope
 
   The goal concept (idea 75bed4cc), initiatives, loops inside a build, and a second step when a parent changes after the child has started (the stack rebase already handles the code). Whether a plan of several tasks turns the flag on by default, and whether the check also reads the blockers' pull request summaries, are left for later; notes alone are the input here.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-11-02 18:40:23Z
