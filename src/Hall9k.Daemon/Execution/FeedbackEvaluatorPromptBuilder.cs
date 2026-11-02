@@ -25,7 +25,7 @@ public static class FeedbackEvaluatorPromptBuilder
 
     public static string Build(
         NonMemberFeedbackItem item, string objective, IReadOnlyList<string> acceptanceCriteria,
-        string pullRequestUrl, string assessmentPath)
+        string pullRequestUrl, string assessmentPath, string diffPath)
     {
         StringBuilder prompt = new();
         prompt.AppendLine(PromptTemplates.Load(Template, "heading"));
@@ -66,7 +66,7 @@ public static class FeedbackEvaluatorPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(Template, "working-heading"));
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(Template, "working"));
+        prompt.AppendLine(PromptTemplates.Load(Template, "working", Params(("DiffPath", RelayedText.OneLine(diffPath)))));
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(Template, "job-heading"));
         prompt.AppendLine();

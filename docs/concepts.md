@@ -1261,8 +1261,9 @@ Per poll, in priority order:
   acceptance criteria. It is one background session per item, never per poll and never again after
   a daemon restart, run under the pr-review permission file (never with permissions skipped) with a
   turn cap and a timeout, and allowed one write beyond that file's usual ones: its own assessment
-  file in the run directory. It never posts, pushes or files an idea or a task, and its prompt fences
-  the feedback as data. It writes whether the change serves the task's intent, what it would change
+  file in the run directory. It cannot run `gh` at all: the daemon writes the pull request's diff
+  into the run directory before the session starts, and the prompt names that file. It never posts,
+  pushes or files an idea or a task, and its prompt fences the feedback as data. It writes whether the change serves the task's intent, what it would change
   and a recommendation of `fix`, `decline` or `ask`. `h9k status` and the feed show only that word
   and the path of the assessment file, never the assessment's prose, because the orchestrator window
   reads both with permissions bypassed; you read the file yourself. A task dispatches at most

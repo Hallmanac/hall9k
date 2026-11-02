@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.AutoPrReview;
@@ -211,13 +212,16 @@ public sealed class FeedbackGateEngineTests(PostgresFixture postgres) : IClassFi
 
     // ─── The read-only evaluator that assesses held feedback before the owner decides on it ───────────
 
+    private const string CannedDiff = "diff --git a/src/Limiter.cs b/src/Limiter.cs\n+canned\n";
+
     private FeedbackEvaluators NewEvaluators(
         EvaluatorExecutor executor, FakeProcessManager processes, Action<DaemonOptions>? configure = null)
     {
         DaemonOptions daemon = new() { NonMemberFeedbackEvaluatorTimeout = TimeSpan.FromSeconds(30) };
         configure?.Invoke(daemon);
         return new FeedbackEvaluators(
-            postgres.Store, executor, processes, Options.Create(daemon), NullLogger<FeedbackEvaluators>.Instance);
+            postgres.Store, executor, processes, Options.Create(daemon), NullLogger<FeedbackEvaluators>.Instance,
+            (_, _, _, _) => Task.FromResult(new ProcessResult(0, CannedDiff, string.Empty)));
     }
 
     private async Task<TaskDetails> LoadTaskAsync(Guid taskId, CancellationToken cancellationToken)
@@ -267,6 +271,8 @@ public sealed class FeedbackGateEngineTests(PostgresFixture postgres) : IClassFi
         request.MaxTurns.Should().Be(new DaemonOptions().NonMemberFeedbackEvaluatorMaxTurns, "a hard turn cap");
         request.AssessmentFile.Should().StartWith(RunDirectoryOf(runId)).And.EndWith(".md");
         request.Prompt.Should().Contain(StrangersWords).And.Contain("not addressed to you");
+        request.Prompt.Should().NotContain("gh pr diff", "the session cannot run gh, so the diff is a file the daemon wrote");
+        executor.DiffAtSpawn.Should().ContainSingle().Which.Should().Be(CannedDiff, "the diff is on disk, at the path the prompt names, before the session starts");
         (await CountEventsAsync<NonMemberFeedbackEvaluatorDispatched>(taskId, cts.Token)).Should().Be(1);
 
         TaskDetails task = await LoadTaskAsync(taskId, cts.Token);
@@ -561,12 +567,17 @@ public sealed class FeedbackGateEngineTests(PostgresFixture postgres) : IClassFi
 
         public Exception? SpawnFailure { get; set; }
 
+        /// <summary>What the diff file the prompt names held at the instant the session was spawned.</summary>
+        public List<string?> DiffAtSpawn { get; } = [];
+
         public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
         {
             int processId;
             lock (_gate)
             {
                 _requests.Add(request);
+                string? diffPath = System.Text.RegularExpressions.Regex.Match(request.Prompt, @"`([^`]+\.diff)`").Groups[1].Value;
+                DiffAtSpawn.Add(diffPath.Length > 0 && File.Exists(diffPath) ? File.ReadAllText(diffPath) : null);
                 if (SpawnFailure is { } failure)
                 {
                     throw failure;

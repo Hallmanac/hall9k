@@ -845,7 +845,7 @@ public static class AgentPromptBuilder
     /// </summary>
     public static string BuildCloseoutTriage(
         string objective, IReadOnlyList<string> acceptanceCriteria, string pullRequestUrl,
-        IReadOnlyList<string> threadIds, ReviewReadScope? scope, string reportPath)
+        IReadOnlyList<string> threadIds, ReviewReadScope? scope, string reportPath, string diffPath)
     {
         const string file = $"{TemplateDirectory}/closeout-triage.md";
         StringBuilder prompt = new();
@@ -888,7 +888,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "working-heading"));
         prompt.AppendLine();
-        AppendFragment(prompt, file, "working");
+        AppendFragment(prompt, file, "working", ("DiffPath", OneLine(diffPath)));
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "job-heading"));
         prompt.AppendLine();
