@@ -1864,6 +1864,39 @@ everything after that read is local, and the daemon's next sweep sends the asks.
 that peer's exchange, so the counts `h9k status` then shows for it are this exchange's rather than a
 previous one's, including how many streams are still held tail-only.
 
+### The feedback step
+
+`h9k project set <project> --feedback-step on|off` decides whether the project's tasks take the feedback step, `off` by
+default, with `off` the way back from `on` and `h9k project show` printing the value. It is a team setting, so every
+teammate's node decides a hold the same way. `h9k task revise <task> --feedback-step on|off|default` overrides it for one
+task, either way, with `default` clearing the override; like `--queue-first` it may be the only thing revised in the call and
+works on a Published or Blocked task, but it is refused, with the reason, once the task is held for its feedback step, has
+been released to Queued, or has been claimed. Both options teach the rule in `--help`; the concepts page has the whole story,
+under [the feedback step](concepts.md#the-feedback-step-what-a-blocker-learned-checked-before-its-dependent-is-released).
+
+A task that takes the step and has blockers is held Blocked when its last blocker closes out, its stacked parent is
+Delivered, or the pull request it stands on is observed open or merged, and when it is queued with every blocker already
+finished. What you see:
+
+- `h9k task show` prints a **Feedback step** row (on or off, and whether the project's setting or the task's own override says
+  so), a **Held** row while it stands, a **Feedback check** row (running, or its answer, or the failure that released the task,
+  with the model and effort it ran on), and a **Feedback outcome** row once the step has ended: *released without a check*,
+  *released after the check*, *released after a failed check*, *revised and queued again*, *parked* with the reason, or *ended
+  without acting* when a person dequeued, unassigned, reassigned, abandoned, published, or revised the task while the step ran.
+- `h9k status` lists a held task under Blocked with the line "held for its feedback step", and a task the step parked shows
+  under Needs you with the reason and the way to settle it: revise, publish, and queue it by hand, or abandon it.
+- `h9k task drive` and `h9k task start` refuse a held task with the reason, with or without `--acknowledge-unmet-dependencies`.
+  They also refuse a Published task that queueing would hold (it takes the step and every blocker has finished), because the
+  claim they make in the same breath would skip the step; queue it, or turn the step off for the task, as the message says.
+  `h9k task dequeue` takes it out of the queue and ends the hold.
+- `h9k config set --model-feedback-check <model>` and `--effort-feedback-check <level>` set the node's tier for the check, a
+  cheap floor of its own (Sonnet 5.5 at medium effort) that the node's default model and effort do not move, while
+  `--model-refinement` and `--effort-refinement` set the tier of the session that refines the task, so the two differ without
+  a code change. `h9k config show` lists both roles.
+
+A plan the step starts appears in `h9k plan list` like any other, with a cap of one challenge round; a person does not
+resume it, because the step ends it when it parks.
+
 ### Project settings the prose above only names
 
 `h9k project set` carries most of a project's standing choices, and the paragraphs above explain the
@@ -1883,6 +1916,8 @@ this one.
 | `h9k project set --verify-gate-paths <name=glob[,glob...]\|name=none>` | Scopes one gate to a path set, repeatable, one per gate. The gate runs only when a path the run's whole branch changed against its base (minus the non-executable set) matches the set, and is otherwise recorded as skipped (path scope); every gate runs when the changed paths cannot be read. Globs follow `--non-executable-path`'s rules, and a leading `!` exclusion wins over any positive glob; a set needs at least one positive glob, and a glob that misses a path skips its gate, so a directory prefix ending in `/` or the exclusion form (`**,!web/`) is the safe shape (`a/**/b` needs a directory between `a` and `b`). A changed set holds runs on a node until it accepts it, and a node on an older binary drops the field and runs every gate. |
 | `h9k project set --accept-broken-gate` | Records a `--verify` gate that fails on a clean base anyway, with a loud warning, instead of refusing the whole command. |
 | `h9k project set --require-challenge on\|off` | Chooses whether `h9k task publish` refuses a draft with no usable challenge verdict, `on` for any project that recorded no value, with no clearing word because `off` is the way back from `on`. `h9k project show` prints the value and whether it is the default. |
+| `h9k project set --feedback-step on\|off` | Chooses whether the project's tasks take the feedback step: held at their release point while the daemon checks the notes their blockers left against them. Off by default, a team setting, with `off` the way back from `on`; see [the feedback step](#the-feedback-step). |
+| `h9k task revise --feedback-step on\|off\|default` | Overrides the project's setting for one task, either way, until it is held for the step, released to Queued, or claimed. |
 | `h9k project set --model <model>` | Sets the model this project's sessions run on unless a task says otherwise, outranking the node's per-role defaults, with `default` clearing it. |
 | `h9k project set --effort <low\|medium\|high\|xhigh>` | Sets the reasoning effort this project's sessions run at, which beats the node's per-role and node-wide values and is beaten only by a task's own, with `default` clearing it. It is stored beside the project's model in the node-scoped settings, so it stays on the node that set it and never replicates. `h9k project show` prints it when set. |
 | `h9k project set --orchestrator-model <model>` | Sets the model this project's orchestrator window runs on, independent of `--model`, with `default` clearing it back to the node's own resolution. |

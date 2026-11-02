@@ -388,7 +388,66 @@ Queued, Blocked, a currently Claimed task (for its next turn in the queue), even
 the follow-up run a later reopen might dispatch) — see [PLAN.md Decisions Log #127](../PLAN.md).
 Two more fields stay editable past Draft. `--clear-interactive-mode` clears a task's interactive-mode
 flag in any live state when nothing else is revised in the same call, and a spike's own kind, exit
-criterion, and budget can still be revised while the spike is Draft or Published.
+criterion, and budget can still be revised while the spike is Draft or Published. A fourth, narrower
+one is a task's own override of [the feedback step](#the-feedback-step-what-a-blocker-learned-checked-before-its-dependent-is-released),
+settable only while the task is Draft, Published, or Blocked and not yet held for that step.
+
+### The feedback step: what a blocker learned, checked before its dependent is released
+
+A task is written up front, so what an early task learns never reaches the criteria of a later one. Task notes carry
+that learning to the next session, but the criteria stay as written. The **feedback step** checks the notes a task's
+blockers left against the task itself, once, at the moment the task would otherwise be released, and revises it if they
+matter. It is off by default: a project turns it on with `h9k project set --feedback-step on`, and a task overrides the
+project either way with `h9k task revise --feedback-step on|off|default`. Like `--queue-first`, the override is a
+scheduling fact outside the readiness contract, so it works on a Published or Blocked task without the Draft ceremony,
+but it is narrower: it is refused, with the reason, once the task is held for the step, has been released to Queued, or
+has been claimed. A task with no blockers has no notes to read and is never held.
+
+A task that takes the step stays **Blocked at its release point until the step has ended**. Its release point is the
+moment it would otherwise move from Blocked to Queued: its last blocker reaching true closeout, its stacked parent's
+Delivered, or the pull request it is stacked on in another install being observed open or merged, whichever comes last. A
+task queued with every blocker already finished is held the same way instead of landing in Queued. There is no new
+state. While it is held, neither the dispatcher nor `h9k task drive` or `h9k task start` (with or without
+`--acknowledge-unmet-dependencies`) can claim it, and those two commands also refuse a Published task that queueing would hold,
+naming `h9k task queue` and `h9k task revise --feedback-step off` as the ways forward, and `h9k task show` and `h9k status`
+say it is held for the feedback step. `h9k task dequeue` takes it out and ends the hold, and the step stands down.
+
+The daemon makes every move and starts every session; a session supplies judgment and nothing else. The step runs on one
+node only, the node the task is placed on or, with no placement, a node of the owner it is queued for, and it begins with
+an append under the task's stream version, so two nodes that see the same release start one step between them.
+
+1. **No notes, no cost.** When none of the blockers left a note that the trust rule lets into a prompt, no session runs and the
+   task goes to Queued as it would without the step (outcome: *released without a check*). A note the trust rule holds back is
+   never placed in any prompt of the step.
+2. **The check.** One headless session with no tools, on the `FeedbackCheck` role (`h9k config set --model-feedback-check`,
+   `--effort-feedback-check`; a cheap floor of its own), reads the task's objective, criteria, and context and the notes of
+   every blocker, and answers whether the notes affect the task. A task with several blockers gets one check, after the last
+   one clears. When the answer is no, the task goes to Queued (*released after the check*). When the check fails, times out,
+   or ends without a readable answer, the task also goes to Queued and the failure is recorded on the task (*released after a
+   failed check*), so one bad check never stalls the tasks behind it.
+3. **Refinement, one challenge, a judged verdict.** When the answer is yes, the daemon dequeues the task (which keeps its
+   assignee), returns it to Draft, and starts a plan for it with a cap of one challenge round. A session at the refinement
+   tier (`--model-refinement`) revises the objective, criteria, and context, and nothing else. The daemon requests exactly
+   one challenge of the result; no session or sweep starts a second. After a *publish as revised* verdict a session judges
+   each must and should change, applies the ones it accepts, and records in the task's journal a reason for each one it
+   declines; after *publish as written* the task is published as it stands. The daemon then publishes it with the tracking
+   choice its earlier publish recorded, and queues it again for the same owner, owner fingerprint, assignee, and node
+   placement it had before the step. Its blockers have cleared, so it reaches Queued at once (*revised and queued again*).
+4. **Parked for a person.** The task is parked instead, with the reason shown in `h9k task show` and `h9k status`, when the
+   challenge returns *do not publish* or ends with no verdict; the refinement concludes the task should not run (the closing
+   word `should-not-run`); the revision names anything but the objective, criteria, or context (a dependency, a stack link, a
+   type, or a model); a refinement or judging session fails, times out, or writes no readable report; or the publish or the
+   requeue is refused. Once parked, the step is over: its plan is ended, nothing in the daemon queues the task on the step's
+   behalf, and a person who settles the park revises, publishes, and queues it by hand.
+
+Each step records its outcome as an event on the task's stream, and `h9k task show` prints it: *released without a check*,
+*released after the check*, *released after a failed check*, *revised and queued again*, *parked* (with the reason), or
+*ended without acting* because a person dequeued, unassigned, abandoned, published, or revised the task while the step ran.
+After any of them nothing starts a second step for that task: not the step's own requeue, not a later observation of the
+pull request it is stacked on, not a person queueing it again, and not a change to its parent after it has been claimed (the
+stack rebase already handles the code). A goal run that loops until a goal is met, a second step when a parent changes after
+the child started, and reading the blockers' pull request summaries as well as their notes are not part of it; the notes
+alone are the input.
 
 **The readiness contract** is enforced once, at publish, as an invariant of that state rather
 than a toll booth at creation. It wants an outcome-phrased objective and at least one checkable
