@@ -5,6 +5,7 @@ using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Challenge;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Plan.Handlers;
@@ -31,7 +32,10 @@ namespace Hall9k.Daemon.Plan;
 public sealed record PlanSweepResult(int Steps, int Dispatched, int Recovered, int Expired);
 
 /// <summary>
-/// Drives plans (<c>h9k plan start</c>): the daemon's half of a plan, on the node where it was started. A sweep takes
+/// Drives plans (<c>h9k plan start</c>): the daemon's half of a plan, on the node where it was started. A plan started from
+/// an idea (<c>--idea</c>) begins in discovery: it dispatches one discovery session, copies a readable report into the idea's
+/// workspace, and parks at a gate for a person; the drafts exist only after <c>h9k plan pursue</c> cut them, and from then on
+/// the plan is driven as any other. A sweep takes
 /// each live plan oldest first and takes one step at a time until it has none, re-reading the plan between steps, so
 /// every step is decided over what is on the stream and nothing is remembered in memory but which sessions are running.
 /// <para>
@@ -229,6 +233,14 @@ public sealed class PlanEngine(
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        // A plan started from an idea has no draft until a person pursues it at the gate, so none of the rules over drafts
+        // below applies to it yet: its one step is discovery.
+        if (plan.InDiscovery)
+        {
+            return await StepDiscoveryAsync(session, fence, plan, now, cancellationToken);
+        }
+
         IReadOnlyList<TaskDetails> loaded = await session.LoadManyAsync<TaskDetails>(
             cancellationToken, [.. plan.Drafts.Select(draft => draft.DraftId)]);
         Dictionary<Guid, TaskDetails> tasks = loaded.ToDictionary(task => task.Id);
@@ -628,11 +640,13 @@ public sealed class PlanEngine(
                 ?? (taskDirectory is null
                     ? null
                     : Path.Combine(taskDirectory, "journal.md"));
+            IReadOnlyList<SiblingDraftFacts> siblings = await SiblingsOfAsync(session, plan, taskId, cancellationToken);
+            string? discoveryReport = await DiscoveryReportOfAsync(session, plan, cancellationToken);
             string prompt = AgentPromptBuilder.BuildPlanRefinement(
                 current, project,
                 new PlanRefinementPromptFacts(
                     purpose, projectHome, checkout, commit, refresh, reportPath, revisionPath, sessionDirectory, ideaWorkspace,
-                    journal, journalToWrite, prior));
+                    journal, journalToWrite, prior, siblings, discoveryReport));
 
             // Recorded before anything is spawned, RunLauncher's order, and on both streams in one save: committing first
             // is what makes a crash lose too, and the plan never claims a session the task does not know about.
@@ -1041,6 +1055,539 @@ public sealed class PlanEngine(
     }
 
     /// <summary>
+    /// The plan's other drafts, by id and objective, for a refinement session of a plan that carries more than one; empty for
+    /// a plan of one. An abandoned draft is left out, because nothing can usefully depend on one.
+    /// </summary>
+    private static async Task<IReadOnlyList<SiblingDraftFacts>> SiblingsOfAsync(
+        IDocumentSession session, PlanAggregate plan, Guid draftId, CancellationToken cancellationToken)
+    {
+        Guid[] others = [.. plan.Drafts.Where(draft => draft.DraftId != draftId && !draft.Abandoned).Select(draft => draft.DraftId)];
+        if (others.Length == 0)
+        {
+            return [];
+        }
+
+        IReadOnlyList<TaskDetails> tasks = await session.LoadManyAsync<TaskDetails>(cancellationToken, others);
+        return [.. others
+            .Select(id => tasks.FirstOrDefault(task => task.Id == id))
+            .OfType<TaskDetails>()
+            .Select(task => new SiblingDraftFacts(task.Id, task.Objective))];
+    }
+
+    /// <summary>The report a plan's discovery wrote, as a path in the idea's workspace now, for the refinement of a draft cut from it; null for a plan started from drafts.</summary>
+    private static async Task<string?> DiscoveryReportOfAsync(IDocumentSession session, PlanAggregate plan, CancellationToken cancellationToken) =>
+        plan.IdeaId is { } ideaId
+        && await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cancellationToken) is { } idea
+            ? DiscoveryWorkspace.ReportPathOf(idea, plan.Id)
+            : null;
+
+    private sealed record DiscoveryJob(
+        Guid PlanId,
+        Guid IdeaId,
+        Guid SessionId,
+        string Checkout,
+        string SessionDirectory,
+        string ReportPath,
+        string Prompt,
+        AgentModel Model,
+        AgentEffort Effort);
+
+    /// <summary>
+    /// The one step of a plan still in discovery. An idea that is no longer Captured, or is gone, ends the plan cancelled
+    /// whatever else is going on (its session is stopped by the next top of a sweep, and nothing is copied). Otherwise a plan
+    /// that is not parked and has no session running dispatches one, on the same one-at-a-time loop as a refinement session and
+    /// under the same launch hold, spend budget, and max-parallel rules; a discovery session takes no ceiling slot.
+    /// </summary>
+    private async Task<StepOutcome> StepDiscoveryAsync(
+        IDocumentSession session, StreamState fence, PlanAggregate plan, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        IdeaAggregate? idea = plan.IdeaId is { } ideaId
+            ? await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cancellationToken)
+            : null;
+        if (idea is null || idea.State != IdeaState.Captured)
+        {
+            logger.LogInformation(
+                "Plan {PlanId}: its idea is {State}, not Captured, so the plan ends cancelled and its discovery session is stopped",
+                plan.Id, idea?.State.Value ?? "gone");
+            return await SavePlanAsync(
+                session, fence,
+                [new PlanCancelled(plan.Id, plan.ProjectId, "the idea is no longer Captured, so discovery has nothing to run on", null, now)],
+                cancellationToken);
+        }
+
+        if (PlanDecider.NextDiscoveryStep(plan) != PlanStepKind.DispatchDiscovery || !_sessions.IsEmpty)
+        {
+            return StepOutcome.Nothing;
+        }
+
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(plan.ProjectId, cancellationToken);
+        if (project is null || await LaunchGateAsync(session, plan, project, cancellationToken) is not null)
+        {
+            return StepOutcome.Nothing;
+        }
+
+        return await DispatchDiscoveryAsync(session, fence, plan, idea, project, cancellationToken);
+    }
+
+    private async Task<StepOutcome> DispatchDiscoveryAsync(
+        IDocumentSession session, StreamState planFence, PlanAggregate plan, IdeaAggregate idea, ProjectDetails project,
+        CancellationToken cancellationToken)
+    {
+        AgentModel model = _options.ResolveModel(AgentRole.Refinement, null, project.Model);
+        AgentEffort effort = _options.ResolveEffort(AgentRole.Refinement, null, project.Effort);
+        string checkout = ProjectCheckout.ForReading(project);
+        string? workspace = DiscoveryWorkspace.DirectoryOf(idea);
+
+        // The rules the verb enforced, enforced again where the session would start: the plan outlives the moment it was
+        // started, and a project can be archived, lose its checkout, or stop skipping permissions, and a workspace can go.
+        string? refusal = project.IsArchived
+            ? "its project is archived"
+            : !project.SkipPermissions
+                ? "its project no longer runs agents with skip-permissions"
+                : !Directory.Exists(checkout) || ProjectCheckout.IsBare(checkout)
+                    ? $"there is no working checkout of the project at {checkout}"
+                    : workspace is null || !Directory.Exists(workspace)
+                        ? "the idea has no workspace directory on this node"
+                        : null;
+        if (refusal is not null || workspace is null)
+        {
+            logger.LogWarning("Plan {PlanId}: no discovery session was started for idea {IdeaId}: {Why}", plan.Id, idea.Id, refusal);
+            return await SavePlanAsync(
+                session, planFence,
+                [PlanDecider.ParkDiscovery(plan, PlanParkReason.SessionFailed, null, RefinementFailureReason.StartFailed, DateTimeOffset.UtcNow)],
+                cancellationToken);
+        }
+
+        ReadingCheckoutJoin join = await checkoutLeases.JoinAsync(
+            checkout,
+            ProjectCheckout.IsHomeDevWorktree(project, checkout)
+                ? () => worktrees.RefreshReadingCheckoutAsync(checkout, project.BaseBranch, cancellationToken)
+                : null,
+            cancellationToken);
+        bool handedToJob = false;
+        try
+        {
+            CheckoutRefresh? refresh = join.Refresh;
+            if (refresh is not null)
+            {
+                logger.Log(
+                    refresh.UpToDate
+                        ? LogLevel.Information
+                        : LogLevel.Warning,
+                    "Discovery session for idea {IdeaId} reads {Checkout}, which {Detail}", idea.Id, checkout, refresh.Detail);
+            }
+
+            string? commit = await HeadCommitAsync(checkout, cancellationToken);
+            IReadOnlyList<TaskDetails> cut = idea.CutTaskIds.Count == 0
+                ? []
+                : await session.LoadManyAsync<TaskDetails>(cancellationToken, [.. idea.CutTaskIds]);
+            string journalPath = Path.Combine(workspace, "journal.md");
+            string[] earlier =
+            [
+                .. Directory.EnumerateFiles(workspace, "discovery-*.md", SearchOption.TopDirectoryOnly).Order(StringComparer.Ordinal),
+            ];
+
+            Guid sessionId = DomainId.New();
+            string sessionDirectory = RunPaths.GlobalDirectory(sessionId);
+            string reportPath = RunPaths.DiscoveryReportFile(sessionId);
+            string prompt = AgentPromptBuilder.BuildPlanDiscovery(
+                project,
+                new PlanDiscoveryPromptFacts(
+                    idea.Id, idea.Text,
+                    [.. cut.Select(task => new DiscoveryCutTaskFacts(task.Id, task.State.Value, task.Objective))],
+                    project.HomeDirectory.HasValue
+                        ? project.HomeDirectory.Value
+                        : null,
+                    checkout, commit, refresh, workspace,
+                    File.Exists(journalPath)
+                        ? journalPath
+                        : null,
+                    earlier, reportPath, sessionDirectory, _options.PlanRefinementTimeout));
+
+            // Recorded before anything is spawned, RunLauncher's order: committing first is what makes a crash lose too.
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            session.Events.Append(
+                plan.Id, expectedVersion: planFence.Version + 1,
+                new PlanDiscoveryDispatched(plan.Id, plan.ProjectId, idea.Id, sessionId, now));
+            try
+            {
+                await session.SaveChangesAsync(cancellationToken);
+            }
+            catch (EventStreamUnexpectedMaxEventIdException)
+            {
+                logger.LogDebug("Plan {PlanId} advanced while its discovery was being dispatched; leaving it", plan.Id);
+                return StepOutcome.Nothing;
+            }
+
+            DiscoveryJob job = new(plan.Id, idea.Id, sessionId, checkout, sessionDirectory, reportPath, prompt, model, effort);
+            CancellationTokenSource cancel = new();
+            TaskCompletionSource finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _sessions[sessionId] = new RunningSession(plan.Id, Guid.Empty, cancel, finished);
+            handedToJob = true;
+            _ = Task.Run(
+                async () =>
+                {
+                    try
+                    {
+                        await RunDiscoveryJobAsync(job, cancel, _stopping.Token);
+                    }
+                    finally
+                    {
+                        join.Lease.Dispose();
+                        _sessions.TryRemove(sessionId, out _);
+                        cancel.Dispose();
+                        finished.SetResult();
+                        OnWork?.Invoke();
+                    }
+                },
+                CancellationToken.None);
+            return StepOutcome.Dispatched;
+        }
+        finally
+        {
+            if (!handedToJob)
+            {
+                join.Lease.Dispose();
+            }
+        }
+    }
+
+    private async Task RunDiscoveryJobAsync(DiscoveryJob job, CancellationTokenSource cancel, CancellationToken stopping)
+    {
+        try
+        {
+            await ExecuteDiscoveryAsync(job, cancel.Token, stopping);
+        }
+        catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+        {
+            // The daemon is stopping; the outcome was recorded on the way out, or the next start records it.
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Plan {PlanId}: the discovery session failed before an outcome could be recorded", job.PlanId);
+            await RecordDiscoveryEndQuietlyAsync(job.PlanId, job.SessionId, RefinementFailureReason.SessionError, null, null, CancellationToken.None);
+        }
+    }
+
+    private async Task ExecuteDiscoveryAsync(DiscoveryJob job, CancellationToken planEnded, CancellationToken stopping)
+    {
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(stopping, planEnded);
+        SpawnedAgent agent;
+        try
+        {
+            // No task is named, as the courier's spawn names none; the dispatched-run variable is still stamped, so the verbs a
+            // dispatched session is refused apply here too. Skip-permissions is required by `plan start`: the session writes
+            // its report outside its checkout.
+            agent = await executor.SpawnAsync(
+                new AgentSpawnRequest(
+                    job.SessionId, job.SessionId, job.Checkout, job.SessionDirectory, job.Prompt, ExecutorMode.Subscription,
+                    job.Model, job.Effort, SkipPermissions: true)
+                {
+                    SessionName = SessionRoleName.For(DomainId.Short(job.PlanId), SessionRoleName.Discovery),
+                },
+                linked.Token);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "Plan {PlanId}: the discovery session could not be spawned", job.PlanId);
+            await RecordDiscoveryEndAsync(job.PlanId, job.SessionId, RefinementFailureReason.StartFailed, null, null, CancellationToken.None);
+            return;
+        }
+
+        await RecordDiscoveryProcessIdentityAsync(job, agent);
+        logger.LogInformation(
+            "Plan {PlanId}: discovery session {SessionId} dispatched (pid {ProcessId}, model {Model}, artifacts in {Directory})",
+            job.PlanId, job.SessionId, agent.ProcessId, job.Model.Value, job.SessionDirectory);
+
+        AgentResult? result = null;
+        bool timedOut = false;
+        using CancellationTokenSource budget = CancellationTokenSource.CreateLinkedTokenSource(linked.Token);
+        budget.CancelAfter(_options.PlanRefinementTimeout);
+        try
+        {
+            result = (await SessionResultWaiter.WaitAsync(
+                RunPaths.StreamFile(job.SessionDirectory), agent.ProcessId, agent.StartedAt, processManager,
+                onOutput: null, budget.Token)).Result;
+        }
+        catch (OperationCanceledException) when (!linked.IsCancellationRequested)
+        {
+            TerminateAgent(job.PlanId, agent);
+            timedOut = true;
+            logger.LogWarning(
+                "Plan {PlanId}: the discovery session exceeded {Timeout} and was terminated", job.PlanId, _options.PlanRefinementTimeout);
+        }
+        catch (OperationCanceledException) when (planEnded.IsCancellationRequested && !stopping.IsCancellationRequested)
+        {
+            // The plan was cancelled, or its idea stopped being Captured: the session is stopped and nothing is copied.
+            TerminateAgent(job.PlanId, agent);
+            await RecordDiscoveryEndAsync(job.PlanId, job.SessionId, RefinementFailureReason.Cancelled, null, null, CancellationToken.None);
+            return;
+        }
+        catch (OperationCanceledException)
+        {
+            // The daemon is stopping: the session is detached and would outlive it, so it is stopped and its outcome
+            // recorded with a token of its own. If that does not land, the next start records it.
+            TerminateAgent(job.PlanId, agent);
+            try
+            {
+                using CancellationTokenSource shutdown = new(ShutdownRecordTimeout);
+                await RecordDiscoveryEndAsync(job.PlanId, job.SessionId, RefinementFailureReason.DaemonRestarted, null, null, shutdown.Token);
+            }
+            catch (Exception recording)
+            {
+                logger.LogWarning(recording, "Plan {PlanId}: could not record the discovery outcome during shutdown; the next start does", job.PlanId);
+            }
+
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Plan {PlanId}: the discovery session (pid {ProcessId}) could not be seen through to an outcome", job.PlanId, agent.ProcessId);
+            TerminateAgent(job.PlanId, agent);
+            await RecordDiscoveryEndAsync(job.PlanId, job.SessionId, RefinementFailureReason.SessionError, null, null, CancellationToken.None);
+            return;
+        }
+
+        RefinementFailureReason failure = RefinementFailureReason.Unknown;
+        string? copied = null;
+        if (timedOut)
+        {
+            failure = RefinementFailureReason.TimedOut;
+        }
+        else if (result is null)
+        {
+            failure = RefinementFailureReason.NoResult;
+        }
+        else if (result.IsError)
+        {
+            failure = RefinementFailureReason.SessionError;
+        }
+        else
+        {
+            DiscoveryReading reading = await DiscoveryReport.ReadFileAsync(job.ReportPath, CancellationToken.None);
+            if (reading.Missing)
+            {
+                failure = RefinementFailureReason.NoReport;
+            }
+            else if (!reading.Readable)
+            {
+                failure = RefinementFailureReason.UnreadableReport;
+            }
+            else
+            {
+                (copied, failure) = await CopyReportAsync(job, CancellationToken.None);
+            }
+        }
+
+        await RecordDiscoveryEndAsync(
+            job.PlanId, job.SessionId, failure, result?.ToPlanTokensRecorded(job.PlanId, DateTimeOffset.UtcNow, job.Model), copied,
+            CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Copies a readable report into the idea's workspace at the path the idea has now, which a revised note may have moved
+    /// since dispatch. Done by the daemon, and only for a readable report, so an unattended session never writes into the
+    /// workspace where a person's journal can hold rulings. Nothing is copied for a plan that ended while the session ran, and
+    /// the workspace is never created: a copy that cannot land leaves the report in the session directory. Returns the file
+    /// written, or the closed reason it was not.
+    /// </summary>
+    private async Task<(string? Copied, RefinementFailureReason Failure)> CopyReportAsync(DiscoveryJob job, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IQuerySession query = store.QuerySession();
+            PlanDetails? plan = await query.LoadAsync<PlanDetails>(job.PlanId, cancellationToken);
+            if (plan is not { IsLive: true } || plan.Discovery?.RunningSessionId != job.SessionId)
+            {
+                return (null, RefinementFailureReason.Unknown);
+            }
+
+            IdeaAggregate? idea = await query.Events.AggregateStreamAsync<IdeaAggregate>(job.IdeaId, token: cancellationToken);
+            string? workspace = idea is null
+                ? null
+                : DiscoveryWorkspace.DirectoryOf(idea);
+            if (idea is null || workspace is null || !Directory.Exists(workspace))
+            {
+                logger.LogWarning("Plan {PlanId}: the idea's workspace is not there, so the report stays at {Report}", job.PlanId, job.ReportPath);
+                return (null, RefinementFailureReason.ReportNotCopied);
+            }
+
+            string destination = Path.Combine(workspace, DiscoveryWorkspace.ReportFileName(job.PlanId));
+            File.Copy(job.ReportPath, destination, overwrite: true);
+            return (destination, RefinementFailureReason.Unknown);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(exception, "Plan {PlanId}: the report could not be copied into the idea's workspace; it stays at {Report}", job.PlanId, job.ReportPath);
+            return (null, RefinementFailureReason.ReportNotCopied);
+        }
+    }
+
+    /// <summary>
+    /// Records how a discovery session ended on the plan's stream: its tokens, under the model it ran on, and the park. A readable
+    /// report that was copied parks the plan at the gate; any failure parks it as session failed with the closed reason. A plan that
+    /// ended while the session ran records the spend and nothing else, and a copy made for it is removed again, so a cancelled
+    /// plan leaves nothing in the workspace. A lost race with a person's command reloads the stream and decides again.
+    /// </summary>
+    private async Task RecordDiscoveryEndAsync(
+        Guid planId, Guid sessionId, RefinementFailureReason failure, PlanTokensRecorded? tokens, string? copied,
+        CancellationToken cancellationToken)
+    {
+        for (int attempt = 1; attempt <= RecordAttempts; attempt++)
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            StreamState? fence = await session.Events.FetchStreamStateAsync(planId, cancellationToken);
+            PlanAggregate? plan = fence is null
+                ? null
+                : await session.Events.AggregateStreamAsync<PlanAggregate>(planId, version: fence.Version, token: cancellationToken);
+            if (fence is null || plan is null)
+            {
+                return;
+            }
+
+            List<object> events = [];
+            if (tokens is not null)
+            {
+                events.Add(tokens);
+            }
+
+            bool stillTheSession = plan.IsLive && plan.Discovery?.RunningSessionId == sessionId;
+            if (stillTheSession && failure != RefinementFailureReason.Cancelled)
+            {
+                events.Add(PlanDecider.ParkDiscovery(
+                    plan,
+                    failure.IsFailure
+                        ? PlanParkReason.SessionFailed
+                        : PlanParkReason.Gate,
+                    sessionId, failure, now));
+            }
+            else if (copied is not null)
+            {
+                TryDelete(copied);
+            }
+
+            if (events.Count == 0)
+            {
+                return;
+            }
+
+            session.Events.Append(planId, expectedVersion: fence.Version + events.Count, events.ToArray());
+            try
+            {
+                await session.SaveChangesAsync(cancellationToken);
+                return;
+            }
+            catch (EventStreamUnexpectedMaxEventIdException exception) when (attempt < RecordAttempts)
+            {
+                logger.LogDebug(exception, "Plan {PlanId}: its stream moved while a discovery outcome was recorded; retrying", planId);
+            }
+        }
+    }
+
+    private async Task RecordDiscoveryEndQuietlyAsync(
+        Guid planId, Guid sessionId, RefinementFailureReason failure, PlanTokensRecorded? tokens, string? copied,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await RecordDiscoveryEndAsync(planId, sessionId, failure, tokens, copied, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(exception, "Could not record the discovery outcome for plan {PlanId}", planId);
+        }
+    }
+
+    private void TryDelete(string file)
+    {
+        try
+        {
+            File.Delete(file);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(exception, "Could not remove {File}, a report copied for a plan that had already ended", file);
+        }
+    }
+
+    /// <summary>
+    /// Writes the session's pid and start time beside its report, so the next start can stop a session a crashed daemon left
+    /// running. It takes no <see cref="CancellationToken"/> on purpose, for the reason the refinement session's does: the session
+    /// is already running and the file is a few bytes.
+    /// </summary>
+    private async Task RecordDiscoveryProcessIdentityAsync(DiscoveryJob job, SpawnedAgent agent)
+    {
+        try
+        {
+            string file = RunPaths.DiscoveryProcessFile(job.SessionId);
+            Directory.CreateDirectory(Path.GetDirectoryName(file) ?? throw new InvalidOperationException($"No directory for {file}."));
+            await File.WriteAllTextAsync(file, $"{agent.ProcessId}\n{agent.StartedAt.UtcTicks}\n", CancellationToken.None);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(
+                exception, "Plan {PlanId}: could not write the discovery session's process identity; a daemon crash would leave it running",
+                job.PlanId);
+        }
+    }
+
+    private void TerminateAgent(Guid planId, SpawnedAgent agent)
+    {
+        try
+        {
+            processManager.Terminate(agent.ProcessId, agent.StartedAt);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Plan {PlanId}: could not terminate the discovery session (pid {ProcessId})", planId, agent.ProcessId);
+        }
+    }
+
+    /// <summary>
+    /// Discovery sessions this node's own record says are running that nothing in this process is watching, stopped and
+    /// recorded as failed and never dispatched again: the plan parks as session failed, and a person resumes it.
+    /// </summary>
+    private async Task<int> RecoverDiscoveryAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<PlanDetails> running;
+        await using (IQuerySession query = store.QuerySession())
+        {
+            running = [.. (await query.Query<PlanDetails>().ToListAsync(cancellationToken))
+                .Where(plan => plan.IsLive && plan.Discovery is { RunningSessionId: not null })];
+        }
+
+        int recovered = 0;
+        foreach (PlanDetails plan in running)
+        {
+            if (plan.Discovery?.RunningSessionId is not { } sessionId || _sessions.ContainsKey(sessionId))
+            {
+                continue;
+            }
+
+            // A job commits its outcome before it leaves _sessions, so a session absent from it may have ended after the
+            // snapshot above was read. Read the plan again: only one still recorded running is left behind.
+            await using (IQuerySession fresh = store.QuerySession())
+            {
+                PlanDetails? latest = await fresh.LoadAsync<PlanDetails>(plan.Id, cancellationToken);
+                if (latest is not { IsLive: true } || latest.Discovery?.RunningSessionId != sessionId)
+                {
+                    continue;
+                }
+            }
+
+            logger.LogWarning(
+                "Plan {PlanId}: discovery session {SessionId} was dispatched by this node and nothing is watching it; stopping it and recording it as failed",
+                plan.Id, sessionId);
+            await TerminateLeftBehindAsync(RunPaths.DiscoveryProcessFile(sessionId), plan.Id, sessionId, cancellationToken);
+            await RecordDiscoveryEndAsync(plan.Id, sessionId, RefinementFailureReason.DaemonRestarted, null, null, cancellationToken);
+            recovered++;
+        }
+
+        return recovered;
+    }
+
+    /// <summary>
     /// Sessions this node's own record says are running that nothing in this process is watching, recorded as failed and
     /// never dispatched again (a restart's mark, <see cref="Closeout.CloseoutTriageSessions"/>'s rule), and another node's
     /// dispatch that has stood past the foreign-session ceiling, ended on the clock alone. The sweep is serial, so a
@@ -1088,7 +1635,7 @@ public sealed class PlanEngine(
                 logger.LogWarning(
                     "Draft {TaskId}: refinement session {SessionId} was dispatched by this node and nothing is watching it; stopping it and recording it as failed",
                     task.Id, sessionId);
-                await TerminateLeftBehindAsync(task.Id, sessionId, cancellationToken);
+                await TerminateLeftBehindAsync(RunPaths.RefinementProcessFile(sessionId), task.Id, sessionId, cancellationToken);
                 await RecordEndAsync(
                     new SessionEnd(
                         task.Id, sessionId, await PurposeOfAsync(task.Id, sessionId, cancellationToken), model, effort,
@@ -1111,6 +1658,7 @@ public sealed class PlanEngine(
             }
         }
 
+        recovered += await RecoverDiscoveryAsync(cancellationToken);
         return (recovered, expired);
     }
 
@@ -1220,9 +1768,8 @@ public sealed class PlanEngine(
     /// Stops the session a previous daemon process left running, found by the identity file written at spawn. The pid and
     /// start time together are the identity, so a pid the operating system has since reused is not touched.
     /// </summary>
-    private async Task TerminateLeftBehindAsync(Guid taskId, Guid sessionId, CancellationToken cancellationToken)
+    private async Task TerminateLeftBehindAsync(string file, Guid ownerId, Guid sessionId, CancellationToken cancellationToken)
     {
-        string file = RunPaths.RefinementProcessFile(sessionId);
         try
         {
             if (!File.Exists(file))
@@ -1239,7 +1786,7 @@ public sealed class PlanEngine(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(
-                exception, "Draft {TaskId}: could not stop refinement session {SessionId}; recording it as failed anyway", taskId, sessionId);
+                exception, "{OwnerId}: could not stop session {SessionId}; recording it as failed anyway", ownerId, sessionId);
         }
     }
 

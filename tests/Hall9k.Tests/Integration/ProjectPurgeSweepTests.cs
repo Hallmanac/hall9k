@@ -26,7 +26,6 @@ using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx.Events;
 using Marten;
-using Marten.Events;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -326,6 +325,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid[] taskIds = await SeedTasksAsync(store, projectId, ownerId, count: 1, cts.Token);
         Guid runId = await SeedRunAsync(store, taskIds[0], ownerId, cts.Token);
         Guid courierRunId = await SeedCourierRunAsync(store, projectId, DomainId.New(), cts.Token);
+        Guid planId = await SeedPlanAsync(store, projectId, cts.Token);
 
         DateTimeOffset periodStart = Now.AddDays(-1);
         await using (IDocumentSession session = store.LightweightSession())
@@ -333,6 +333,8 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             session.Events.Append(runId, new TokensRecorded(DomainId.New(), 6_000_000, 1_000, null, Now));
             session.Events.Append(
                 taskIds[0], new PublicationTokensRecorded(DomainId.New(), 500, 100, null, Now));
+            // A plan's discovery session, which has no task to carry its spend (it rides the plan's own stream).
+            session.Events.Append(planId, new PlanTokensRecorded(planId, 300, 50, null, Now));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -347,14 +349,14 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
 
         long remainingEventRows = (await query.QueryAsync<long>(
             "select count(*) from mt_events where stream_id = ANY(?)", cts.Token,
-            new Guid[] { runId, taskIds[0], courierRunId })).Single();
+            new Guid[] { runId, taskIds[0], courierRunId, planId })).Single();
         remainingEventRows.Should().Be(0, "every event on the purged project's own streams, spend events included, is gone");
 
         PeriodSpend spend = await PeriodSpend.ReadAsync(query, periodStart, cts.Token);
         spend.TotalInputTokens.Should().Be(
-            6_000_000 + 500 + 400,
-            "the purged project's own in-period spend — the courier's own included, since it rides "
-            + "neither a run's nor a task's stream — must still be counted against the node's budget "
+            6_000_000 + 500 + 400 + 300,
+            "the purged project's own in-period spend (the courier's and a plan's discovery session's included, since they ride "
+            + "neither a run's nor a task's stream), must still be counted against the node's budget "
             + "even though the events that recorded it are gone");
     }
 
