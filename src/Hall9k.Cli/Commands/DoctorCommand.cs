@@ -11,7 +11,8 @@ namespace Hall9k.Cli.Commands;
 /// the container port-binding check
 /// (<see cref="DatabaseDoctor.CheckContainerPortBindingAsync(bool,System.Threading.CancellationToken)"/>,
 /// the same idea's finding 1), and the database doctor check (Decisions Log #58, #73), in that
-/// order, with the release check (<see cref="ReleaseDoctor"/>) after the tool check. The home directory check runs first, and needs nothing else here — it is a single stat
+/// order, with the release check (<see cref="ReleaseDoctor"/>) after the tool check and the courier
+/// check (<see cref="CourierDoctor"/>) after the database check. The home directory check runs first, and needs nothing else here: it is a single stat
 /// against <see cref="Hall9k.Domain.Infrastructure.Storage.PlatformPaths.Home"/>, unconditional on
 /// every invocation, the same as the port-binding check below it. The tool check runs next — and
 /// needs no daemon and no reachable database itself — so it still runs on the database section's
@@ -51,7 +52,7 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
             + "rather than writing Hall9k's default into the platform config file. What --yes does for "
             + "an address that IS configured — starting a stopped hall9k-postgres, creating or updating "
             + "the schema — is unaffected. It also skips the release check, a live GitHub lookup that would only "
-            + "lengthen the window the daemon is down. h9k update --restart and h9k install --restart pass this to "
+            + "lengthen the window the daemon is down, and the courier check, which would too. h9k update --restart and h9k install --restart pass this to "
             + "the doctor step they run between the stop and the start, because a daemon whose database "
             + "is named by HALL9K_CONNECTION_STRING in another shell, or by a .hall9k-connection file "
             + "elsewhere on disk, would otherwise come back up against a guessed default that outranks "
@@ -79,9 +80,17 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
 
         if (await DatabaseDoctor.RunAsync(
             offerFixes: true, settings.Yes, cancellationToken,
-            recordConnectionStringIfUnconfigured: !settings.NoConfigure) is null)
+            recordConnectionStringIfUnconfigured: !settings.NoConfigure) is not { } connectionString)
         {
             return ExitCodes.Error;
+        }
+
+        // Needs the database to have passed above, and is skipped under --no-configure like the
+        // release check: that hand-off runs while the daemon is stopped, and the section's reads
+        // would only lengthen the window the daemon is down.
+        if (!settings.NoConfigure)
+        {
+            await CourierDoctor.RunAsync(connectionString, cancellationToken);
         }
 
         await JiraDoctor.RunAsync(cancellationToken);
