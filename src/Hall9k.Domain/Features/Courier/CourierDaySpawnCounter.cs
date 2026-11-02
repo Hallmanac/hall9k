@@ -29,6 +29,19 @@ public sealed class CourierDaySpawnCounter
         existing is null || existing.Day != today ? 0 : existing.Count;
 
     /// <summary>
+    /// Whether the day cap held a courier back on <paramref name="today"/> (a UTC date): the
+    /// sweep records that the first time it refuses a spawn for the cap, and the record belongs to
+    /// the day it was made on, so yesterday's reads as false. What <c>h9k status</c> and
+    /// <c>h9k doctor</c> report as the day cap being spent until the day rolls.
+    /// </summary>
+    public static bool CapHeldBackOn(CourierDaySpawnCounter? existing, DateOnly today) =>
+        existing is { CapHitLogged: true } && existing.Day == today;
+
+    /// <summary>The instant the UTC day containing <paramref name="today"/> ends and the counter rolls over.</summary>
+    public static DateTimeOffset RollsOverAt(DateOnly today) =>
+        new(today.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+
+    /// <summary>
     /// The counter after one more spawn is recorded today, rolling over first exactly like
     /// <see cref="CountFor"/> does — the two must agree, since the gate reads one and the spawn
     /// path writes the other against the identical "today" instant.

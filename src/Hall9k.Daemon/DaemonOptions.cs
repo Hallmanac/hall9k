@@ -364,6 +364,18 @@ public sealed class DaemonOptions
     public int CourierDaySpawnCap { get; set; } = 500;
 
     /// <summary>
+    /// The longest the wait between couriers grows to while a project's couriers keep failing.
+    /// After n failures in a row the next courier waits <c>min(base x 2^(n-1), this)</c>, where
+    /// base is the project's courier max wait but never less than sixty seconds, so at the defaults
+    /// the waits run one, two, four, eight and sixteen minutes and then thirty. A project that
+    /// never delivers therefore spends about fifty couriers a day rather than the whole
+    /// <see cref="CourierDaySpawnCap"/>, which is left as the last-resort guard behind the backoff.
+    /// Never less than the base, whatever it is set to. Set by environment or config file only,
+    /// with no <c>h9k config set</c> flag, like <see cref="CourierDaySpawnCap"/>.
+    /// </summary>
+    public TimeSpan CourierFailureBackoffCeiling { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
     /// The wall-clock ceiling on one courier session (idea 89471598, piece 3) — generous next to
     /// what the job actually is (read a small prompt, call SendMessage once, report back), the
     /// same "bounded by construction" reasoning <see cref="StackAssessmentTimeout"/> gives its own

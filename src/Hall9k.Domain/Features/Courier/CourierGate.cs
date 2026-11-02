@@ -14,8 +14,9 @@ public static class CourierGate
         bool orchestratorLive,
         bool courierAlreadyRunning,
         bool manualDrainLeaseHeld,
-        bool hasUrgentItem,
-        bool lastCourierFailed,
+        long? newestUrgentSequence,
+        CourierFailureStreak? streak,
+        DateTimeOffset now,
         TimeSpan? elapsedSinceLastCourier,
         TimeSpan quietFor,
         TimeSpan quietThreshold,
@@ -54,31 +55,34 @@ public static class CourierGate
             return CourierSpawnDecision.DayCapReached;
         }
 
-        // Bypasses the wait outright only while nothing has gone wrong yet: once a delivery for
-        // this project has actually failed, an urgent item is retried on the same batching wait
-        // as an ordinary one rather than every sweep tick with no backoff at all. Without this, a
-        // send that keeps failing (an orchestrator registered under a session name the mesh
-        // cannot resolve, say) respawns as fast as the sweep polls until the per-day cap alone
-        // stops it — burning the whole cap on one broken project in minutes rather than delivering
-        // anything (independent pre-PR review, conformance lens). A fresh urgent item after a
-        // clean delivery, or the project's first one ever, still spawns at once exactly as before.
-        if (hasUrgentItem && !lastCourierFailed)
+        // A failure streak replaces the ordinary batching wait outright, urgent items included
+        // (the two runaways this closes are pinned by CourierGateTests): an urgent item must not
+        // respawn a courier on every sweep tick, and the ordinary quiet-based ramp must not carry
+        // a stuck project down to a zero wait, because that ramp reads the undelivered item's own
+        // age and keeps falling the longer it sits there unchanged. The streak's NextAttemptAt is
+        // the whole answer instead: the last failure's completion plus min(base x 2^(n-1), ceiling).
+        // A streak of zero (a courier the daemon itself ended) holds the same gate for one base
+        // wait, so nothing spawns at once after a shutdown.
+        if (streak is { } held && held.NextAttemptAt > now)
+        {
+            return EarlyAttemptAllowed(held, newestUrgentSequence, elapsedSinceLastCourier, maxWait)
+                ? CourierSpawnDecision.Spawn
+                : CourierSpawnDecision.Waiting;
+        }
+
+        if (streak is { Count: > 0 })
         {
             return CourierSpawnDecision.Spawn;
         }
 
-        // A failed delivery gets a wait floor of its own — maxWait, the same ceiling the ordinary
-        // ramp already tops out at — rather than the ordinary quiet-based ramp, which reads the
-        // undelivered item's own age and keeps ramping down to zero the longer a stuck project's
-        // identical, still-undrained item sits there unchanged. Left on the ordinary ramp, the
-        // urgent-bypass guard above stops the immediate-respawn runaway only until the feed has
-        // been quiet for quietThreshold, and then hands it straight back: elapsedSinceLastCourier
-        // is measured from the failed run's own completion, so once that ramp reaches zero the very
-        // next sweep tick (CourierSweepPollInterval, ten seconds) sees elapsedSinceLastCourier >=
-        // TimeSpan.Zero and spawns again, repeating every tick until the day cap alone stops it —
-        // the identical runaway the guard above was written to close (independent pre-PR review,
-        // cycle 4, adversarial lens).
-        TimeSpan wait = lastCourierFailed ? maxWait : Wait(quietFor, quietThreshold, maxWait);
+        // No streak is running: an urgent item bypasses the wait outright, and anything else waits
+        // out the ordinary ramp.
+        if (newestUrgentSequence is not null)
+        {
+            return CourierSpawnDecision.Spawn;
+        }
+
+        TimeSpan wait = Wait(quietFor, quietThreshold, maxWait);
         if (elapsedSinceLastCourier is null || elapsedSinceLastCourier >= wait)
         {
             return CourierSpawnDecision.Spawn;
@@ -86,6 +90,24 @@ public static class CourierGate
 
         return CourierSpawnDecision.Waiting;
     }
+
+    /// <summary>
+    /// The one early attempt a running streak grants: an urgent item no failed courier of the
+    /// streak has carried (its sequence is above the highest one they carried) may spawn at any
+    /// step of the backoff, once at least the base wait has passed since the last courier
+    /// completed. The attempt does not reset the doubling, and the courier it spawns carries the
+    /// item, so if it fails the item has used its bypass; a burst of urgent items therefore
+    /// spawns at most one courier per base interval.
+    /// </summary>
+    private static bool EarlyAttemptAllowed(
+        CourierFailureStreak streak,
+        long? newestUrgentSequence,
+        TimeSpan? elapsedSinceLastCourier,
+        TimeSpan maxWait) =>
+        streak.Count > 0
+        && newestUrgentSequence is { } urgent
+        && urgent > streak.HighestCarriedSequence
+        && (elapsedSinceLastCourier is null || elapsedSinceLastCourier >= CourierBackoffWaits.BaseFor(maxWait));
 
     /// <summary>
     /// How long the next courier for this project must wait since the last one, given how

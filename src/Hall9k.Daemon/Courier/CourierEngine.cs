@@ -19,6 +19,19 @@ namespace Hall9k.Daemon.Courier;
 /// <summary>One sweep's tally, for the loop's own log line.</summary>
 public sealed record CourierSweepResult(int Delivered, int Failed, int NoAdapter, int DayCapHits);
 
+/// <summary>How a courier run ended, as far as its failure streak is concerned; never persisted.</summary>
+internal enum CourierEnding
+{
+    /// <summary>The send landed: the streak resets.</summary>
+    Delivered,
+
+    /// <summary>The session failed, timed out, or hit a daemon error: the streak grows by one.</summary>
+    Failed,
+
+    /// <summary>The daemon itself ended the run (stopped at shutdown, or adopted as stranded after a crash): says nothing about delivery, so the streak is neither grown nor reset.</summary>
+    EndedByDaemon,
+}
+
 /// <summary>
 /// The feed courier's own spawn engine (idea 89471598, piece 3): every project this node has ever
 /// registered an orchestrator window against, checked once a tick against the four conditions
@@ -48,6 +61,15 @@ public sealed class CourierEngine(
     /// announced again rather than staying silent for good.
     /// </summary>
     private readonly ConcurrentDictionary<Guid, byte> _reportedNoAdapter = new();
+
+    /// <summary>
+    /// Projects this engine has already pulled a failure streak's next attempt in for. The engine
+    /// lives as long as the daemon does, so a project absent from this set is one the sweep has not
+    /// yet ticked since the daemon started: <see cref="CourierFailureStreak.PulledIn"/> runs on that
+    /// first tick only, so a restart that fixed the cause is confirmed within about a minute while
+    /// a crash loop still gets at most one courier per restart.
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, byte> _pulledInAfterStart = new();
 
     public async Task<CourierSweepResult> SweepOnceAsync(CancellationToken cancellationToken)
     {
@@ -154,6 +176,20 @@ public sealed class CourierEngine(
             return CourierTickOutcome.NotThisTick;
         }
 
+        CourierBackoffWaits waits = CourierBackoffWaits.For(
+            project.CourierMaxWaitSeconds, _options.CourierFailureBackoffCeiling);
+
+        CourierFailureStreak? streak = await session.LoadAsync<CourierFailureStreak>(project.Id, cancellationToken);
+        if (CourierFailureStreak.WasResetByRegistration(streak, presence.LaunchedAt))
+        {
+            // A window that registered after the streak's last failure has a delivery address the
+            // failed couriers never tried: the streak says nothing about it. An unchanged same-pid
+            // register appends no launch at all, so it never lands here.
+            session.Delete<CourierFailureStreak>(project.Id);
+            await session.SaveChangesAsync(cancellationToken);
+            streak = null;
+        }
+
         CourierRunDetails? lastRun = await session.Query<CourierRunDetails>()
             .Where(run => run.ProjectId == project.Id)
             .OrderByDescending(run => run.DispatchedAt)
@@ -175,19 +211,21 @@ public sealed class CourierEngine(
                     + "failed so future couriers for this project are not blocked",
                     project.Name, running.DispatchedAt, _options.CourierTimeout);
                 await RecordOutcomeAsync(
-                    store, project.Id, running.Id, AgentModel.Unknown, delivered: false,
+                    store, project.Id, running.Id, AgentModel.Unknown, CourierEnding.EndedByDaemon,
                     "The daemon that dispatched this courier never recorded how it ended (a stop, a "
                     + "crash, or an unclean shutdown); marked failed after it stood past its own "
                     + "timeout so future couriers for this project are not blocked.",
-                    drainableThroughSequence: 0, result: null, now, cancellationToken);
+                    drainableThroughSequence: 0, result: null, now, waits, failureReason: null, cancellationToken);
+                streak = await session.LoadAsync<CourierFailureStreak>(project.Id, cancellationToken);
 
                 // running is the same object lastRun points at, and RecordOutcomeAsync just wrote
-                // this completion to the store — mutated here so the elapsedSinceLastCourier and
-                // lastCourierFailed reads below see it too, rather than the stale CompletedAt:
-                // null this local copy was fetched with before the adoption above. Left stale, the
-                // gate reads a null elapsedSinceLastCourier and spawns a fresh courier in this same
-                // tick with none of the lastCourierFailed backoff a normal failure gets
-                // (independent pre-PR review, adversarial lens).
+                // this completion to the store. It is mutated here so the elapsedSinceLastCourier
+                // read below sees it too, rather than the stale CompletedAt: null this local copy
+                // was fetched with before the adoption above; the streak it just wrote is reloaded
+                // above for the same reason. Left stale, the gate reads a null
+                // elapsedSinceLastCourier as "no courier has ended yet", so the early attempt a
+                // streak grants an urgent item could spawn in this same tick without waiting out
+                // the base wait that attempt needs (independent pre-PR review, adversarial lens).
                 running.CompletedAt = now;
                 running.Delivered = false;
             }
@@ -200,6 +238,22 @@ public sealed class CourierEngine(
         if (courierAlreadyRunning)
         {
             return CourierTickOutcome.NotThisTick;
+        }
+
+        // After the adoption above on purpose: a crash loop adopts its stranded courier on every
+        // restart, which rewrites the next attempt to a full step, and this is what brings it
+        // back to one base wait so each restart gets exactly one courier.
+        // The project is marked on its first tick whether or not a streak exists yet: a streak
+        // this very daemon run builds up later must keep the backoff it earned, not be pulled in.
+        if (_pulledInAfterStart.TryAdd(project.Id, 0) && streak is not null)
+        {
+            CourierFailureStreak pulledIn = CourierFailureStreak.PulledIn(streak, now, waits);
+            if (!ReferenceEquals(pulledIn, streak))
+            {
+                session.Store(pulledIn);
+                await session.SaveChangesAsync(cancellationToken);
+                streak = pulledIn;
+            }
         }
 
         OrchestratorFeedDrainLease? lease =
@@ -218,7 +272,6 @@ public sealed class CourierEngine(
         TimeSpan? elapsedSinceLastCourier = lastRun?.CompletedAt is { } lastCompletedAt
             ? now - lastCompletedAt
             : null;
-        bool lastCourierFailed = lastRun is { CompletedAt: not null, Delivered: false };
 
         // Reached only once every cheap, single-document check above has already passed: the full
         // per-project history scan (independent pre-PR review, conformance lens) is the one
@@ -268,8 +321,9 @@ public sealed class CourierEngine(
             orchestratorLive,
             courierAlreadyRunning,
             manualDrainLeaseHeld,
-            hasUrgentItem: deliverableRead.HasUrgentItem,
-            lastCourierFailed,
+            newestUrgentSequence: deliverableItems.Where(item => item.IsUrgent).Select(item => (long?)item.Sequence).Max(),
+            streak,
+            now,
             elapsedSinceLastCourier,
             quietFor,
             _options.CourierQuietThreshold,
@@ -316,7 +370,7 @@ public sealed class CourierEngine(
         _reportedNoAdapter.TryRemove(project.Id, out _);
 
         return await SpawnAsync(
-            session, project, presence, adapter, deliverableRead, now, today, dayCounter, cancellationToken);
+            session, project, presence, adapter, deliverableRead, now, today, dayCounter, waits, cancellationToken);
     }
 
     private async Task<CourierTickOutcome> SpawnAsync(
@@ -328,6 +382,7 @@ public sealed class CourierEngine(
         DateTimeOffset now,
         DateOnly today,
         CourierDaySpawnCounter? dayCounter,
+        CourierBackoffWaits waits,
         CancellationToken cancellationToken)
     {
         IReadOnlyList<string> feedLines =
@@ -352,6 +407,8 @@ public sealed class CourierEngine(
         AgentResult? result = null;
         bool delivered;
         string outcome;
+        string? failureReason = null;
+        bool timedOut = false;
         try
         {
             agent = await executor.SpawnAsync(
@@ -373,7 +430,6 @@ public sealed class CourierEngine(
                 "Project {ProjectName}: feed courier dispatched (pid {ProcessId}, model {Model}, {ItemCount} item(s))",
                 project.Name, agent.ProcessId, model.Value, read.Items.Count);
 
-            bool timedOut = false;
             using CancellationTokenSource budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             budget.CancelAfter(_options.CourierTimeout);
             try
@@ -393,6 +449,9 @@ public sealed class CourierEngine(
             }
 
             (delivered, outcome) = CourierDeliveryOutcome.Parse(result, timedOut, _options.CourierTimeout);
+            failureReason = delivered
+                ? null
+                : CourierDeliveryOutcome.FailureReason(result, timedOut, _options.CourierTimeout);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -406,7 +465,7 @@ public sealed class CourierEngine(
                 TerminateQuietly(project.Name, started);
             }
 
-            await RecordShutdownOutcomeAsync(project.Name, project.Id, runId, model);
+            await RecordShutdownOutcomeAsync(project.Name, project.Id, runId, model, waits);
             throw;
         }
         catch (Exception exception)
@@ -429,11 +488,12 @@ public sealed class CourierEngine(
 
             delivered = false;
             outcome = $"The daemon could not see this courier through to an outcome: {exception.Message}";
+            failureReason = $"daemon error: {exception.Message}";
         }
 
         await RecordOutcomeAsync(
-            store, project.Id, runId, model, delivered, outcome, read.DrainableThroughSequence, result,
-            DateTimeOffset.UtcNow, cancellationToken);
+            store, project.Id, runId, model, delivered ? CourierEnding.Delivered : CourierEnding.Failed, outcome,
+            read.DrainableThroughSequence, result, DateTimeOffset.UtcNow, waits, failureReason, cancellationToken);
 
         logger.LogInformation(
             "Project {ProjectName}: feed courier {Outcome}",
@@ -451,15 +511,16 @@ public sealed class CourierEngine(
     private static readonly TimeSpan ShutdownRecordTimeout = TimeSpan.FromSeconds(5);
 
     private async Task RecordShutdownOutcomeAsync(
-        string projectName, Guid projectId, Guid runId, AgentModel model)
+        string projectName, Guid projectId, Guid runId, AgentModel model, CourierBackoffWaits waits)
     {
         try
         {
             using CancellationTokenSource shutdown = new(ShutdownRecordTimeout);
             await RecordOutcomeAsync(
-                store, projectId, runId, model, delivered: false,
+                store, projectId, runId, model, CourierEnding.EndedByDaemon,
                 "The daemon stopped while this courier was running, and it was stopped with it.",
-                drainableThroughSequence: 0, result: null, DateTimeOffset.UtcNow, shutdown.Token);
+                drainableThroughSequence: 0, result: null, DateTimeOffset.UtcNow, waits, failureReason: null,
+                shutdown.Token);
         }
         catch (Exception exception)
         {
@@ -498,13 +559,17 @@ public sealed class CourierEngine(
         Guid projectId,
         Guid runId,
         AgentModel model,
-        bool delivered,
+        CourierEnding ending,
         string outcome,
         long drainableThroughSequence,
         AgentResult? result,
         DateTimeOffset completedAt,
+        CourierBackoffWaits waits,
+        string? failureReason,
         CancellationToken cancellationToken)
     {
+        bool delivered = ending == CourierEnding.Delivered;
+
         // Recorded before the drain below, deliberately: OrchestratorFeedReader.DrainAsync
         // commits in its own SaveChangesAsync, so the two cannot land in one transaction. A crash
         // between them then leaves the run correctly marked completed either way, never stuck at
@@ -518,6 +583,27 @@ public sealed class CourierEngine(
             if (result is not null)
             {
                 completion.Events.Append(runId, result.ToCourierTokensRecorded(runId, completedAt, model));
+            }
+
+            // In the same session as the completion, so a run never reads as finished with its
+            // streak unwritten, nor the streak as moved for a run that never completed.
+            CourierFailureStreak? existing = await completion.LoadAsync<CourierFailureStreak>(projectId, cancellationToken);
+            switch (ending)
+            {
+                case CourierEnding.Delivered:
+                    if (existing is not null)
+                    {
+                        completion.Delete<CourierFailureStreak>(projectId);
+                    }
+
+                    break;
+                case CourierEnding.Failed:
+                    completion.Store(CourierFailureStreak.AfterFailure(
+                        existing, projectId, completedAt, failureReason, drainableThroughSequence, waits));
+                    break;
+                case CourierEnding.EndedByDaemon:
+                    completion.Store(CourierFailureStreak.AfterDaemonEnding(existing, projectId, completedAt, waits));
+                    break;
             }
 
             await completion.SaveChangesAsync(cancellationToken);

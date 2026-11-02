@@ -534,7 +534,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "actual wait, down to immediate after ten quiet minutes. Default 60. A park, a dispute, "
             + "daemon trouble, a message from a person, or a reply to a review you left dispatches at once "
             + "regardless of this "
-            + "ceiling. 'default' clears the override back to the platform default.")]
+            + "ceiling. While couriers keep failing, this is also the base of the daemon's backoff "
+            + "(the wait doubles with each failure in a row up to a daemon ceiling, 30 minutes by "
+            + "default), but never less than 60 seconds, so 0 does not make a failing project "
+            + "respawn on every sweep tick. 'default' clears the override back to the platform default.")]
         public string? CourierMaxWait { get; init; }
 
         [CommandOption("--take-policy <auto|ask>")]
