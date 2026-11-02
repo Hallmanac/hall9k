@@ -259,6 +259,28 @@ public sealed class CitedIssuesTests : IDisposable
     }
 
     [Fact]
+    public void A_markdown_link_to_a_pull_request_in_another_repository_is_not_read_as_a_bare_citation()
+    {
+        IReadOnlyList<CitedIssue> cited = CitedIssues.Extract(
+            "Bumps lib ([#4821](https://github.com/vendor/lib/pull/4821)) and [#7](<https://github.com/other/repo/pull/7> \"notes\"), closes #9.");
+
+        cited.Should().Equal(new CitedIssue(null, 9));
+    }
+
+    [Fact]
+    public async Task A_description_given_directly_is_scanned_whole_even_when_it_carries_a_framing_sentence_of_its_own()
+    {
+        List<string> commands = [];
+        ProcessRunner runner = Runner(commands, number => Json(number, "T", "open", "Fine."));
+
+        await CitedIssues.EnsureDescriptionWrittenAsync(
+            runner, Reference, "Title: Limit\n\nCloses #88.", "/repo", _runDirectory, CitedIssues.ReadBudget,
+            NullLogger.Instance, CancellationToken.None);
+
+        File.ReadAllText(RunPaths.CitedIssuesFile(_runDirectory)).Should().Contain("## acme/web#88 (open)");
+    }
+
+    [Fact]
     public async Task Only_the_pull_requests_own_quoted_description_is_scanned_not_a_linked_items_body_or_the_operators_context()
     {
         List<string> commands = [];

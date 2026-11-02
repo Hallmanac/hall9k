@@ -1280,8 +1280,9 @@ public sealed class RunLauncher(
                 : null;
             // The session cannot run gh, so what it learns of the pull request's description, and of the
             // issues that description cites, is what the daemon puts in front of it here.
-            await CitedIssues.EnsureWrittenAsync(
-                processRunner, task.ExternalReference, task.AgentContext, project.RepositoryPath, runDirectory,
+            // The title and description are the live ones the prompt quotes, not the task's snapshot of them.
+            await CitedIssues.EnsureDescriptionWrittenAsync(
+                processRunner, task.ExternalReference, $"{facts.Title}\n\n{facts.Body}", project.RepositoryPath, runDirectory,
                 CitedIssues.ReadBudget, logger, cancellationToken);
             string prompt = MentionFollowUpPromptBuilder.Build(
                 facts.Repository, facts.Number, worktree.Path, baseBranch: baseBranch, comment: comment,

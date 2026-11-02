@@ -63,9 +63,10 @@ public static class PrReviewPreflightPromptBuilder
         Line();
         Line(
             "This run's own working directory is NOT a git repository — no worktree has been cut "
-            + "for this pull request yet, and none exists here. Every gh command you run must name "
-            + "the repository explicitly (-R owner/repo) or use the pull request's own full URL; gh "
-            + "cannot infer a repository from this directory's own git remote, because it has none.");
+            + "for this pull request yet, and none exists here. You cannot run gh: it is refused to "
+            + "this session, so a call to it only spends one of the few turns you have. The changed-file "
+            + "list, the hunks and the diff file named below are everything you have to read, and they "
+            + "are enough for the judgment this lap asks for.");
         Line();
         Line($"Pull request: {prReference}");
         if (prUrl is not null)
@@ -87,9 +88,8 @@ public static class PrReviewPreflightPromptBuilder
             + "Every hunk shown below is quoted from the diff for exactly that commit against its "
             + $"base. The complete diff for that same commit, not only the matched surfaces below, is "
             + $"already on disk at {diffFilePath} — read it directly for anything beyond what is "
-            + "quoted below if the changed-file list suggests you should. Do not run 'gh pr diff': it "
-            + "reads whatever this pull request's head is right now, which can be a different commit "
-            + $"than {headRefOid} by the time you run it, and the verdict you give is about "
+            + "quoted below if the changed-file list suggests you should. That file is the only diff you "
+            + "have, and it is the right one: the verdict you give is about "
             + $"{headRefOid} specifically.");
         Line();
         Line(
