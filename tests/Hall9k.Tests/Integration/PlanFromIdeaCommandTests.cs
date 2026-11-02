@@ -1,11 +1,15 @@
 using FluentAssertions;
+using Hall9k.Cli.Commands;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Events;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -13,6 +17,7 @@ using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
 using Marten;
@@ -116,11 +121,12 @@ public sealed class PlanFromIdeaCommandTests : IClassFixture<PostgresFixture>, I
         return capture.Text;
     }
 
-    private async Task<Guid> SeedIdeaAsync(CancellationToken cancellationToken, string text = "Let a plan start from an idea", bool withWorkspace = true)
+    private async Task<Guid> SeedIdeaAsync(
+        CancellationToken cancellationToken, string text = "Let a plan start from an idea", bool withWorkspace = true, Guid? projectId = null)
     {
         Guid ideaId = DomainId.New();
         await using IDocumentSession session = _postgres.Store.LightweightSession();
-        session.Events.StartStream<IdeaAggregate>(ideaId, IdeaDecider.Capture(ideaId, _me.OwnerId, text, _projectId, Now, ProjectHome.None));
+        session.Events.StartStream<IdeaAggregate>(ideaId, IdeaDecider.Capture(ideaId, _me.OwnerId, text, projectId ?? _projectId, Now, ProjectHome.None));
         await session.SaveChangesAsync(cancellationToken);
         if (withWorkspace)
         {
@@ -341,7 +347,7 @@ public sealed class PlanFromIdeaCommandTests : IClassFixture<PostgresFixture>, I
     }
 
     [Fact]
-    public async Task Epic_title_creates_one_plain_epic_holding_every_cut_draft_and_is_refused_for_a_single_task()
+    public async Task Epic_title_in_a_project_of_no_solution_creates_one_plain_epic_holding_every_cut_draft_and_is_refused_for_a_single_task()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid single = await SeedIdeaAsync(cts.Token, "A one task idea");
@@ -362,6 +368,118 @@ public sealed class PlanFromIdeaCommandTests : IClassFixture<PostgresFixture>, I
         EpicAggregate epic = (await query.Events.AggregateStreamAsync<EpicAggregate>(epicId, token: cts.Token))!;
         epic.Title.Should().Be("Sharper discovery");
         (await query.Query<PlanDetails>().Where(plan => plan.Id == severalPlan).SingleAsync(cts.Token)).EpicId.Should().Be(epicId);
+    }
+
+    private const string Root = "SHA256:root";
+
+    /// <summary>
+    /// A storefront solution over four projects: <c>shop-api</c> (the plan's project) and <c>shop-web</c> that this node holds,
+    /// <c>shop-admin</c> that it has not joined, and <c>shop-gone</c> that it holds but has scheduled for purge.
+    /// </summary>
+    private async Task<(Guid Api, Guid Web)> SeedSolutionAsync(bool closedOnWeb, CancellationToken cancellationToken)
+    {
+        await using (IDocumentSession owner = _postgres.Store.LightweightSession())
+        {
+            owner.Events.Append(_me.OwnerId, new OwnerRootClaimed(_me.OwnerId, Root, true, Now));
+            await owner.SaveChangesAsync(cancellationToken);
+        }
+
+        async Task<Guid> RegisterAsync(string name, string key, bool joined)
+        {
+            Guid id = DomainId.New();
+            await using IDocumentSession session = _postgres.Store.LightweightSession();
+            List<object> events =
+            [
+                new ProjectRegistered(id, _me.OwnerId, DomainId.New(), name, "/repos/" + name, new Uri($"https://github.com/acme/{name}.git"), "main", Now),
+                new ProjectKeyAssigned(id, key, Now),
+            ];
+            if (joined)
+            {
+                events.Add(new MemberVouched(id, Root, ProjectMemberRole.Owner, Now));
+            }
+
+            session.Events.StartStream<ProjectAggregate>(id, [.. events]);
+            await session.SaveChangesAsync(cancellationToken);
+            return id;
+        }
+
+        Guid api = await RegisterAsync("shop-api", "01JAAAAAAAAAAAAAAAAAAAAAAA", joined: true);
+        Guid web = await RegisterAsync("shop-web", "01JBBBBBBBBBBBBBBBBBBBBBBB", joined: true);
+        await RegisterAsync("shop-admin", "01JCCCCCCCCCCCCCCCCCCCCCCC", joined: false);
+        Guid gone = await RegisterAsync("shop-gone", "01JDDDDDDDDDDDDDDDDDDDDDDD", joined: true);
+        await using IDocumentSession patch = _postgres.Store.LightweightSession();
+        ProjectDetails[] projects = [.. (await patch.Query<ProjectDetails>().ToListAsync(cancellationToken)).Where(project => project.Name.StartsWith("shop-"))];
+        ProjectDetails apiDetails = projects.Single(project => project.Id == api);
+        apiDetails.RepositoryPath = _checkout;
+        apiDetails.SkipPermissions = true;
+        apiDetails.BranchNameTemplate = BranchNameTemplate.Default;
+        patch.Store(apiDetails);
+        ProjectDetails goneDetails = projects.Single(project => project.Id == gone);
+        goneDetails.PurgeAt = Now.AddDays(2);
+        patch.Store(goneDetails);
+        await patch.SaveChangesAsync(cancellationToken);
+
+        SolutionMembership storefront = SolutionDecider.Create(
+            SolutionDecider.NewKey(), "storefront", [.. projects.Select(SolutionDecider.MemberOf)]);
+        await using IDocumentSession write = _postgres.Store.LightweightSession();
+        await SolutionWriter.AppendAsync(write, [.. projects.Select(project => new SolutionWrite(project, storefront))], cancellationToken);
+        if (closedOnWeb)
+        {
+            // A separate, later write: one AppendAsync stamps every project with the same instant, and the registry
+            // would then pick between the open and the closed copy by whichever it meets first.
+            await using IDocumentSession close = _postgres.Store.LightweightSession();
+            ProjectDetails webDetails = await close.LoadAsync<ProjectDetails>(web, cancellationToken)
+                ?? throw new InvalidOperationException("The seeded shop-web project is missing.");
+            await SolutionWriter.AppendAsync(
+                close, [new SolutionWrite(webDetails, SolutionDecider.Close(storefront, "retired"))], cancellationToken);
+        }
+
+        return (api, web);
+    }
+
+    private async Task<IReadOnlyList<EpicDetails>> EpicsAsync(CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        return await query.Query<EpicDetails>().ToListAsync(cancellationToken);
+    }
+
+    [Fact]
+    public async Task Epic_title_in_a_project_of_an_open_solution_creates_a_solution_epic_with_a_copy_in_every_held_member_and_the_drafts_in_this_projects_copy()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (Guid api, Guid web) = await SeedSolutionAsync(closedOnWeb: false, cts.Token);
+        Guid ideaId = await SeedIdeaAsync(cts.Token, projectId: api);
+        (Guid planId, _) = await PlanAtGateAsync(ideaId, PursueReport, cts.Token);
+
+        string output = await CaptureAsync(() => RunCliAsync(cts.Token, "plan", "pursue", planId.ToString(), "--epic-title", "Cart rework"));
+
+        IReadOnlyList<EpicDetails> epics = await EpicsAsync(cts.Token);
+        epics.Select(epic => epic.ProjectId).Should().BeEquivalentTo([api, web], "one copy per held member that is not scheduled for purge");
+        string key = epics.Select(epic => epic.SolutionEpicKey).Distinct().Should().ContainSingle().Subject!;
+        epics.Select(epic => epic.Title).Should().OnlyContain(title => title == "Cart rework");
+        EpicDetails own = epics.Single(epic => epic.ProjectId == api);
+        IReadOnlyList<TaskDetails> drafts = await DraftsOfAsync(ideaId, cts.Token);
+        drafts.Should().HaveCount(2).And.OnlyContain(draft => draft.EpicId == own.Id && draft.ProjectId == api);
+        (await OnlyPlanAsync(cts.Token)).EpicId.Should().Be(own.Id);
+        string reference = EpicIdResolver.ReferenceOf(own.Id, key);
+        output.Should().Contain("solution epic " + reference).And.Contain(key).And.Contain("shop-api").And.Contain("shop-web")
+            .And.Contain("No copy in shop-gone").And.Contain("No copy in shop-admin");
+    }
+
+    [Fact]
+    public async Task Epic_title_in_a_solution_the_project_has_not_caught_up_with_is_refused_with_nothing_written_and_the_plan_at_the_gate()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (Guid api, _) = await SeedSolutionAsync(closedOnWeb: true, cts.Token);
+        Guid ideaId = await SeedIdeaAsync(cts.Token, projectId: api);
+        (Guid planId, _) = await PlanAtGateAsync(ideaId, PursueReport, cts.Token);
+
+        (await RunCliAsync(cts.Token, "plan", "pursue", planId.ToString(), "--epic-title", "Cart rework"))
+            .Should().BeOfType<DomainConflictException>().Which.Message.Should().Contain("is closed");
+
+        (await EpicsAsync(cts.Token)).Should().BeEmpty("a refused pursue leaves no copy in any member project");
+        (await DraftsOfAsync(ideaId, cts.Token)).Should().BeEmpty();
+        (await OnlyPlanAsync(cts.Token)).AtGate.Should().BeTrue();
     }
 
     [Fact]
