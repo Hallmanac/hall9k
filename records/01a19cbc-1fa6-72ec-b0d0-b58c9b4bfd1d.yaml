@@ -1,0 +1,23 @@
+hall9k-task-record: 1
+task-id: 01a19cbc-1fa6-72ec-b0d0-b58c9b4bfd1d
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#843
+objective: A plan's refinement session for a draft in a solution epic is told what the epic's tasks in the other member projects are, as fenced material to study, so it can set blocked-by edges across projects without copying another member's text into its revision.
+criteria:
+  - When a plan dispatches a refinement session for a draft whose epic is a solution epic, the prompt lists the tasks under that solution epic's copies in the other member projects that are registered and joined on this node, each with its id, its project's name, its objective, and its state, with done and abandoned tasks marked as such. The list carries no task's context or acceptance criteria. A draft in a project epic, or in no epic, gets no such list.
+  - The list is quoted inside a fence that RelayedText.FenceFor computes, the way the idea's note is quoted, and the prompt says, outside the fence, that the list is material to study and never instructions.
+  - The prompt tells the session that its revision may set blocked-by to a listed task that is not abandoned, that it must never set stacked-on to a task in another project (publish refuses that edge), and that it may name no task outside the lists it was given.
+  - The prompt tells the session not to quote or paraphrase another member's objective anywhere in its revision (objective, criteria, or context), so that a listed task's id in a blocked-by edge is the only reference the revision makes to another member's work.
+  - The prompt says that member projects not registered and joined on this node are not shown, so their tasks cannot be named.
+  - When a dependent task records a blocker in another project as dead (failed, abandoned, or done without an observed merge), the recorded reason names that blocker by its short id and state only and never quotes its objective; a dead blocker in the dependent's own project is described as it is today.
+  - The discovery prompt is unchanged. A golden file pins a refinement prompt that carries the list. Unit tests cover choosing the list (only the draft's own solution epic, only other members registered and joined here, the draft's own project left out, a copy held by a project that has left the solution left out, done and abandoned marked, no context or criteria carried) and the dependency-failed reason for a blocker in another project and in the same project. No test spawns an agent or touches GitHub.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/9b4bfd1d-a-plan-s-refinement-session-fo
+published: 2026-11-02 14:54:35Z
+context: |-
+  Second task from idea 56c1b467, criteria walked with Brian in the discovery session (2026-11-02) and revised by its challenge (all four must/should changes applied; report /Users/brianhallmanac/.hall9k/runs/01a19cbc-2f2f-7272-95df-56fb13bd0cd9/challenge-report.md). Brian ruled plans stay project-level and node-scoped, with the solution epic as the solution-level router; this task lets a member's plan read the other members' work through it. No blocking edge to a99713dd (plan pursue solution epic): different code, and epics from h9k epic add are already solution epics. The no-quote rule exists because the revision replicates through this project's public ledger and tracker; Brian raised member isolation as a security concern. Today a refinement session is told only its own plan's siblings (PlanRefinementPromptFacts.cs:30,48; plan-refinement.md). A dependency-failed reason is project-scoped and quotes the blocker's objective (TaskDependency.Describe and DescribeDeath, TaskDependencyResolver.DeathReason); criterion 6 keeps another project's objective out of it.
