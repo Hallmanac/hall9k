@@ -209,7 +209,7 @@ public sealed class CourierGateTests
         CourierBackoffWaits waits = CourierBackoffWaits.For(null, TimeSpan.FromMinutes(30));
         CourierFailureStreak before = Streak(6, TimeSpan.FromMinutes(2), carried: 50);
         CourierFailureStreak after = CourierFailureStreak.AfterFailure(
-            before, ProjectId, Now, "not reachable", carriedThroughSequence: 51, waits);
+            before, ProjectId, Now, Now.AddSeconds(-30), "not reachable", carriedThroughSequence: 51, waits);
 
         after.Count.Should().Be(7, "the doubling is not reset, only the next step up taken");
         Decide(

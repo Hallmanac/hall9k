@@ -33,6 +33,15 @@ public sealed class CourierFailureStreak
     /// <summary>When the most recent failure of this streak completed.</summary>
     public DateTimeOffset LastFailureAt { get; set; }
 
+    /// <summary>
+    /// The launch time of the window registration the courier behind the most recent failure took
+    /// its delivery address from, read off the same presence snapshot that gave it the address
+    /// (its dispatch time stands in when that snapshot carried none). A registration launched later
+    /// than this is an address that courier never tried. Null on a streak stored before this was
+    /// tracked, which then falls back to <see cref="LastFailureAt"/>.
+    /// </summary>
+    public DateTimeOffset? LastAddressedLaunchAt { get; set; }
+
     /// <summary>Why the most recent failure failed, one line, already truncated for display.</summary>
     public string LastFailureReason { get; set; } = string.Empty;
 
@@ -47,22 +56,41 @@ public sealed class CourierFailureStreak
 
     /// <summary>
     /// Whether a streak is running as far as <paramref name="launchedAt"/>, the launch time of the
-    /// project's registered orchestrator window, can tell. A registration newer than the last
-    /// failure resets the streak, because the delivery address has changed since; an unchanged
-    /// same-process register appends no launch, so it never lands here as newer.
+    /// project's registered orchestrator window, can tell. A registration newer than the one the
+    /// last failed courier addressed resets the streak, because the delivery address has changed
+    /// since that courier read it, even when the courier finished after the window registered; an
+    /// unchanged same-process register appends no launch, so it never lands here as newer.
     /// </summary>
     public static bool IsRunning(CourierFailureStreak? streak, DateTimeOffset? launchedAt) =>
         streak is { Count: > 0 } && !WasResetByRegistration(streak, launchedAt);
 
-    /// <summary>Whether the window registered after this streak's last failure, which resets it.</summary>
+    /// <summary>
+    /// Whether the window registered after the one the last failed courier addressed, which resets
+    /// the streak: that courier addressed the old window, so its failure says nothing about the new one.
+    /// </summary>
     public static bool WasResetByRegistration(CourierFailureStreak? streak, DateTimeOffset? launchedAt) =>
-        streak is { Count: > 0 } && launchedAt is { } launched && launched > streak.LastFailureAt;
+        streak is { Count: > 0 } && launchedAt is { } launched && launched > (streak.LastAddressedLaunchAt ?? streak.LastFailureAt);
+
+    /// <summary>
+    /// What is left of a streak a registration reset (<see cref="WasResetByRegistration"/>), given
+    /// when the project's most recent courier ended. Nothing, when that ending was the streak's own
+    /// last failure: the new address gets tried without the old wait. A zero-count hold, when a
+    /// courier the daemon ended came after it: the failures go, but that ending still holds the next
+    /// spawn off for one base wait from its own completion, exactly as it would had the window
+    /// registered before it was recorded.
+    /// </summary>
+    public static CourierFailureStreak? AfterRegistrationReset(
+        CourierFailureStreak existing, DateTimeOffset? lastEndedAt, CourierBackoffWaits waits) =>
+        lastEndedAt is { } ended && ended > existing.LastFailureAt
+            ? AfterDaemonEnding(null, existing.Id, ended, waits)
+            : null;
 
     /// <summary>The streak after one more failed courier completed at <paramref name="completedAt"/>.</summary>
     public static CourierFailureStreak AfterFailure(
         CourierFailureStreak? existing,
         Guid projectId,
         DateTimeOffset completedAt,
+        DateTimeOffset addressedLaunchAt,
         string? reason,
         long carriedThroughSequence,
         CourierBackoffWaits waits)
@@ -74,6 +102,7 @@ public sealed class CourierFailureStreak
             Count = count,
             StartedAt = existing is { Count: > 0 } running ? running.StartedAt : completedAt,
             LastFailureAt = completedAt,
+            LastAddressedLaunchAt = addressedLaunchAt,
             LastFailureReason = NormalizeReason(reason),
             HighestCarriedSequence = Math.Max(existing?.HighestCarriedSequence ?? 0, carriedThroughSequence),
             NextAttemptAt = completedAt + waits.Step(count),
@@ -95,6 +124,7 @@ public sealed class CourierFailureStreak
             Count = count,
             StartedAt = existing?.StartedAt ?? default,
             LastFailureAt = existing?.LastFailureAt ?? default,
+            LastAddressedLaunchAt = existing?.LastAddressedLaunchAt,
             LastFailureReason = existing?.LastFailureReason ?? string.Empty,
             HighestCarriedSequence = existing?.HighestCarriedSequence ?? 0,
             NextAttemptAt = completedAt + waits.Step(count),
@@ -118,6 +148,7 @@ public sealed class CourierFailureStreak
                 Count = existing.Count,
                 StartedAt = existing.StartedAt,
                 LastFailureAt = existing.LastFailureAt,
+                LastAddressedLaunchAt = existing.LastAddressedLaunchAt,
                 LastFailureReason = existing.LastFailureReason,
                 HighestCarriedSequence = existing.HighestCarriedSequence,
                 NextAttemptAt = pulledTo,

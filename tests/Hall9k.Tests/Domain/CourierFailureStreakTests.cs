@@ -14,8 +14,8 @@ public sealed class CourierFailureStreakTests
     private static readonly DateTimeOffset T0 = new(2026, 11, 2, 12, 0, 0, TimeSpan.Zero);
     private static readonly CourierBackoffWaits Waits = CourierBackoffWaits.For(null, TimeSpan.FromMinutes(30));
 
-    private static CourierFailureStreak Failed(CourierFailureStreak? before, DateTimeOffset at, string? reason = "down", long carried = 10) =>
-        CourierFailureStreak.AfterFailure(before, ProjectId, at, reason, carried, Waits);
+    private static CourierFailureStreak Failed(CourierFailureStreak? before, DateTimeOffset at, string? reason = "down", long carried = 10, DateTimeOffset? addressedLaunchAt = null) =>
+        CourierFailureStreak.AfterFailure(before, ProjectId, at, addressedLaunchAt ?? at.AddSeconds(-30), reason, carried, Waits);
 
     [Fact]
     public void The_first_failure_starts_a_streak_of_one_that_waits_the_base()
@@ -119,16 +119,59 @@ public sealed class CourierFailureStreakTests
     }
 
     [Fact]
-    public void A_window_launched_after_the_last_failure_resets_the_streak_and_one_launched_before_does_not()
+    public void A_window_launched_after_the_registration_the_last_failed_courier_addressed_resets_the_streak_and_one_launched_before_does_not()
     {
-        CourierFailureStreak streak = Failed(Failed(null, T0), T0.AddMinutes(5));
+        CourierFailureStreak streak = Failed(Failed(null, T0), T0.AddMinutes(5), addressedLaunchAt: T0.AddMinutes(4));
 
         CourierFailureStreak.WasResetByRegistration(streak, T0.AddMinutes(6)).Should().BeTrue();
         CourierFailureStreak.IsRunning(streak, T0.AddMinutes(6)).Should().BeFalse();
-        CourierFailureStreak.WasResetByRegistration(streak, T0.AddMinutes(5)).Should().BeFalse("only newer than the last failure resets");
+        CourierFailureStreak.WasResetByRegistration(streak, T0.AddMinutes(4)).Should().BeFalse("the same registration is the address it tried");
         CourierFailureStreak.WasResetByRegistration(streak, T0.AddMinutes(-30)).Should().BeFalse();
         CourierFailureStreak.IsRunning(streak, T0.AddMinutes(-30)).Should().BeTrue();
         CourierFailureStreak.IsRunning(streak, launchedAt: null).Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_window_that_registered_after_the_courier_read_its_address_resets_the_streak_however_late_it_was_dispatched()
+    {
+        // The courier took the address of the window launched at T0+1m and failed at T0+5m; a
+        // window registering at T0+1m30s, before the courier was even dispatched, is still an
+        // address it never tried.
+        CourierFailureStreak streak = Failed(Failed(null, T0), T0.AddMinutes(5), addressedLaunchAt: T0.AddMinutes(1));
+
+        CourierFailureStreak.WasResetByRegistration(streak, T0.AddMinutes(1).AddSeconds(30)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_streak_stored_without_an_addressed_launch_falls_back_to_its_last_failure()
+    {
+        CourierFailureStreak streak = Failed(null, T0);
+        streak.LastAddressedLaunchAt = null;
+
+        CourierFailureStreak.WasResetByRegistration(streak, T0.AddSeconds(1)).Should().BeTrue();
+        CourierFailureStreak.WasResetByRegistration(streak, T0.AddSeconds(-1)).Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_registration_reset_clears_a_streak_whose_last_ending_was_its_own_failure()
+    {
+        CourierFailureStreak streak = Failed(Failed(null, T0), T0.AddMinutes(5));
+
+        CourierFailureStreak.AfterRegistrationReset(streak, lastEndedAt: T0.AddMinutes(5), Waits).Should().BeNull();
+        CourierFailureStreak.AfterRegistrationReset(streak, lastEndedAt: null, Waits).Should().BeNull();
+    }
+
+    [Fact]
+    public void A_registration_reset_keeps_a_base_hold_for_a_daemon_ending_after_the_last_failure()
+    {
+        CourierFailureStreak streak = Failed(Failed(null, T0), T0.AddMinutes(5));
+        CourierFailureStreak ended = CourierFailureStreak.AfterDaemonEnding(streak, ProjectId, T0.AddMinutes(9), Waits);
+
+        CourierFailureStreak? hold = CourierFailureStreak.AfterRegistrationReset(ended, lastEndedAt: T0.AddMinutes(9), Waits);
+
+        hold.Should().NotBeNull();
+        hold!.Count.Should().Be(0);
+        hold.NextAttemptAt.Should().Be(T0.AddMinutes(10));
     }
 
     [Fact]

@@ -1706,13 +1706,15 @@ aged.
 The streak lives in the daemon's database, one small document per project, so a daemon restart or
 `h9k update --restart` does not lose it and the CLI describes it without needing the daemon's
 options. It resets to zero when a courier delivers, and when an orchestrator registers for the
-project with a launch time newer than the streak's last failure. A register from the same process
+project with a launch time newer than the registration its last failed courier took its address
+from, so a window that registers while a failing courier is still in flight resets it too. A register from the same process
 with the same session name and CLI appends nothing and so resets nothing; one that changes the
 session name or the CLI, a new window, or a `--replace` appends a new launch and does reset it,
 because the address the couriers deliver to has changed. A courier the daemon itself ended, stopped
 at shutdown or adopted as stranded after a crash, neither counts toward the streak nor resets it,
 but it holds the next spawn off for one step from its own completion, so nothing spawns at once
-after a restart. The first sweep tick after the daemon starts then pulls the next attempt in to no
+after a restart. A registration reset clears the failures and keeps that hold at one base wait,
+whether the window registered before the ending was recorded or after it. The first sweep tick after the daemon starts then pulls the next attempt in to no
 later than that tick plus the base wait, leaving the count alone: a restart that fixed the cause is
 confirmed within about a minute, and a crash loop still gets at most one courier per restart.
 
