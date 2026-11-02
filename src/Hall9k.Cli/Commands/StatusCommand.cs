@@ -237,9 +237,10 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         await WriteNonMemberFeedbackAsync(session, everyoneRows, cancellationToken);
         await WriteCooperativeTakeAsync(session, now, cancellationToken);
         await WriteOwnerActAsync(session, now, cancellationToken);
-        await WriteParkedPlansAsync(session, cancellationToken);
 
-        int listed = 0;
+        // A parked plan is something that needs the viewer, so it counts toward `listed`: a pane that printed the park
+        // line must never go on to say nothing needs you.
+        int listed = await WriteParkedPlansAsync(session, cancellationToken);
         listed += Section(rows, AttentionBucket.NeedsYou, "needs-you", "[red bold]Needs you[/]", now);
         listed += Section(rows, AttentionBucket.Stalled, "stalled",
             "[red]Stalled[/] [dim]— live work whose stream has gone silent, or whose process is gone[/]", now);
@@ -1344,11 +1345,12 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// reason from the closed list and the verb that answers it. Plans never leave their node, so these are this node's only.
     /// Reads the plan projection alone; a node that has never started a plan has none.
     /// </summary>
-    private static async Task WriteParkedPlansAsync(IQuerySession session, CancellationToken cancellationToken)
+    private static async Task<int> WriteParkedPlansAsync(IQuerySession session, CancellationToken cancellationToken)
     {
         IReadOnlyList<PlanDetails> plans = [.. (await session.Query<PlanDetails>().ToListAsync(cancellationToken))
             .Where(plan => plan.IsLive && plan.IsParked)
             .OrderBy(plan => plan.StartedAt)];
+        int printed = 0;
         foreach (PlanDetails plan in plans)
         {
             string shortId = TaskListCommand.ShortId(plan.Id);
@@ -1357,8 +1359,11 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 AnsiConsole.MarkupLine(
                     $"[red bold]Needs you[/] plan {shortId} parked on draft {TaskListCommand.ShortId(draft.DraftId)}: "
                     + $"{draft.ParkReason.Description.EscapeMarkup()} — h9k plan show {shortId}, then h9k plan resume {shortId}");
+                printed++;
             }
         }
+
+        return printed;
     }
 
     /// <summary>

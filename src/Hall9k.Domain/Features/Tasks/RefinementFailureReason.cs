@@ -25,6 +25,8 @@ public sealed record RefinementFailureReason
     public static readonly RefinementFailureReason DispatchExpired = new("DispatchExpired", "another node dispatched it and recorded no outcome past the foreign-session ceiling");
     public static readonly RefinementFailureReason Cancelled = new("Cancelled", "the plan was cancelled, so the session was stopped and nothing was applied");
 
+    public static readonly RefinementFailureReason DraftClosed = new("DraftClosed", "the draft was published or abandoned while the session ran, so the session was stopped and nothing was applied");
+
     /// <summary>No failure. Serializes as an empty string.</summary>
     public static readonly RefinementFailureReason Unknown = new(string.Empty, "no failure");
 
@@ -57,6 +59,7 @@ public sealed record RefinementFailureReason
         "DaemonRestarted" => DaemonRestarted,
         "DispatchExpired" => DispatchExpired,
         "Cancelled" => Cancelled,
+        "DraftClosed" => DraftClosed,
         _ => Unknown,
     };
 

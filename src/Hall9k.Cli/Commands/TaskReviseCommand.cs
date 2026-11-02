@@ -390,6 +390,18 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 + "the one running), so its revision is not applied: a revision from a session applies only to the draft it read.");
         }
 
+        // The plan can end, or the draft be closed inside it, while the session ran, and that lands on the plan's stream, which
+        // the fence above does not cover. Read here, as late as the child can, so a cancel that came after the daemon's own
+        // look is still caught; what remains is the span between this read and the append at the end.
+        if (refinementSession is { } holder
+            && !(await session.Query<PlanDetails>().ToListAsync(cancellationToken))
+                .Any(plan => plan.IsLive && plan.Draft(taskId) is { IsClosed: false, RunningSessionId: { } running } && running == holder))
+        {
+            throw new DomainConflictException(
+                $"Refinement session {holder} no longer belongs to a live plan that holds draft {taskId} (the plan was cancelled, or "
+                + "the draft was published or abandoned), so its revision is not applied.");
+        }
+
         Optional<IReadOnlyList<Guid>> dependencies = settings.ClearDependencies
             ? Optional<IReadOnlyList<Guid>>.Of([])
             : blockedBy.Count > 0

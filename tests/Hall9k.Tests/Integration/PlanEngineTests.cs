@@ -1089,6 +1089,39 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
     }
 
     [Fact]
+    public async Task Abandoning_the_draft_a_session_is_refining_stops_it_though_the_plan_has_another_open_draft()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Guid projectId = await SeedProjectAsync(cts.Token);
+        Guid draft = await SeedDraftAsync(projectId, cts.Token);
+        Guid sibling = await SeedDraftAsync(projectId, cts.Token);
+        Guid planId = await StartPlanAsync(projectId, cts.Token, drafts: [draft, sibling]);
+        FakeProcessManager processes = new();
+        FakeCommands commands = NewCommands();
+        PlanEngine engine = NewEngine(new ScriptedRefinement(processes, RevisedReport, Ending.NeverEnds, RevisionFile), processes, commands);
+        await engine.PollOnceAsync(cts.Token);
+        Guid running = (await StreamAsync(draft, cts.Token)).OfType<DraftRefinementDispatched>().Any()
+            ? draft
+            : sibling;
+
+        await using (IDocumentSession byHand = postgres.Store.LightweightSession())
+        {
+            byHand.Events.Append(running, new TaskAbandoned(running, "no longer wanted", Now, _node.OwnerId));
+            await byHand.SaveChangesAsync(cts.Token);
+        }
+
+        await SweepUntilAsync(
+            engine,
+            async () => (await StreamAsync(running, cts.Token)).OfType<DraftRefinementRecorded>().Any(),
+            cts.Token);
+
+        processes.Terminations.Should().ContainSingle("the session is stopped though its plan goes on");
+        commands.Calls.Should().BeEmpty("nothing is applied to a closed draft");
+        (await StreamAsync(running, cts.Token)).OfType<DraftRefinementRecorded>().Single().Failure.Should().Be(RefinementFailureReason.DraftClosed);
+        (await PlanAsync(planId, cts.Token)).IsLive.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task A_session_running_when_the_daemon_restarted_is_recorded_as_failed_stopped_and_never_dispatched_again()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));

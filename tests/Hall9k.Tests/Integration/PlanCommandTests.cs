@@ -100,6 +100,20 @@ public sealed class PlanCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         }
     }
 
+    /// <summary>Starts a plan on the draft and records a refinement session dispatched for it, on both streams as the daemon does.</summary>
+    private async Task<(Guid Session, PlanDetails Plan)> DispatchRefinementAsync(Guid draft, CancellationToken cancellationToken)
+    {
+        (await RunCliAsync(cancellationToken, "plan", "start", draft.ToString())).Should().BeNull();
+        PlanDetails plan = (await PlansAsync(cancellationToken)).Single();
+        Guid session = DomainId.New();
+        await using IDocumentSession dispatch = _postgres.Store.LightweightSession();
+        dispatch.Events.Append(draft, new DraftRefinementDispatched(
+            draft, session, _me.NodeId, Now, AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High, RefinementPurpose.Refine));
+        dispatch.Events.Append(plan.Id, new PlanRefinementDispatched(plan.Id, plan.ProjectId, draft, session, RefinementPurpose.Refine, Now));
+        await dispatch.SaveChangesAsync(cancellationToken);
+        return (session, plan);
+    }
+
     private async Task<Guid> SeedDraftAsync(
         CancellationToken cancellationToken, Guid? projectId = null, string? context = "Pointers.", IReadOnlyList<string>? criteria = null)
     {
@@ -269,6 +283,7 @@ public sealed class PlanCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         string status = await CaptureAsync(() => RunCliAsync(cts.Token, "status"));
         status.Should().Contain("Needs you").And.Contain($"plan {DomainId.Short(plan.Id)} parked on draft {DomainId.Short(draft)}")
             .And.Contain("h9k plan resume");
+        status.Should().NotContain("Nothing needs you", "a parked plan is something that needs the viewer");
 
         string show = await CaptureAsync(() => RunCliAsync(cts.Token, "task", "show", draft.ToString()));
         show.Should().Contain("Plan").And.Contain(DomainId.Short(plan.Id)).And.Contain("parked").And.Contain($"h9k plan show {DomainId.Short(plan.Id)}");
@@ -303,13 +318,7 @@ public sealed class PlanCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid draft = await SeedDraftAsync(cts.Token);
-        Guid session = DomainId.New();
-        await using (IDocumentSession dispatch = _postgres.Store.LightweightSession())
-        {
-            dispatch.Events.Append(draft, new DraftRefinementDispatched(
-                draft, session, _me.NodeId, Now, AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High, RefinementPurpose.Refine));
-            await dispatch.SaveChangesAsync(cts.Token);
-        }
+        (Guid session, _) = await DispatchRefinementAsync(draft, cts.Token);
 
         string file = Path.Combine(_checkout, "refinement-revision.md");
         await File.WriteAllTextAsync(file, "---\nobjective: As the session wrote it\n---\nContext.\n", cts.Token);
@@ -342,6 +351,32 @@ public sealed class PlanCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         TaskDetails final = (await after.LoadAsync<TaskDetails>(draft, cts.Token))!;
         final.Objective.Should().Be("A person's wording", "nothing from the refused apply landed");
         final.RevisedWhileRefinementRan.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task A_revise_run_for_a_refinement_session_is_refused_once_its_plan_was_cancelled()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid draft = await SeedDraftAsync(cts.Token);
+        (Guid session, PlanDetails plan) = await DispatchRefinementAsync(draft, cts.Token);
+        string file = Path.Combine(_checkout, "refinement-revision.md");
+        await File.WriteAllTextAsync(file, "---\nobjective: Written after the plan ended\n---\nContext.\n", cts.Token);
+
+        await using (IDocumentSession cancel = _postgres.Store.LightweightSession())
+        {
+            cancel.Events.Append(plan.Id, new PlanCancelled(plan.Id, plan.ProjectId, "starting over", _me.OwnerId, Now));
+            await cancel.SaveChangesAsync(cts.Token);
+        }
+
+        Exception? refused;
+        using (EnvironmentVariableScope.Set((TaskRevised.RefinementSessionEnvironmentVariable, session.ToString())))
+        {
+            refused = await RunCliAsync(cts.Token, "task", "revise", draft.ToString(), "--file", file);
+        }
+
+        refused.Should().BeOfType<DomainConflictException>().Which.Message.Should().Contain("no longer belongs to a live plan");
+        await using IQuerySession after = _postgres.Store.QuerySession();
+        (await after.LoadAsync<TaskDetails>(draft, cts.Token))!.Objective.Should().NotBe("Written after the plan ended");
     }
 
     [Fact]

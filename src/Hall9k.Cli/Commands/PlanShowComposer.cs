@@ -1,6 +1,5 @@
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Plan;
-using Hall9k.Domain.Features.Plan.Handlers;
 using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -99,7 +98,7 @@ internal static class PlanShowComposer
 
         if (draft.RunningSessionId is { } running)
         {
-            yield return $"      a refinement session is running; its report will be {RunPaths.RefinementReportFile(running)}";
+            yield return $"      a refinement session is running; its report will be {RunPaths.RefinementReportFile(running).EscapeMarkup()}";
         }
         else if (draft.ChallengeRequestedAt is not null)
         {
@@ -108,7 +107,7 @@ internal static class PlanShowComposer
 
         if (draft.LatestSessionId is { } latest)
         {
-            yield return $"      latest report: {ReportFile(draft, latest)}";
+            yield return $"      latest report: {ReportFile(draft, latest).EscapeMarkup()}";
         }
 
         if (draft.IsParked)
@@ -117,7 +116,7 @@ internal static class PlanShowComposer
             yield return $"      [dim]{draft.ParkReason.WayForward}[/]";
             foreach (string where in WhereToRead(plan, draft))
             {
-                yield return $"      [dim]read: {where}[/]";
+                yield return $"      [dim]read: {where.EscapeMarkup()}[/]";
             }
         }
     }

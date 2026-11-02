@@ -147,7 +147,7 @@ public sealed class PlanEngine(
         try
         {
             (int recovered, int expired) = await RecoverAsync(cancellationToken);
-            await StopSessionsOfEndedPlansAsync(cancellationToken);
+            await StopSessionsOfEndedWorkAsync(cancellationToken);
 
             IReadOnlyList<Guid> plans;
             await using (IQuerySession query = store.QuerySession())
@@ -759,9 +759,10 @@ public sealed class PlanEngine(
         }
         catch (OperationCanceledException) when (planEnded.IsCancellationRequested && !stopping.IsCancellationRequested)
         {
-            // The plan was cancelled: the session is stopped and nothing it wrote is applied.
+            // The plan was cancelled, or the draft was closed: the session is stopped and nothing it wrote is applied.
             Terminate(job, agent);
-            await RecordEndAsync(EndOf(job, RefinementOutcome.Unknown, RefinementFailureReason.Cancelled, null), CancellationToken.None);
+            await RecordEndAsync(
+                EndOf(job, RefinementOutcome.Unknown, await WhyStoppedAsync(job, CancellationToken.None), null), CancellationToken.None);
             return;
         }
         catch (OperationCanceledException)
@@ -829,18 +830,24 @@ public sealed class PlanEngine(
     /// Applies the revision a session wrote with the same validation and effects as <c>h9k task revise --file</c>, by
     /// running that command. Applied only to the draft the session read: if anyone changed it since dispatch the revision
     /// is not applied. A revision that names a model is refused, because a refinement sets none and <c>--file</c> would
-    /// otherwise set one. A plan that ended while the session ran applies nothing, however the session ended: the stop a
-    /// cancel sends reaches a job only at the top of a sweep, so the job asks the record itself. Returns the reason nothing
-    /// was applied, or null when it was.
+    /// otherwise set one. A plan that ended, or a draft that was closed, while the session ran applies nothing, however the
+    /// session ended: the stop that follows reaches a job only at the top of a sweep, so the job asks the record itself. The
+    /// child asks it again inside its own fenced append, which is where a cancel that lands after this check is caught.
+    /// Returns the reason nothing was applied, or null when it was.
     /// </summary>
     private async Task<RefinementFailureReason?> ApplyRevisionAsync(RefinementJob job, CancellationToken cancellationToken)
     {
         await using (IQuerySession ended = store.QuerySession())
         {
-            if (await ended.LoadAsync<PlanDetails>(job.PlanId, cancellationToken) is not { IsLive: true })
+            RefinementFailureReason? stopped = await ended.LoadAsync<PlanDetails>(job.PlanId, cancellationToken) is { } plan
+                ? StoppedFor(plan, job.TaskId)
+                : RefinementFailureReason.Cancelled;
+            if (stopped is not null)
             {
-                logger.LogInformation("Plan {PlanId} ended while refinement session {SessionId} ran; its revision is not applied", job.PlanId, job.SessionId);
-                return RefinementFailureReason.Cancelled;
+                logger.LogInformation(
+                    "Draft {TaskId} of plan {PlanId} was closed or its plan ended while refinement session {SessionId} ran ({Reason}); its revision is not applied",
+                    job.TaskId, job.PlanId, job.SessionId, stopped.Value);
+                return stopped;
             }
         }
 
@@ -1115,8 +1122,12 @@ public sealed class PlanEngine(
         return owner?.Draft(draftId)?.Purpose ?? RefinementPurpose.Unknown;
     }
 
-    /// <summary>Stops the session of any plan that has ended while it ran; its job records the cancellation and applies nothing.</summary>
-    private async Task StopSessionsOfEndedPlansAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Stops the session of any plan that has ended while it ran, and of any draft a person published or abandoned while its
+    /// session ran, however many other drafts the plan still holds: a session for work that was walked away from only spends,
+    /// and an entry in <c>_sessions</c> holds every other dispatch on the node back. Its job records why and applies nothing.
+    /// </summary>
+    private async Task StopSessionsOfEndedWorkAsync(CancellationToken cancellationToken)
     {
         if (_sessions.IsEmpty)
         {
@@ -1127,9 +1138,11 @@ public sealed class PlanEngine(
         foreach ((Guid sessionId, RunningSession running) in _sessions)
         {
             PlanDetails? plan = await query.LoadAsync<PlanDetails>(running.PlanId, cancellationToken);
-            if (plan is { IsLive: false })
+            if (plan is not null && StoppedFor(plan, running.DraftId) is { } reason)
             {
-                logger.LogInformation("Plan {PlanId} ended while refinement session {SessionId} ran; stopping it", running.PlanId, sessionId);
+                logger.LogInformation(
+                    "Draft {TaskId} of plan {PlanId} was closed or its plan ended while refinement session {SessionId} ran ({Reason}); stopping it",
+                    running.DraftId, running.PlanId, sessionId, reason.Value);
                 try
                 {
                     running.Cancel.Cancel();
@@ -1140,6 +1153,29 @@ public sealed class PlanEngine(
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Why a session for this draft should no longer run or be applied, or null when it still should: the plan ended
+    /// (<see cref="RefinementFailureReason.Cancelled"/>), or a person published or abandoned the draft inside a plan that
+    /// goes on (<see cref="RefinementFailureReason.DraftClosed"/>).
+    /// </summary>
+    private static RefinementFailureReason? StoppedFor(PlanDetails plan, Guid draftId) =>
+        !plan.IsLive
+            ? RefinementFailureReason.Cancelled
+            : plan.Draft(draftId) is { IsClosed: true }
+                ? RefinementFailureReason.DraftClosed
+                : null;
+
+    /// <summary>The reason to stop a session, read from the record when the stop reached its job, which does not carry it.</summary>
+    private async Task<RefinementFailureReason> WhyStoppedAsync(RefinementJob job, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        PlanDetails? plan = await query.LoadAsync<PlanDetails>(job.PlanId, cancellationToken);
+        return (plan is null
+                ? null
+                : StoppedFor(plan, job.TaskId))
+            ?? RefinementFailureReason.Cancelled;
     }
 
     /// <summary>The commit the checkout is at, read by the daemon rather than asked of the session; null when git cannot answer.</summary>
