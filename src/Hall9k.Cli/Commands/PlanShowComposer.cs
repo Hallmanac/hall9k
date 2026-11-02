@@ -126,22 +126,27 @@ internal static class PlanShowComposer
     private const int IdeaNoteWidth = 100;
 
     /// <summary>
-    /// Discovery's part of a plan started from an idea: whether a session is running and where its report will be, the park (a
-    /// failed session, or the gate), and at the gate what the report in the workspace says: pursue or stop, the objectives it
+    /// Discovery's part of a plan started from an idea: whether a session is running (only for a plan still live; an ended
+    /// plan's session was stopped) and where its report will be, the park (a failed session with the reason it failed for, or the gate), and at the gate what the report in the workspace says: pursue or stop, the objectives it
     /// proposes, its path, and the line that resumes the session. A report that is missing or unreadable is said to be, and its
     /// path and the resume line are still printed.
     /// </summary>
     private static IEnumerable<string> DiscoveryLines(PlanDetails plan, PlanDiscoveryState discovery, DiscoveryShowFacts? facts)
     {
-        if (discovery.RunningSessionId is { } running)
+        if (plan.IsLive && discovery.RunningSessionId is { } running)
         {
             yield return $"  a discovery session is running; its report will be {RunPaths.DiscoveryReportFile(running).EscapeMarkup()}";
         }
 
-        if (discovery.ParkReason.IsParked && plan.Drafts.Count == 0)
+        if (plan.IsLive && discovery.ParkReason.IsParked && plan.Drafts.Count == 0)
         {
             yield return $"  [red]parked:[/] {discovery.ParkReason.Description}";
             yield return $"  [dim]{discovery.ParkReason.WayForward.EscapeMarkup()}[/]";
+            if (discovery.ParkReason == PlanParkReason.SessionFailed && discovery.LatestFailure.IsFailure)
+            {
+                yield return $"  [red]why:[/] {discovery.LatestFailure.Description.EscapeMarkup()}";
+            }
+
             if (discovery.ParkReason == PlanParkReason.SessionFailed && discovery.LatestSessionId is { } failed)
             {
                 yield return $"  [dim]read: {RunPaths.DiscoveryReportFile(failed).EscapeMarkup()} (if the session wrote one), and the daemon log[/]";

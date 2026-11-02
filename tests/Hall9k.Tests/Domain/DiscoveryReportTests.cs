@@ -75,6 +75,18 @@ public sealed class DiscoveryReportTests
     }
 
     [Fact]
+    public void A_marker_shaped_line_of_prose_above_a_blank_line_is_not_part_of_the_closing_block()
+    {
+        string report = "Open questions:\n\n- Task: confirm who owns X\n\nDISCOVERY: stop\n";
+
+        DiscoveryReadout? readout = DiscoveryReport.TryRead(report);
+
+        readout.Should().NotBeNull();
+        readout.Decision.Should().Be(DiscoveryDecision.Stop);
+        readout.Objectives.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task A_file_that_is_missing_is_told_apart_from_one_that_is_not_readable()
     {
         string directory = Directory.CreateTempSubdirectory("h9k-discovery-report-").FullName;

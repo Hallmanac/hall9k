@@ -29,7 +29,8 @@ public sealed record DiscoveryReading(bool Missing, DiscoveryReadout? Readout)
 /// <summary>
 /// Reads the closing block of a plan's discovery report, the way a refinement report's closing line is read: from the end of
 /// the file, forgiving about decoration and strict about meaning. The contract is a block of marker lines at the end, with only
-/// blank lines or a closing code fence after it and the prose above it free: <c>DISCOVERY: pursue</c> and one or more
+/// blank lines or a closing code fence after it and the prose above it free (the block itself holds no blank line, and a blank
+/// line ends it from below): <c>DISCOVERY: pursue</c> and one or more
 /// <c>TASK: &lt;objective&gt;</c> lines, or <c>DISCOVERY: stop</c> and no <c>TASK:</c> line.
 /// <para>
 /// A report is readable only when its closing block holds exactly one <c>DISCOVERY:</c> line naming exactly pursue or stop,
@@ -84,7 +85,14 @@ public static partial class DiscoveryReport
             string line = lines[index].Trim();
             if (line.Length == 0)
             {
-                continue;
+                // Blank lines after the block are skipped; one inside it ends it, so a marker-shaped line of prose above a blank
+                // line is not pulled into the block below it.
+                if (block.Count == 0)
+                {
+                    continue;
+                }
+
+                break;
             }
 
             // A code fence that wraps the closing block is formatting, not prose, so one that ends the file is skipped like a
