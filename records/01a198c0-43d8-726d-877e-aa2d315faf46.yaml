@@ -20,3 +20,7 @@ origin-branch: task/315faf46-every-session-that-runs-under
 published: 2026-11-01 20:26:23Z
 context: |-
   From issue 788. Least privilege: a read-only review should use no credential it does not need. Blocked by the standalone clone task, not stacked: both edit the same list. Write the evaluator and triage diff files the way the pre-flight's pull-request.diff is written in RunLauncher, per session, as AssessmentPath is named, because several sessions can share one run directory. The deny belongs in PrReviewDeniedTools because the human review lap shares ReviewLapDeniedTools and keeps its reads. Out of scope: the shared review-read-scope fragment and its read command, the pre-flight's Do not run sentence, and any change to the human lap. Update the doc comments on BuildForPrReview and PrReviewAllowedTools.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-11-02 02:09:45Z
