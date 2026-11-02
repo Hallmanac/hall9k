@@ -32,10 +32,11 @@ public sealed class InstalledCliTaskCommands(
         Guid planId, Guid sessionId, Guid taskId, string revisionFile, CancellationToken cancellationToken) =>
         RunAsync(
             ["task", "revise", taskId.ToString(), "--file", revisionFile],
-            RunPaths.PlanReviseOutputFile(planId, sessionId), cancellationToken,
+            RunPaths.PlanReviseOutputFile(planId, sessionId),
             // Makes the child apply the revision only to the draft this session read, in one fenced append, and record it
             // as the session's own rather than as a person's revision made while the session ran.
-            (TaskRevised.RefinementSessionEnvironmentVariable, sessionId.ToString()));
+            (TaskRevised.RefinementSessionEnvironmentVariable, sessionId.ToString()),
+            cancellationToken);
 
     public Task<TaskCommandResult> PublishAsync(
         Guid planId, Guid taskId, bool noExistingItem, bool untracked, CancellationToken cancellationToken)
@@ -53,8 +54,8 @@ public sealed class InstalledCliTaskCommands(
 
         // Makes the child refuse a draft a person revised since a session last read it, in the fenced decision that publishes.
         return RunAsync(
-            arguments, RunPaths.PlanPublishOutputFile(planId, taskId), cancellationToken,
-            (TaskPublished.PlanPublishEnvironmentVariable, "1"));
+            arguments, RunPaths.PlanPublishOutputFile(planId, taskId),
+            (TaskPublished.PlanPublishEnvironmentVariable, "1"), cancellationToken);
     }
 
     /// <summary>The executable to run: the installed binary when it is there, else the bare name for <c>PATH</c> to resolve.</summary>
@@ -70,8 +71,8 @@ public sealed class InstalledCliTaskCommands(
     }
 
     private async Task<TaskCommandResult> RunAsync(
-        IReadOnlyList<string> arguments, string outputFile, CancellationToken cancellationToken,
-        (string Name, string Value)? environment = null)
+        IReadOnlyList<string> arguments, string outputFile, (string Name, string Value) environment,
+        CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(outputFile) ?? throw new InvalidOperationException($"No directory for {outputFile}."));
 
@@ -88,7 +89,8 @@ public sealed class InstalledCliTaskCommands(
             start.ArgumentList.Add(argument);
         }
 
-        foreach (string key in start.Environment.Keys.Where(key => key.StartsWith(DispatchedPrefix, StringComparison.OrdinalIgnoreCase)).ToList())
+        List<string> dispatched = [.. start.Environment.Keys.Where(key => key.StartsWith(DispatchedPrefix, StringComparison.OrdinalIgnoreCase))];
+        foreach (string key in dispatched)
         {
             start.Environment.Remove(key);
         }
@@ -96,10 +98,7 @@ public sealed class InstalledCliTaskCommands(
         start.Environment[Hall9kDatabase.EnvironmentVariableName] = connection.ConnectionString;
         start.Environment.Remove(TaskRevised.RefinementSessionEnvironmentVariable);
         start.Environment.Remove(TaskPublished.PlanPublishEnvironmentVariable);
-        if (environment is { } extra)
-        {
-            start.Environment[extra.Name] = extra.Value;
-        }
+        start.Environment[environment.Name] = environment.Value;
 
         await using FileStream output = new(outputFile, FileMode.Create, FileAccess.Write, FileShare.Read);
         await using StreamWriter writer = new(output, new UTF8Encoding(false)) { AutoFlush = true };
