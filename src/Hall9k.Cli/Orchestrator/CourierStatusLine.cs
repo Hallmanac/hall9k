@@ -6,7 +6,7 @@ namespace Hall9k.Cli.Orchestrator;
 /// <summary>
 /// What one project's courier line reads from: the most recent run if it is still in flight, the
 /// last delivery, the failure streak and day-cap documents, and the registered window's launch time
-/// (a window launched after the streak's last failure has reset the streak).
+/// (a window launched after the one the last failed courier addressed has reset the streak).
 /// </summary>
 /// <param name="InFlight">The most recent courier run for this project, when it is still running (<c>CompletedAt</c> null), null otherwise.</param>
 /// <param name="LastDeliveredAt">When a courier for this project last actually delivered, across every run ever recorded, null if none ever has.</param>
