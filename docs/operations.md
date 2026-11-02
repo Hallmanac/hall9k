@@ -1048,7 +1048,7 @@ Which model runs what is explained in [Which model runs what](#which-model-runs-
 | `Hall9k__ModelByRole__Challenge` | blank | The node's model for the draft challenge (`--model-challenge`). Blank does not mean the platform default: a challenge's own floor is `claude-opus-5-5[1m]`, whatever `Hall9k__DefaultModel` says, so it runs on the same model on any node. |
 | `Hall9k__ChallengeTimeout` | `00:30:00` | How long a challenge session gets before the daemon terminates it and records the challenge as failed. |
 | `Hall9k__ChallengePollInterval` | `00:00:30` | How often the daemon looks for challenge requests; the doorbell usually gets there first. |
-| `Hall9k__PlanRefinementTimeout` | `00:30:00` | How long a plan's refinement session (`h9k plan start`) gets before the daemon terminates it, records the failure, and parks the plan. |
+| `Hall9k__PlanRefinementTimeout` | `00:30:00` | How long a plan's refinement session (`h9k plan start`), or its discovery session (`h9k plan start --idea`), gets before the daemon terminates it, records the failure, and parks the plan. |
 | `Hall9k__PlanRoundCap` | `2` | How many challenge rounds a plan runs for one draft, where a round is one challenge of one draft. There is no node, project, or task setting: only `h9k plan resume` after rounds exhausted, or a new plan, grants more. |
 | `Hall9k__PlanCommandTimeout` | `00:05:00` | How long one child `h9k` command a plan runs (the revise that applies a revision, the publish at the plan's end) gets before it is killed and counted as a refusal. |
 | `Hall9k__PlanPollInterval` | `00:00:30` | How often the daemon looks at its plans; the doorbell usually gets there first. |
@@ -1355,7 +1355,9 @@ refinement falls through to the node default and the rule would not hold on a no
 `--model-challenge default` leaves the role on that floor. A challenge holds no run slot: the node runs one at a
 time above its run ceiling, and `ChallengeTimeout` bounds each.
 
-A plan's refinement session (`h9k plan start`) uses the Refinement role as it stands, with no floor of its own: its model
+A plan's discovery session (`h9k plan start --idea`) runs on the same role chain with no setting of its own: `--model-refinement`
+and `--effort-refinement` cover both sessions, and `h9k config show` says so on those rows. A plan's refinement session
+(`h9k plan start`) uses the Refinement role as it stands, with no floor of its own: its model
 is the project's `--model`, then the node's `--model-refinement`, then the node's `--default-model`, and its effort
 follows the same chain through the project's `--effort`, `--effort-refinement`, and the node-wide `--effort`. A draft's
 own model or effort does not move it. On a node whose role values are blank the session therefore runs on whatever the
@@ -1365,7 +1367,8 @@ run or lease to count: the node runs one refinement session at a time on a loop 
 `PlanRefinementTimeout`, so with a challenge at most two such sessions run above the ceiling. While the node's launch
 hold stands, its spend budget is spent, or the project's max parallel tasks is 0, a plan starts no refinement session and
 requests no challenge, and `h9k plan show` says which. The session's tokens are recorded under the model it ran on and
-appear in the spend lines of `h9k status` and `h9k config show`.
+appear in the spend lines of `h9k status` and `h9k config show`; a discovery session's tokens ride its plan's own stream, so like a
+courier's they stay on the node that spent them, and a project purge carries them forward into the spend total.
 
 A plan's refinement session and a draft challenge read the same checkout, the project home's own `dev/`, and the daemon brings
 it up to the remote base branch before a session starts. It does not do that while another session is reading it, because

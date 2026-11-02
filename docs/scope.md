@@ -1503,10 +1503,14 @@ changes the verdict accepts, then publishes the drafts with the behaviour of `h9
 for a person, for a reason from a closed list, when it cannot finish, and `h9k plan resume` or doing the parked draft's
 step by hand answers the park. A plan creates no run, lease, branch, or worktree, and its sessions hold no slot against
 the run ceiling. It needs a project that runs agents with skip-permissions. Works today: one project's drafts per plan,
-starting at refinement or challenge, and cancelling. Designed but not built: starting a plan from an idea with a discovery
-phase and a gate (the next task in the epic), drafting new tasks from inside a plan, adding a draft to a live plan, an
-epic flag on `h9k plan start`, and a settable round cap. Never doing: plan records that travel to other nodes (a plan is
-a fact about one node's daemon), and automatic retry of a failed session.
+starting at refinement or challenge; starting from an idea (`h9k plan start --idea`), where a headless discovery session
+writes a report into the idea's workspace and the plan parks at a gate, `h9k plan pursue` cuts the report's proposed
+tasks as drafts (with `--epic-title` for one plain epic) and `h9k plan stop` ends it as a normal ending; and cancelling.
+Designed but not built: a drafting session (the report proposes objectives and pursue cuts them, so no third session writes
+them), adding a draft to a live plan, carrying an idea's workspace between nodes, a third gate answer for another look (stop,
+then start a new plan), a time limit on the gate, an attestation for ideas that carry a tracker link (they are refused), and
+a settable round cap. Never doing: plan records that travel to other nodes (a plan is a fact about one node's daemon), and
+automatic retry of a failed session.
 
 ### The macOS signal fence
 

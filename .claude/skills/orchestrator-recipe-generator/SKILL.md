@@ -323,7 +323,9 @@ other or from what this skill says next time it runs.
 > standing grants, cutting a task from a clear gap report, and rulings that need a line or two.
 > Work that needs cross-file reading, a test run, a design weighing, or a walk is offered once as a
 > spawned headless session instead of being done here; the operator's answer stands, including a
-> choice to keep it inline. The operator can override any model or effort choice below, at any
+> choice to keep it inline. Unattended discovery of an idea is not one of these: it is a plan
+> (`h9k plan start --idea <idea>`), run by the daemon, and the tier below is for discovery the
+> operator takes part in. The operator can override any model or effort choice below, at any
 > time. This block never names this window's own model or effort: the model comes from
 > `--orchestrator-model`, set outside this recipe, and the effort is whatever the operator chose at
 > launch; neither is written here.
@@ -568,16 +570,20 @@ over a class of decision. Do not create that section pre-emptively in a fresh se
 it is actually needed.
 
 **The registry (`sessions.md`, at the project home's own root).** One row per session this window
-has spawned outside the task lifecycle (design walks, idea discovery):
+has spawned outside the task lifecycle (design walks, and idea discovery with the operator in the terminal):
 when it started, its kind, its subject, its status, the model and effort it ran at, its session id,
 the step-in line that resumes it, and the fresh-start fallback line that opens a fresh session on
 the same subject instead. Liveness comes from `ListAgents`, never from this file. It never holds
 the daemon's own dispatched runs, which `h9k task show` already does.
 
-**Spawning a scoped session.** When work belongs in its own context (an idea walk, a mechanical probe, a deep-reading
-dispute preparation), spawn a lean session instead of doing it here. A draft that needs refining
-is not one of these: run `h9k plan start <draft> [<draft>...]` and let the daemon refine,
-challenge, and publish it (see *Plans* below).
+**Spawning a scoped session.** When work belongs in its own context (an idea walk with the operator, a mechanical probe, a
+deep-reading dispute preparation), spawn a lean session instead of doing it here. Two things are not one of these. A draft
+that needs refining is a plan: run `h9k plan start <draft> [<draft>...]` and let the daemon refine, challenge, and publish it.
+Unattended discovery of an idea is a plan too: run `h9k plan start --idea <idea>` and let the daemon run the discovery session
+(see *Plans* below). The window never spawns a headless discovery session of its own. The launch line below, with
+`recipes/idea-discovery.md` and its tier, is for discovery with the operator in the terminal, where the operator takes part
+in the session and its output is theirs to read as it is written; the window prepares the hand-off journal and gives them the
+line.
 
 1. Write the hand-off first: the subject's own `journal.md` (in the idea's workspace, or the
    task's directory) with what has been said so far and what the session should do. This is the
@@ -884,12 +890,30 @@ own heading, and writes no launch line or model for the work a plan does:
   split ends with a question; the answer is `h9k plan cancel <plan> --reason "<why>"` and a plan on the resulting drafts.
 - **Where it ends.** The plan publishes with `h9k task publish --no-queue`: it assigns and queues nothing, so the go signal
   stays the window's act.
+- **Start from an idea.** Unattended discovery is `h9k plan start --idea <idea>`: no draft ids, `--at`, or attestation with it.
+  It returns at once and the daemon runs one headless discovery session whose report lands in the idea's workspace as
+  `discovery-<plan short id>.md`. Only the idea's assignee (or its creator when nobody holds it) may start one, with no
+  override, and the refusals are the answer: an idea that carries a tracker link is cut by hand (`h9k task add --from-idea`,
+  then `h9k task revise --context` in the person's own words, then `h9k plan start` on that draft); an idea with no workspace on
+  this node is started on the node that captured it. Capturing an idea never starts a plan, because a plan spends tokens.
+- **Answer the gate.** The plan parks with the reason `gate` when the report lands; the feed delivers it at once, carrying ids,
+  the phase, and the reason alone, and `h9k status` lists it under Needs you. The window reads the report (`h9k plan show
+  <plan>` prints its path, whether it says pursue or stop, and the objectives it proposes, and a line to question the
+  discovery session) and then answers with `h9k plan pursue <plan>`, which cuts the report's `TASK` lines as the plan's
+  drafts (`--epic-title "<t>"` for one epic over two or more; `--no-existing-item` or `--untracked` where a publish asks) and
+  carries them on a plan's ordinary path, or `h9k plan stop <plan> --reason "<why>"`, a normal ending that leaves the idea
+  Captured. A person's edit to the report counts at pursue. `h9k plan resume` is refused at the gate, and another look is a
+  stop and then a new plan. Concluding or archiving the idea stays the window's own act at closeout; no plan does it.
+- **Attended discovery.** Discovery with the operator in the terminal is unchanged and ends by cutting drafts with `h9k task
+  add --from-idea <idea> --objective "…"` and running `h9k plan start <draft> [<draft>...]` on them when they need refining,
+  challenging, and publishing.
 
 ## The scoped session recipes' contract
 
 `recipes/idea-discovery.md` and `recipes/task-refinement.md` are shorter, single-purpose recipes,
-never spawning further scoped sessions of their own. `recipes/idea-discovery.md` is launched by the
-project orchestrator. `recipes/task-refinement.md` is for refinement with the operator in the
+never spawning further scoped sessions of their own. `recipes/idea-discovery.md` is for discovery with the operator in the
+terminal and is never launched headless by the orchestrator; unattended discovery is a plan's (`h9k plan start --idea`), run by
+the daemon from a template that carries the same house rules, and this recipe is not its source. `recipes/task-refinement.md` is for refinement with the operator in the
 terminal (a person walking a draft with a session they are in) and is never launched headless by the
 orchestrator; the headless refinement of a draft is a plan's, run by the daemon from a template that
 carries the same house rules, and this recipe is not its source. Both:

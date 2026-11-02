@@ -70,6 +70,27 @@ believes a draft should split ends with the question outcome; answer it by cance
 operator in the terminal is still `recipes/task-refinement.md`, and its rule that publishing waits for the operator to
 walk the criteria does not apply to a draft in a plan.
 
+An idea that needs discovering, with nobody at the terminal, is a plan too: `h9k plan start --idea <idea>` returns at once,
+and the daemon on this node runs one headless discovery session whose report lands in the idea's workspace as
+`discovery-<plan short id>.md`. This window no longer spawns a headless discovery session of its own. Only the idea's assignee
+(or its creator when nobody holds it) may start one, with no override; it is refused for an idea that carries a tracker link
+(cut a draft by hand with `h9k task add --from-idea`, put its context in a person's own words with `h9k task revise
+--context`, and `h9k plan start` that draft) and for an idea with no workspace on this node (start it where the idea was
+captured). Capturing an idea never starts a plan, because a plan spends tokens. The plan then parks at a **gate**, which the
+feed delivers as an urgent park and `h9k status` lists under Needs you: read the report (`h9k plan show <plan>` prints its
+path, whether it says pursue or stop, the objectives it proposes, and a line to paste to question the discovery session) and
+answer it.
+
+```bash
+h9k plan pursue <plan> [--epic-title "<t>"] [--no-existing-item|--untracked]   # cut the report's TASK lines as drafts and carry them on
+h9k plan stop <plan> --reason "<why>"                                           # a normal ending; the idea stays Captured
+```
+
+Pursue reads the report from the workspace at that moment, so an edit you make to its task lines counts, and the drafts it cuts
+are a plan's ordinary drafts from refinement on. `h9k plan resume` is refused at the gate, since it would read as go; another
+look is a stop and then a new plan. No plan concludes or archives the idea: that stays this window's act. Discovery with the
+operator in the terminal is unchanged, and ends by cutting drafts and running `h9k plan start` on them.
+
 Three things are outside the law, because they are not platform features:
 
 - **The planning docs.** Amending SLICE-1.md or PLAN.md: this is the window's own work product,
