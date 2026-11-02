@@ -123,7 +123,8 @@ internal static class StatusFixtures
         int budgetParkedRuns = 0,
         IReadOnlyDictionary<Guid, int>? budgetParkedByProject = null,
         TrackerClaimHold? trackerHold = null,
-        int? interactiveClaimStaleAfterDays = null) =>
+        int? interactiveClaimStaleAfterDays = null,
+        IReadOnlyList<Guid>? unknownBlockerIds = null) =>
         TaskStatusComposer.Compose(
             task,
             Context(
@@ -136,7 +137,10 @@ internal static class StatusFixtures
                 trackerHold is null
                     ? null
                     : new Dictionary<Guid, TrackerClaimHold> { [task.Id] = trackerHold },
-                interactiveClaimStaleAfterDays),
+                interactiveClaimStaleAfterDays,
+                unknownBlockerIds is null
+                    ? null
+                    : new Dictionary<Guid, IReadOnlyList<Guid>> { [task.Id] = unknownBlockerIds }),
             now ?? Now);
 
     public static TaskStatusContext Context(
@@ -149,7 +153,8 @@ internal static class StatusFixtures
         DispatchPressure? pressure = null,
         IReadOnlyDictionary<Guid, int>? budgetParkedRuns = null,
         IReadOnlyDictionary<Guid, TrackerClaimHold>? trackerHolds = null,
-        int? interactiveClaimStaleAfterDays = null)
+        int? interactiveClaimStaleAfterDays = null,
+        IReadOnlyDictionary<Guid, IReadOnlyList<Guid>>? unknownBlockers = null)
     {
         Dictionary<Guid, RunDetails> runs = run is null ? [] : new Dictionary<Guid, RunDetails> { [run.Id] = run };
         Dictionary<Guid, RunActivity> activity = run is null || silentSince is null
@@ -173,6 +178,7 @@ internal static class StatusFixtures
             budgetParkedRuns,
             trackerHolds,
             interactiveClaimStaleAfterDays
-                ?? Hall9k.Domain.Infrastructure.Persistence.OperatingSettings.DefaultInteractiveClaimStaleAfterDays);
+                ?? Hall9k.Domain.Infrastructure.Persistence.OperatingSettings.DefaultInteractiveClaimStaleAfterDays,
+            UnknownBlockers: unknownBlockers);
     }
 }

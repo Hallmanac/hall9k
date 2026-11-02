@@ -168,6 +168,10 @@ internal static class PublishedFacts
     /// <paramref name="ownersByFingerprint"/> falls back to for a claiming owner this install has
     /// no local record of, rather than the fingerprint's own bare short prefix.
     /// </param>
+    /// <param name="unknownBlockerIds">
+    /// The unmet blockers this node has no task for (<see cref="UnknownBlocker.Among"/>), or null
+    /// when the caller did not ask. Read only on a Blocked row.
+    /// </param>
     /// <param name="keepFingerprintBesideHeldByOwnerLabel">
     /// True only on <c>h9k task show</c>'s own detail row (<see cref="TaskStatusComposer.ComposeOneAsync"/>):
     /// keeps the short fingerprint beside a HeldElsewhere row's resolved owner label. Every board
@@ -184,7 +188,8 @@ internal static class PublishedFacts
         TaskHolderClaimHold? heldByLedgerHolder = null,
         IReadOnlyDictionary<string, string>? ownersByFingerprint = null,
         ProjectMemberLabels? projectMemberLabels = null,
-        bool keepFingerprintBesideHeldByOwnerLabel = false)
+        bool keepFingerprintBesideHeldByOwnerLabel = false,
+        IReadOnlyList<Guid>? unknownBlockerIds = null)
     {
         if (state != LifecycleState.Published)
         {
@@ -311,6 +316,12 @@ internal static class PublishedFacts
         return
         [
             .. facts,
+            // Stated beside the blocked-by line it explains, and only on a Blocked row: the sweep
+            // records nothing for a blocker this node has no record of, so this line is the one
+            // place the node says it does not know.
+            .. task.State == TaskState.Blocked && UnknownBlocker.Line(unknownBlockerIds ?? []) is { } unknownBlocker
+                ? (string[])[unknownBlocker]
+                : [],
             .. task.TakenOverAt is { } takenOverAt ? (string[])[TakenOverFact(task, takenOverAt, now)] : [],
             .. task.QueuePriorityMarked ? (string[])[QueuePriorityFact] : [],
             .. task.EffectivePreApproval.MergesAutomatically
