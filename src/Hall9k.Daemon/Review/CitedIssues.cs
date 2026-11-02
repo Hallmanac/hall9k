@@ -66,11 +66,13 @@ public static partial class CitedIssues
         RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 2000)]
     private static partial Regex CitationPattern();
 
-    // A Markdown link whose destination is a GitHub issue URL: [#7](https://github.com/other/repo/issues/7). The label
-    // is the same citation the destination already is, so it is dropped rather than read a second time as a bare #7
-    // in this repository. A link to any other destination keeps its label, which can cite an issue in its own right.
+    // A Markdown link whose destination is a GitHub issue or pull request URL: [#7](https://github.com/other/repo/issues/7).
+    // The label is the same reference the destination already is, so it is dropped rather than read as a bare #7 in
+    // this repository (for an issue destination the destination is then read as the citation; a pull request
+    // destination cites no issue, and CitationPattern ignores it). A link to any other destination keeps its label,
+    // which can cite an issue in its own right.
     [GeneratedRegex(
-        @"\[[^\[\]]*\]\(\s*<?(?<url>https?://(?:www\.)?github\.com/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+/issues/\d+[^)\s>]*)>?(?:\s+[^)]*)?\)",
+        @"\[[^\[\]]*\]\(\s*<?(?<url>https?://(?:www\.)?github\.com/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+/(?:issues|pull)/\d+[^)\s>]*)>?(?:\s+[^)]*)?\)",
         RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 2000)]
     private static partial Regex IssueLinkPattern();
 
@@ -165,8 +167,25 @@ public static partial class CitedIssues
     /// <param name="repositoryPath">The project's repository path, which the runner finds the project's GitHub account by.</param>
     /// <param name="runDirectory">The run directory the file is written into.</param>
     /// <param name="readBudget">The total time the <c>gh</c> reads may take (<see cref="ReadBudget"/>).</param>
-    public static async Task EnsureWrittenAsync(
+    public static Task EnsureWrittenAsync(
         ProcessRunner runner, string? externalReference, string? agentContext, string repositoryPath,
+        string runDirectory, TimeSpan readBudget, ILogger logger, CancellationToken cancellationToken) =>
+        EnsureDescriptionWrittenAsync(
+            runner, externalReference, PullRequestDescription(agentContext), repositoryPath, runDirectory,
+            readBudget, logger, cancellationToken);
+
+    /// <summary>
+    /// <see cref="EnsureWrittenAsync"/> for a caller that already holds the pull request's title and description as
+    /// GitHub has them now, so the file describes the text the session is shown rather than the task's snapshot of it.
+    /// </summary>
+    /// <param name="runner">The seam <c>gh</c> is run through, pinned by the daemon to the project's own account.</param>
+    /// <param name="externalReference">The task's pull request reference (<c>owner/repo#42</c>), which names the repository whose issues may be read.</param>
+    /// <param name="description">The pull request's title and description, scanned whole for citations.</param>
+    /// <param name="repositoryPath">The project's repository path, which the runner finds the project's GitHub account by.</param>
+    /// <param name="runDirectory">The run directory the file is written into.</param>
+    /// <param name="readBudget">The total time the <c>gh</c> reads may take (<see cref="ReadBudget"/>).</param>
+    public static async Task EnsureDescriptionWrittenAsync(
+        ProcessRunner runner, string? externalReference, string? description, string repositoryPath,
         string runDirectory, TimeSpan readBudget, ILogger logger, CancellationToken cancellationToken)
     {
         string path = RunPaths.CitedIssuesFile(runDirectory);
@@ -178,7 +197,7 @@ public static partial class CitedIssues
         string content;
         try
         {
-            content = await ComposeAsync(runner, externalReference, agentContext, repositoryPath, readBudget, logger, cancellationToken);
+            content = await ComposeAsync(runner, externalReference, description, repositoryPath, readBudget, logger, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -202,7 +221,7 @@ public static partial class CitedIssues
     private const string MissingEverything = "the daemon could not gather the issues this description cites";
 
     private static async Task<string> ComposeAsync(
-        ProcessRunner runner, string? externalReference, string? agentContext, string repositoryPath,
+        ProcessRunner runner, string? externalReference, string? description, string repositoryPath,
         TimeSpan readBudget, ILogger logger, CancellationToken cancellationToken)
     {
         string? repository = GitHubPullRequestReference.RepositoryOfTask(externalReference);
@@ -218,7 +237,7 @@ public static partial class CitedIssues
         using CancellationTokenSource budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budget.CancelAfter(readBudget);
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-        foreach (CitedIssue cited in Extract(PullRequestDescription(agentContext)))
+        foreach (CitedIssue cited in Extract(description))
         {
             string named = cited.Repository ?? repository ?? "(unknown repository)";
 

@@ -5049,7 +5049,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         (await File.ReadAllTextAsync(diffFilePath, cts.Token)).Should().Be(compareDiff,
             "the file must hold exactly the compare output already fetched for the judged head oid");
         executor.Request.Prompt.Should().Contain("the-exact-oid").And.Contain(diffFilePath)
-            .And.Contain("Do not run 'gh pr diff'").And.NotContain("Use gh (gh pr diff");
+            .And.Contain("You cannot run gh").And.NotContain("gh pr diff");
     }
 
     /// <summary>
