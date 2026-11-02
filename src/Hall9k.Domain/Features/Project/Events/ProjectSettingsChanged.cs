@@ -373,4 +373,12 @@ public sealed record ProjectSettingsChanged(
     /// stream written before it replays byte-for-byte unchanged. A node setting like the rest of this
     /// event's untagged fields: it is not mirrored into <see cref="ProjectTeamSettingsChanged"/>.
     /// </summary>
-    Optional<bool> RequireChallenge = default);
+    Optional<bool> RequireChallenge = default,
+    /// <summary>
+    /// Whether this project's tasks take the feedback step: held at the moment they would be released until the daemon has
+    /// checked the notes their blockers left against them (<see cref="Tasks.Feedback.FeedbackStepOutcome"/>). Off when nothing
+    /// is recorded, and a task's own override outranks it either way. A team field, mirrored on
+    /// <see cref="ProjectTeamSettingsChanged.TakesFeedbackStep"/>, because the dependency sweep runs on every node and each must
+    /// decide the hold the same way. Trailing and optional so every stream written before it replays unchanged.
+    /// </summary>
+    Optional<bool> TakesFeedbackStep = default);

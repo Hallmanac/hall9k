@@ -156,6 +156,14 @@ public static class EventScopeRegistry
         [typeof(DraftRefinementDispatched)] = EventScope.ProjectScoped,
         [typeof(DraftRefinementRecorded)] = EventScope.ProjectScoped,
 
+        // The feedback step: replicated, because the hold itself travels on the door events and every node of the owner must
+        // read the same step state (a node that never saw the step begin would hold the task a second time).
+        [typeof(FeedbackStepStarted)] = EventScope.ProjectScoped,
+        [typeof(FeedbackCheckDispatched)] = EventScope.ProjectScoped,
+        [typeof(FeedbackCheckRecorded)] = EventScope.ProjectScoped,
+        [typeof(FeedbackStepRefinementBegun)] = EventScope.ProjectScoped,
+        [typeof(FeedbackStepOutcomeRecorded)] = EventScope.ProjectScoped,
+
         // Hall9k.Domain.Features.Plan: a plan is a fact about one node's daemon and the drafts it is driving, and
         // it holds ids, phases, rounds, and closed outcomes only. Every plan event is node-scoped, so the outbox never
         // carries one and the inbox refuses one that arrives: that is what makes "no other node starts a session for a

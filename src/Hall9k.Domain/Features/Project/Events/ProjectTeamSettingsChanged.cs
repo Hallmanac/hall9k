@@ -102,7 +102,9 @@ public sealed record ProjectTeamSettingsChanged(
     /// field for the reason <see cref="JiraProjectKey"/> is one: every teammate's node has to read the
     /// same binding, or the doors that refuse another tracker would refuse on one node and not another.
     /// </summary>
-    Optional<LinearTeamKey> LinearTeam = default)
+    Optional<LinearTeamKey> LinearTeam = default,
+    /// <summary>Whether this project's tasks take the feedback step; a team field because every node's dependency sweep decides the hold from it. See <see cref="ProjectSettingsChanged.TakesFeedbackStep"/>.</summary>
+    Optional<bool> TakesFeedbackStep = default)
 {
     /// <summary>
     /// Builds the team companion from whatever <see cref="ProjectDecider.ChangeSettings"/> just
@@ -138,7 +140,8 @@ public sealed record ProjectTeamSettingsChanged(
             || changed.SecurityReview.HasValue
             || changed.CiPolicy.HasValue
             || changed.Solution.HasValue
-            || changed.LinearTeam.HasValue;
+            || changed.LinearTeam.HasValue
+            || changed.TakesFeedbackStep.HasValue;
 
         return anyTeamField
             ? new ProjectTeamSettingsChanged(
@@ -173,7 +176,8 @@ public sealed record ProjectTeamSettingsChanged(
                 changed.SecurityReview,
                 changed.CiPolicy,
                 changed.Solution,
-                changed.LinearTeam)
+                changed.LinearTeam,
+                changed.TakesFeedbackStep)
             : null;
     }
 }

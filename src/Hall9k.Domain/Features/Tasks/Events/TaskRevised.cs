@@ -112,7 +112,14 @@ public sealed record TaskRevised(
     /// own revision from a person's made while the session ran: the first leaves the "revised while it ran" facts alone,
     /// the second sets them. Null for every revision a person makes.
     /// </summary>
-    Guid? RefinementSessionId = null)
+    Guid? RefinementSessionId = null,
+    /// <summary>
+    /// This task's own override of whether it takes the feedback step, either way. Absent leaves it alone; present with null
+    /// clears the override so the project's setting decides again. A scheduling fact outside the readiness contract, so
+    /// <see cref="Handlers.TaskDecider.Revise"/> carves it out of Draft-only the way it does <see cref="QueuePriority"/>, and
+    /// narrower: only while the task is Draft, Published, or Blocked and not held, because after that the step has run or is running.
+    /// </summary>
+    Optional<bool?> FeedbackStep = default)
 {
     /// <summary>
     /// Read by <c>h9k task revise</c>: the id of the refinement session whose revision it is applying. When set, the revise

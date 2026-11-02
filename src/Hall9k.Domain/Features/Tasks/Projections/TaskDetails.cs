@@ -2,6 +2,7 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Feedback;
 using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -395,6 +396,36 @@ public sealed class TaskDetails
 
     /// <summary>See <see cref="TaskAggregate.HumanGate"/>: same recorded, task-level fact, read off this projection.</summary>
     public bool HumanGate { get; set; }
+
+    /// <summary>See <see cref="TaskAggregate.FeedbackStepOverride"/>.</summary>
+    public bool? FeedbackStepOverride { get; set; }
+
+    /// <summary>See <see cref="TaskAggregate.FeedbackStepHeld"/>: Blocked at its release point until the feedback step ends.</summary>
+    public bool FeedbackStepHeld { get; set; }
+
+    /// <summary>See <see cref="TaskAggregate.FeedbackStepBegun"/>.</summary>
+    public bool FeedbackStepBegun { get; set; }
+
+    /// <summary>See <see cref="TaskAggregate.FeedbackStepRunning"/>: begun, with no outcome recorded. Kept as a field so the daemon can query for it.</summary>
+    public bool FeedbackStepRunning { get; set; }
+
+    /// <summary>See <see cref="TaskAggregate.FeedbackStep"/>.</summary>
+    public FeedbackStepStarted? FeedbackStep { get; set; }
+
+    /// <summary>See <see cref="TaskAggregate.RunningFeedbackCheckSessionId"/>.</summary>
+    public Guid? RunningFeedbackCheckSessionId { get; set; }
+
+    /// <summary>See <see cref="TaskAggregate.LatestFeedbackCheckDispatch"/>.</summary>
+    public FeedbackCheckDispatched? LatestFeedbackCheckDispatch { get; set; }
+
+    /// <summary>See <see cref="TaskAggregate.LatestFeedbackCheck"/>.</summary>
+    public FeedbackCheckRecorded? LatestFeedbackCheck { get; set; }
+
+    /// <summary>See <see cref="TaskAggregate.FeedbackStepPlanId"/>.</summary>
+    public Guid? FeedbackStepPlanId { get; set; }
+
+    /// <summary>See <see cref="TaskAggregate.FeedbackStepResult"/>: how the step ended, or null.</summary>
+    public FeedbackStepOutcomeRecorded? FeedbackStepResult { get; set; }
 
     /// <summary>See <see cref="TaskAggregate.EvolvedFromTaskId"/>.</summary>
     public Guid? EvolvedFromTaskId { get; set; }
@@ -949,6 +980,11 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
             view.HumanGate = @event.Data.HumanGate.Value;
         }
 
+        if (@event.Data.FeedbackStep.HasValue)
+        {
+            view.FeedbackStepOverride = @event.Data.FeedbackStep.Value;
+        }
+
         if (@event.Data.CloseLinkedIssue.HasValue)
         {
             view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value;
@@ -1027,9 +1063,28 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         // Both halves of the hold, exactly as TaskAggregate.Apply(TaskAssigned) asks them — and
         // the remote observation is deliberately left standing while the dependency bookkeeping
         // above is reset, for the reason that method's own comment gives.
-        view.State = view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view)
-            ? TaskState.Queued
-            : TaskState.Blocked;
+        view.FeedbackStepHeld = false;
+        if (view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view))
+        {
+            ReleaseOrHold(view, @event.Data.HoldForFeedbackStep);
+        }
+        else
+        {
+            view.State = TaskState.Blocked;
+        }
+    }
+
+    /// <summary>The twin of <see cref="TaskAggregate"/>'s own release-or-hold, asked at the same three doors.</summary>
+    private static void ReleaseOrHold(TaskDetails view, bool holdForFeedbackStep)
+    {
+        if (view.FeedbackStepHeld || (holdForFeedbackStep && !view.FeedbackStepBegun))
+        {
+            view.FeedbackStepHeld = true;
+            view.State = TaskState.Blocked;
+            return;
+        }
+
+        view.State = TaskState.Queued;
     }
 
     /// <summary>
@@ -1079,6 +1134,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.DeadDependencies = [];
         view.DeadDependencyReasons = [];
         view.DependencyFailureReason = null;
+        view.FeedbackStepHeld = false;
         view.State = TaskState.Published;
     }
 
@@ -1164,7 +1220,10 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
             return;
         }
 
-        view.UnmetDependencies = [.. @event.Data.RemainingDependencies];
+        // Only the blocker that closed out is removed, the way the aggregate removes it, rather than the set replaced with the
+        // snapshot the event carries: a task held for its feedback step stays Blocked with nothing left to wait for, so a late
+        // completion that was decided before a sibling finished would otherwise put that sibling back.
+        view.UnmetDependencies.Remove(@event.Data.DependencyId);
         if (view.DeadDependencies.Remove(@event.Data.DependencyId))
         {
             // The blocker that died was retried and finished after all, so what it said stops
@@ -1177,7 +1236,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
 
         if (view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view))
         {
-            view.State = TaskState.Queued;
+            ReleaseOrHold(view, @event.Data.HoldForFeedbackStep);
         }
     }
 
@@ -1221,11 +1280,57 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         if (view.State == TaskState.Blocked && view.UnmetDependencies.Count == 0
             && !AwaitsRemoteStackedParent(view))
         {
-            view.State = TaskState.Queued;
+            ReleaseOrHold(view, @event.Data.HoldForFeedbackStep);
         }
         else if (view.State == TaskState.Queued && AwaitsRemoteStackedParent(view))
         {
             view.State = TaskState.Blocked;
+        }
+    }
+
+    /// <summary>The twin of <see cref="TaskAggregate.Apply(FeedbackStepStarted)"/>.</summary>
+    public void Apply(IEvent<FeedbackStepStarted> @event, TaskDetails view)
+    {
+        view.FeedbackStepBegun = true;
+        view.FeedbackStepRunning = true;
+        view.FeedbackStep = @event.Data;
+        view.FeedbackStepResult = null;
+        view.FeedbackStepPlanId = null;
+        view.RunningFeedbackCheckSessionId = null;
+    }
+
+    public void Apply(IEvent<FeedbackCheckDispatched> @event, TaskDetails view)
+    {
+        view.RunningFeedbackCheckSessionId = @event.Data.SessionId;
+        view.LatestFeedbackCheckDispatch = @event.Data;
+    }
+
+    public void Apply(IEvent<FeedbackCheckRecorded> @event, TaskDetails view)
+    {
+        if (@event.Data.SessionId is { } recorded && view.RunningFeedbackCheckSessionId is { } running && recorded != running)
+        {
+            return;
+        }
+
+        view.RunningFeedbackCheckSessionId = null;
+        view.LatestFeedbackCheck = @event.Data;
+    }
+
+    public void Apply(IEvent<FeedbackStepRefinementBegun> @event, TaskDetails view) =>
+        view.FeedbackStepPlanId = @event.Data.PlanId;
+
+    public void Apply(IEvent<FeedbackStepOutcomeRecorded> @event, TaskDetails view)
+    {
+        view.FeedbackStepBegun = true;
+        view.FeedbackStepRunning = false;
+        view.FeedbackStepResult = @event.Data;
+        view.RunningFeedbackCheckSessionId = null;
+        bool wasHeld = view.FeedbackStepHeld;
+        view.FeedbackStepHeld = false;
+        if (wasHeld && view.State == TaskState.Blocked
+            && view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view))
+        {
+            view.State = TaskState.Queued;
         }
     }
 
@@ -1841,6 +1946,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     public void Apply(IEvent<TaskAbandoned> @event, TaskDetails view)
     {
         view.AbandonedReason = @event.Data.Reason;
+        view.FeedbackStepHeld = false;
         view.FollowUpBranch = null;
         view.FollowUpKind = FollowUpKind.Unknown;
         view.FollowUpPullRequestHeadSha = null;

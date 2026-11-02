@@ -141,6 +141,9 @@ public sealed class ProjectDetails
     /// </summary>
     public bool? RequireChallengeRecorded { get; set; }
 
+    /// <summary>Whether this project's tasks take the feedback step; off until a person turns it on. A team field.</summary>
+    public bool TakesFeedbackStep { get; set; }
+
     /// <summary>The effective challenge requirement and whether it is the default.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public ChallengeRequirement ChallengeRequirementSetting => ChallengeRequirement.From(RequireChallengeRecorded);
@@ -539,6 +542,12 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
             view.CiPolicy = @event.Data.CiPolicy.Value ?? CiPolicy.Required;
         }
 
+        if (@event.Data.TakesFeedbackStep.HasValue
+            && view.TryStampTeamSetting(nameof(ProjectDetails.TakesFeedbackStep), @event.Data.ChangedAt))
+        {
+            view.TakesFeedbackStep = @event.Data.TakesFeedbackStep.Value;
+        }
+
         // Only here, never on ProjectTeamSettingsChanged: an orchestrator feed level is this
         // operator's own reading preference on this machine, so it stays on the node-scoped
         // event exactly as the models and the local paths beside it do.
@@ -698,6 +707,12 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
         if (@event.Data.CiPolicy.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.CiPolicy), @event.Data.ChangedAt))
         {
             view.CiPolicy = @event.Data.CiPolicy.Value ?? CiPolicy.Required;
+        }
+
+        if (@event.Data.TakesFeedbackStep.HasValue
+            && view.TryStampTeamSetting(nameof(ProjectDetails.TakesFeedbackStep), @event.Data.ChangedAt))
+        {
+            view.TakesFeedbackStep = @event.Data.TakesFeedbackStep.Value;
         }
 
         if (@event.Data.TakePolicy.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.TakePolicy), @event.Data.ChangedAt))

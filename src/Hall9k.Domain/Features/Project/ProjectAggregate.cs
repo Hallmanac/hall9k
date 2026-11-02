@@ -160,6 +160,9 @@ public sealed class ProjectAggregate
 
     /// <summary>The challenge requirement the stream last recorded, or null when none was, which reads on (<see cref="ChallengeRequirement"/>).</summary>
     public bool? RequireChallengeRecorded { get; private set; }
+
+    /// <summary>Whether this project's tasks take the feedback step; off until a person turns it on. See <see cref="Events.ProjectSettingsChanged.TakesFeedbackStep"/>.</summary>
+    public bool TakesFeedbackStep { get; private set; }
     /// <summary>
     /// What has to be true on this install before a task linked to a Jira card, a GitHub issue, or a Linear issue
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
@@ -453,6 +456,11 @@ public sealed class ProjectAggregate
             CiPolicy = @event.CiPolicy.Value ?? CiPolicy.Required;
         }
 
+        if (@event.TakesFeedbackStep.HasValue)
+        {
+            TakesFeedbackStep = @event.TakesFeedbackStep.Value;
+        }
+
         // Only here, never on ProjectTeamSettingsChanged: an orchestrator feed level is this
         // operator's own reading preference on this machine, so it stays on the node-scoped
         // event exactly as the models and the local paths beside it do.
@@ -606,6 +614,11 @@ public sealed class ProjectAggregate
         if (@event.CiPolicy.HasValue)
         {
             CiPolicy = @event.CiPolicy.Value ?? CiPolicy.Required;
+        }
+
+        if (@event.TakesFeedbackStep.HasValue)
+        {
+            TakesFeedbackStep = @event.TakesFeedbackStep.Value;
         }
 
         if (@event.TakePolicy.HasValue)

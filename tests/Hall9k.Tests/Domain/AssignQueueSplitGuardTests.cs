@@ -25,6 +25,9 @@ public sealed partial class AssignQueueSplitGuardTests
         (Path.Combine("Hall9k.Cli", "Commands", "TaskDriveCommand.cs"), 1),
         (Path.Combine("Hall9k.Cli", "Commands", "PullRequestReviewCommand.cs"), 2),
         (Path.Combine("Hall9k.Daemon", "AutoPrReview", "AutoPrReviewEngine.cs"), 2),
+        // The feedback step puts back the go its owner already gave: after the refined task is published, the daemon queues it
+        // again for the same owner, fingerprint and node it was queued for, and for no other.
+        (Path.Combine("Hall9k.Domain", "Features", "Tasks", "Handlers", "FeedbackStepDecider.cs"), 1),
     ];
 
     [Fact]
@@ -44,7 +47,7 @@ public sealed partial class AssignQueueSplitGuardTests
 
         found.Should().BeEquivalentTo(
             GoEventCallers.ToDictionary(caller => caller.File, caller => caller.Calls),
-            "these are the go acts: queue (through AppendAsync), start, drive, pr review and both auto-pr-review mints");
+            "these are the go acts: queue (through AppendAsync), start, drive, pr review, both auto-pr-review mints, and the feedback step's requeue of the go its owner already gave");
 
         List<string> constructors = [];
         foreach (string file in SourceFiles(sourceDirectory))

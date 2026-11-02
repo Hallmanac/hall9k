@@ -3,6 +3,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Feedback;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Marten;
 using Marten.Linq.MatchesSql;
@@ -210,7 +211,8 @@ public sealed class RemoteStackedParentSweep(
         // and the next sweep tries again (CloseoutEngine.TryReplayStackedChildAsync's own doc).
         session.Events.Append(child.Id, new RemoteStackedParentObserved(
             child.Id, parentNumber, read.State, read.HeadBranch, read.HeadCommit, read.BaseBranch,
-            read.Url, read.LinkedWorkItem, read.Detail, DateTimeOffset.UtcNow));
+            read.Url, read.LinkedWorkItem, read.Detail, DateTimeOffset.UtcNow,
+            HoldForFeedbackStep: FeedbackStepRules.Holds(task, project.TakesFeedbackStep)));
         await session.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(

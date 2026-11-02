@@ -97,7 +97,8 @@ public static class ProjectDecider
         Optional<CiPolicy> ciPolicy = default,
         Optional<SolutionMembership?> solution = default,
         Optional<LinearTeamKey> linearTeam = default,
-        Optional<bool> requireChallenge = default)
+        Optional<bool> requireChallenge = default,
+        Optional<bool> takesFeedbackStep = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -522,7 +523,8 @@ public static class ProjectDecider
             CiPolicy: ciPolicy,
             Solution: solution,
             LinearTeam: linearTeam,
-            RequireChallenge: requireChallenge);
+            RequireChallenge: requireChallenge,
+            TakesFeedbackStep: takesFeedbackStep);
     }
 
     /// <summary>
