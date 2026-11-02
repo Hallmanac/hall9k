@@ -72,6 +72,9 @@ public static class SessionRoleName
     /// </summary>
     public const string NotePromoter = "note-promoter";
 
+    /// <summary>The feedback step's check: reads the notes a task's blockers left and answers whether they affect it. A session name for its own role, <see cref="Hall9k.Domain.Features.Run.AgentRole.FeedbackCheck"/>.</summary>
+    public const string FeedbackChecker = "feedback-checker";
+
     /// <summary>
     /// Delivers a project's orchestrator feed to its live orchestrator session and exits (idea
     /// 89471598, piece 3). Composed with the project's own short id rather than a task's — a

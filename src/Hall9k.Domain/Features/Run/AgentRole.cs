@@ -60,6 +60,12 @@ public sealed record AgentRole
     /// is cheaper, while refinement itself follows those.
     /// </summary>
     public static readonly AgentRole Challenge = new("Challenge");
+    /// <summary>
+    /// The feedback step's check (a task's blockers left notes; do they affect it?): one headless, no-tools session that reads
+    /// the notes and the task and answers yes or no. Its own role, and not <see cref="Refinement"/> reused, so the cheap check
+    /// and the high-tier refinement it may lead to are set apart in the model policy without a code change.
+    /// </summary>
+    public static readonly AgentRole FeedbackCheck = new("FeedbackCheck");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly AgentRole Unknown = new("");
 

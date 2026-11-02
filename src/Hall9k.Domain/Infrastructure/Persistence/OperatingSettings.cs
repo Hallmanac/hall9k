@@ -476,6 +476,14 @@ public sealed class RoleModelSettings
     [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? Challenge { get; set; }
 
+    /// <summary>
+    /// The feedback step's check model: blank falls through to its own floor, <c>AgentModel.FeedbackCheckDefault</c>, read by
+    /// <c>DaemonOptions.ResolveFeedbackCheckModel</c>. Its own <see cref="AgentRole"/>, so the Refinement role the step's
+    /// refinement session runs on can be set to a different tier.
+    /// </summary>
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
+    public string? FeedbackCheck { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 
@@ -494,6 +502,7 @@ public sealed class RoleModelSettings
         yield return (nameof(Publication), Publication);
         yield return (nameof(Courier), Courier);
         yield return (nameof(Challenge), Challenge);
+        yield return (nameof(FeedbackCheck), FeedbackCheck);
     }
 }
 
@@ -538,6 +547,9 @@ public sealed class RoleEffortSettings
     /// <summary>The independent draft challenge's own effort; null falls through to its own floor (high), skipping the node-wide effort, read by <c>DaemonOptions.ResolveChallengeEffort</c>.</summary>
     public string? Challenge { get; set; }
 
+    /// <summary>The feedback step's check effort; null falls through to its own floor (medium), skipping the node-wide effort, read by <c>DaemonOptions.ResolveFeedbackCheckEffort</c>.</summary>
+    public string? FeedbackCheck { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 
@@ -556,6 +568,7 @@ public sealed class RoleEffortSettings
         yield return (nameof(Publication), Publication);
         yield return (nameof(Courier), Courier);
         yield return (nameof(Challenge), Challenge);
+        yield return (nameof(FeedbackCheck), FeedbackCheck);
     }
 }
 

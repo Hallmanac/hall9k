@@ -872,6 +872,15 @@ public sealed class DaemonOptions
     public TimeSpan PlanRefinementTimeout { get; set; } = TimeSpan.FromMinutes(30);
 
     /// <summary>
+    /// How long the feedback step's check session gets before the daemon terminates it and releases the task anyway. Ten minutes:
+    /// the check has no tools and reads a few notes, so a session past it has hung, and the task is not held up for it.
+    /// </summary>
+    public TimeSpan FeedbackCheckTimeout { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>How often the daemon looks for a task held for its feedback step, or one whose step is running on this node, when nothing has rung its doorbell.</summary>
+    public TimeSpan FeedbackStepPollInterval { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// How long one child <c>h9k</c> command the daemon runs for a plan (the revise that applies a session's revision,
     /// the publish at the plan's end) gets before it is killed and counted as a refusal. A publish that files a tracker
     /// item is the slow one, and five minutes clears a slow tracker by a wide margin.
@@ -1131,6 +1140,25 @@ public sealed class DaemonOptions
         AgentEffort.Resolve(null, projectEffort, EffortByRole.For(AgentRole.Challenge), AgentEffort.High);
 
     /// <summary>
+    /// The effective model for the feedback step's check: the node's <see cref="RoleModelDefaults.FeedbackCheck"/>, then
+    /// <see cref="AgentModel.FeedbackCheckDefault"/>. Neither a project's model nor the node's default model moves it: the check
+    /// is cheap by design, and the refinement it may lead to follows <see cref="AgentRole.Refinement"/> instead, which is what lets
+    /// the two be set to different tiers.
+    /// </summary>
+    public AgentModel ResolveFeedbackCheckModel() =>
+        AgentModel.Resolve(
+            taskOverride: null, projectDefault: null, roleDefault: ModelByRole.For(AgentRole.FeedbackCheck),
+            platformDefault: AgentModel.FeedbackCheckDefault);
+
+    /// <summary>
+    /// The effective effort for the feedback step's check: the node's <see cref="RoleEffortDefaults.FeedbackCheck"/>, then medium.
+    /// The node-wide effort and a project's are skipped on purpose, for the reason <see cref="ResolveFeedbackCheckModel"/> skips
+    /// the node's default model.
+    /// </summary>
+    public AgentEffort ResolveFeedbackCheckEffort() =>
+        AgentEffort.Resolve(null, null, EffortByRole.For(AgentRole.FeedbackCheck), AgentEffort.Medium);
+
+    /// <summary>
     /// The effective model for the pull-request review pre-flight (idea 6be68ee2, finding 1, phase
     /// one): the project's own <c>--model</c>, then the node's own
     /// <see cref="RoleModelDefaults.SecurityPreflight"/>, the same project-over-node shape
@@ -1251,6 +1279,9 @@ public sealed class RoleEffortDefaults
     /// <summary>The draft challenge's own effort; blank falls through to its own floor (high) rather than the node-wide effort, read by <see cref="DaemonOptions.ResolveChallengeEffort"/>.</summary>
     public string Challenge { get; set; } = string.Empty;
 
+    /// <summary>The feedback step's check effort; blank falls through to its own floor (medium) rather than the node-wide effort, read by <see cref="DaemonOptions.ResolveFeedbackCheckEffort"/>.</summary>
+    public string FeedbackCheck { get; set; } = string.Empty;
+
     /// <summary>The Review role's effort for a Verify-shape pass; blank falls through to <see cref="Review"/>, read by <see cref="DaemonOptions.ResolveVerifyReviewEffort"/> rather than <see cref="For"/>.</summary>
     public string ReviewVerify { get; set; } = string.Empty;
 
@@ -1274,6 +1305,7 @@ public sealed class RoleEffortDefaults
         _ when role == AgentRole.Courier => AgentEffort.FromInput(Courier),
         _ when role == AgentRole.SecurityPreflight => AgentEffort.FromInput(SecurityPreflight),
         _ when role == AgentRole.Challenge => AgentEffort.FromInput(Challenge),
+        _ when role == AgentRole.FeedbackCheck => AgentEffort.FromInput(FeedbackCheck),
         _ => AgentEffort.Unknown,
     };
 }
@@ -1359,6 +1391,13 @@ public sealed class RoleModelDefaults
     /// </summary>
     public string Challenge { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The feedback step's check model, blank like every sibling above: its own non-blank floor is
+    /// <see cref="DaemonOptions.ResolveFeedbackCheckModel"/>'s (<see cref="AgentModel.FeedbackCheckDefault"/>), for the reason
+    /// <see cref="Courier"/> stays empty.
+    /// </summary>
+    public string FeedbackCheck { get; set; } = string.Empty;
+
     public AgentModel For(AgentRole role) => role switch
     {
         _ when role == AgentRole.Build => AgentModel.FromInput(Build),
@@ -1370,6 +1409,7 @@ public sealed class RoleModelDefaults
         _ when role == AgentRole.Courier => AgentModel.FromInput(Courier),
         _ when role == AgentRole.SecurityPreflight => AgentModel.FromInput(SecurityPreflight),
         _ when role == AgentRole.Challenge => AgentModel.FromInput(Challenge),
+        _ when role == AgentRole.FeedbackCheck => AgentModel.FromInput(FeedbackCheck),
         _ => AgentModel.Unknown,
     };
 }

@@ -77,6 +77,13 @@ public sealed record AgentModel
     /// </summary>
     public const string ChallengeDefault = "claude-opus-5-5[1m]";
 
+    /// <summary>
+    /// The feedback step's check floor: a cheap tier by design, because the check reads a few short notes and answers one word.
+    /// Read by <c>DaemonOptions.ResolveFeedbackCheckModel</c> and named in <c>h9k config set --model-feedback-check</c>'s own
+    /// description. The refinement the check may lead to resolves through the Refinement role instead, so the two tiers differ.
+    /// </summary>
+    public const string FeedbackCheckDefault = "claude-sonnet-5-5";
+
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly AgentModel Unknown = new("");
 
