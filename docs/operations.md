@@ -1008,7 +1008,8 @@ turn that hangs.
 | `Hall9k__OrchestratorPresenceSweepPollInterval` | 15s | How often the daemon checks this node's registered orchestrator windows against the process table and records the ones that are gone. |
 | `Hall9k__CourierSweepPollInterval` | 10s | How often the courier sweep checks each project for the courier's four spawn conditions: undrained feed items, a live orchestrator window, no courier already running, and the batching wait elapsed. |
 | `Hall9k__CourierQuietThreshold` | 10m | How long a project's feed must have produced nothing new for the courier's batching wait to fall to zero. The wait grows with recent activity, up to the project's own `--courier-max-wait`. |
-| `Hall9k__CourierDaySpawnCap` | 500 | The most couriers one project may spawn in a UTC day, a storm guard for a feed that keeps producing urgent items, which bypass the batching wait. |
+| `Hall9k__CourierDaySpawnCap` | 500 | The most couriers one project may spawn in a UTC day. It is now the last-resort guard behind the failure backoff below, a storm guard for a feed that keeps producing urgent items, which bypass the batching wait. |
+| `Hall9k__CourierFailureBackoffCeiling` | 30m | The longest the wait between couriers grows to while a project's couriers keep failing. After *n* failures in a row the wait is `min(base x 2^(n-1), this)`, where the base is the project's courier max wait but never less than 60 seconds, so the defaults wait 1, 2, 4, 8 and 16 minutes and then 30, and a project that never delivers spends about fifty couriers a day. Never less than the base. Set by environment or the config file's `hall9k` section only; there is no `h9k config set` option. |
 | `Hall9k__CourierTimeout` | 3m | The wall-clock ceiling on one courier session. |
 | `Hall9k__CourierMaxTurns` | 8 | The turn cap a courier session is spawned with; its whole job is one `SendMessage` call and a closing line. |
 

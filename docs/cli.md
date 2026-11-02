@@ -2637,6 +2637,33 @@ on the batching wait (sixty seconds by default), and `h9k config set --model-cou
 node's model for the role, which bottoms out at `claude-sonnet-5-5` and does not clear to the platform
 default. The mechanism is in [concepts.md's The feed courier](concepts.md#the-feed-courier).
 
+When couriers keep failing, the daemon backs off (one minute, then two, four, eight, sixteen, and
+thirty at the defaults) rather than spending the day's spawn cap, and two commands make that visible.
+The courier line of `h9k status` for a project with a window registered here reads, for example:
+
+```
+courier: failing, 14 in a row since 20:01, next try in 12m, last: hall9k-9f is not reachable
+```
+
+Once the next-attempt time has passed it says `next try at the next sweep`, never a zero or
+negative duration. The reason is the text after `COURIER-OUTCOME: failed -` when the courier's
+session gave one, and otherwise `no reason given`, `timed out after 3m`, `ended without an outcome
+line`, or `daemon error: <message>`; newlines are collapsed to spaces and it is cut to 120
+characters with an ellipsis. When states overlap, `in flight` wins, then `day cap spent`, then
+`failing`, and the winner appends the streak count (`in flight (dispatched 20s ago), 14 failed in a
+row`). While a project's day cap has held a courier back today, the line says `day cap spent` and
+gives the local time the day rolls over (00:00 UTC).
+
+`h9k doctor` has a **courier section**, run after the database check passes and skipped under
+`--no-configure` like the release check. It lists every project with an orchestrator window
+registered on this node. It warns on a failure streak of five or more in a row (with the same
+reason the status line gives), on a spent day cap, and on a feed item left undrained for more than an
+hour while the project's window is live and was registered at least an hour ago; a project already
+warned for its streak is not warned again for the undrained hour. The undrained check pages past a
+long run of unrelated events without moving the feed cursor, and says so, rather than reporting `ok`,
+if the feed is too long to reach the end of. A healthy or quiet project gets one `ok` line, and a node
+with no registered window says so in one line.
+
 `register`/`deregister`/`status` are how the platform knows whether a window is actually up for a
 project on this node. A window registers itself as the anchor's first start-up step, naming its
 session, process id, and agent CLI; the recipe's restart and close steps deregister it, naming
@@ -2685,7 +2712,7 @@ miss in the sections above.
 | `h9k idea promote --project <project>` | Names the project the one task belongs to, required unless the idea is already assigned to one. |
 | `h9k pr review --project <project>` | Names the project whose repository the pull request belongs to, and is optional when exactly one project is registered. |
 | `h9k doctor --yes` | Remediates without asking, by starting Hall9k's own Postgres and creating the schema, which is what a script or a dispatched agent wants. |
-| `h9k doctor --no-configure` | Repairs without ever recording a connection string, so with nothing configured it diagnoses and stops instead of writing Hall9k's default into the platform config file. It leaves what `--yes` does for an address that is configured, starting a stopped `hall9k-postgres` and creating or updating the schema, unchanged. `h9k update --restart` and `h9k install --restart` pass it to the doctor step they run, so a database named by `HALL9K_CONNECTION_STRING` in another shell is not overridden by a guessed default. |
+| `h9k doctor --no-configure` | Repairs without ever recording a connection string, so with nothing configured it diagnoses and stops instead of writing Hall9k's default into the platform config file. It also skips the release check and the courier section. It leaves what `--yes` does for an address that is configured, starting a stopped `hall9k-postgres` and creating or updating the schema, unchanged. `h9k update --restart` and `h9k install --restart` pass it to the doctor step they run, so a database named by `HALL9K_CONNECTION_STRING` in another shell is not overridden by a guessed default. |
 | `h9k uninstall --yes` | Skips the `--purge-data` confirmation prompt, which is required in a non-interactive session and has no effect without `--purge-data`. |
 | `h9k install --now`, `h9k update --now` | With `--restart`, restarts the daemon at once instead of waiting for a live verification gate to finish, though `h9k daemon stop`'s own warning still prints. |
 
