@@ -221,6 +221,7 @@ public static class CliCommandTree
                 .WithExample("project", "set", "hall9k", "--orchestrator-feed", "actionable")
                 .WithExample("project", "set", "hall9k", "--close-linked-issue", "never")
                 .WithExample("project", "set", "hall9k", "--never-close-labels", "epic,adr")
+                .WithExample("project", "set", "hall9k", "--feedback-step", "on")
                 .WithExample("project", "set", "hall9k", "--discover-run-skill")
                 .WithExample(
                     "project", "set", "hall9k", "--review-stage-composition", "none", "--accept-reduced-review");
@@ -1606,6 +1607,7 @@ public static class CliCommandTree
                 .WithExample("task", "revise", "28b19893", "--criteria", "\"h9k status shows the blocked reason\"")
                 .WithExample("task", "revise", "28b19893", "--human-gate")
                 .WithExample("task", "revise", "28b19893", "--clear-human-gate")
+                .WithExample("task", "revise", "28b19893", "--feedback-step", "on")
                 .WithExample("task", "revise", "28b19893", "--blocked-by", "3f2a91b2", "--blocked-by", "91bd44c0")
                 .WithExample("task", "revise", "28b19893", "--clear-dependencies")
                 .WithExample("task", "revise", "28b19893", "--epic", "3f2a91b2")

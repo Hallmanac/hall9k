@@ -3,6 +3,7 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Feedback;
 using Hall9k.Domain.Features.Tasks.Projections;
 
 namespace Hall9k.Cli.Commands;
@@ -107,6 +108,16 @@ internal static class AttentionComposer
         if (task.State == TaskState.Published && task.PrReviewPreflightUnsafe)
         {
             return new TaskAttention(AttentionLevel.NeedsYou, PreflightParkedCause(task), $"h9k task queue {id}");
+        }
+
+        // A draft the feedback step gave up on: the daemon took it back to Draft to refine it against its blockers' notes and could
+        // not finish, so it waits for a person, who settles it by hand. The reason is the step's own recorded sentence.
+        if (task.State == TaskState.Draft && task.FeedbackStepOutcome == FeedbackStepOutcome.Parked)
+        {
+            return new TaskAttention(
+                AttentionLevel.NeedsYou,
+                $"its feedback step parked it: {task.FeedbackStepOutcomeReason}",
+                $"h9k task show {id}");
         }
 
         // A Queued row this node refuses to claim because the project's own current verify gate

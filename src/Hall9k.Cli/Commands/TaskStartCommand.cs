@@ -12,6 +12,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Feedback;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
@@ -376,6 +377,9 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         }
         else if (task.State == TaskState.Blocked)
         {
+            // A task held for its feedback step has nothing left to acknowledge: refused before anything is loaded, with the reason.
+            FeedbackStepRules.RefuseClaimWhileHeld(task, "started");
+
             // The acknowledgment override applies at the moment of assignment, not to a task
             // already sitting Blocked from an ordinary h9k task queue — but that is a statement
             // about when the human is asked, not about which command can ask (task 0ac72cb8-h9k,
@@ -464,7 +468,9 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         {
             (assigned, claimed, unmet) = PrepareDeliberateClaimFromPublished(
                 task, context.OwnerId, dependencies, runId, claimedAt, acknowledgeUnmetDependencies, interactiveMode,
-                ownerRootFingerprint, resumesBranch);
+                ownerRootFingerprint, resumesBranch,
+                projectTakesFeedbackStep: await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
+                    is { TakesFeedbackStep: true });
         }
         else if (unmetAtEntry is not null)
         {
@@ -710,9 +716,11 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     internal static (TaskAssigned Assigned, TaskClaimed Claimed, IReadOnlyList<TaskDependency> UnmetDependencies) PrepareDeliberateClaimFromPublished(
         TaskAggregate task, Guid ownerId, IReadOnlyList<TaskDependency> dependencies, Guid runId, DateTimeOffset now,
         bool acknowledgeUnmetDependencies, bool interactiveMode = false, string? ownerRootFingerprint = null,
-        string? resumesBranch = null)
+        string? resumesBranch = null, bool projectTakesFeedbackStep = false)
     {
-        TaskAssigned assigned = TaskDecider.Assign(task, ownerId, dependencies, now, ownerId, ownerRootFingerprint);
+        TaskAssigned assigned = TaskDecider.Assign(
+            task, ownerId, dependencies, now, ownerId, ownerRootFingerprint, projectTakesFeedbackStep: projectTakesFeedbackStep);
+        FeedbackStepRules.RefuseClaimWhenQueueingWouldHold(assigned, "started", "h9k task start");
         IReadOnlyList<TaskDependency> unmet =
             [.. dependencies.Where(dependency => assigned.UnmetDependencies.Contains(dependency.Id))];
 

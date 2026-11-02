@@ -258,6 +258,13 @@ internal static class PublishedFacts
                 .. heldByLedgerHolder is not null ? (string[])[LedgerHolderFact(heldByLedgerHolder, now)] : [],
                 .. held is not null ? (string[])[held.ReasonLine] : [],
             ],
+            // Held for the feedback step: every blocker has finished and nothing is left to wait for, so the count arms below would
+            // read this as a record disagreeing with itself. It is the first arm because it is the more specific answer.
+            "Blocked" when task.FeedbackStepHeld =>
+            [
+                FeedbackHeldFact,
+                .. BlockedBy(task),
+            ],
             // A blocker recorded dead is answered before the count, in the same words and the
             // same order its phase-line twin uses (TaskPhaseComposer.BlockedDetail). A death
             // leaves UnmetDependencies untouched — TaskDependencyFailed only appends to the dead
@@ -329,6 +336,10 @@ internal static class PublishedFacts
                 : [],
         ];
     }
+
+    /// <summary>What a Blocked row held for its feedback step says: why nothing claims it, and that the wait is the daemon's.</summary>
+    internal const string FeedbackHeldFact =
+        "held for its feedback step: every blocker has finished, and the daemon is checking the notes they left against this task before it is released";
 
     /// <summary>
     /// Who took this task over, from whom, and when (idea 202383dc, item 4) — stated alongside

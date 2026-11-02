@@ -489,6 +489,20 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "and h9k task challenge still works. h9k project show prints the value and whether it is the default.")]
         public string? RequireChallenge { get; init; }
 
+        [CommandOption("--feedback-step <on|off>")]
+        [Description(
+            "Whether this project's tasks take the feedback step. Off by default. When on, a task with blockers is held Blocked at the moment "
+            + "it would be released (its last blocker reaching true closeout, its stacked parent's Delivered, or the pull request it is "
+            + "stacked on being observed open or merged, whichever comes last; or being queued with every blocker already finished) while "
+            + "the daemon reads the notes those blockers left (never one the trust rule holds out of a prompt). With no such note the task "
+            + "is released at once and no session runs. Otherwise one cheap session with no tools (the FeedbackCheck role, "
+            + "h9k config set --model-feedback-check) answers whether the notes affect the task: if not, or if the check fails, the task is "
+            + "released; if so, the task goes back to Draft, a refinement session (the Refinement role) revises its objective, criteria, and "
+            + "context, it is challenged once, the verdict is judged, and it is published and queued again for the same owner and node, or "
+            + "parked for a person when the step cannot finish. Nothing can claim a held task. A task overrides this either way with "
+            + "h9k task revise --feedback-step on|off|default. A team setting: every teammate's node reads the same value. 'off' is the way back from 'on'")]
+        public string? FeedbackStep { get; init; }
+
         [CommandOption("--claim-gate <off|tracker-assignee>")]
         [Description(
             "What has to be true on this install before a task linked to a Jira card, a GitHub issue, or a Linear issue "
@@ -993,6 +1007,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             // through ChallengeRequirement rather than through a value nobody can type.
             requireChallenge: settings.RequireChallenge is { } requireChallenge
                 ? Optional<bool>.Of(ChallengeRequirement.ParseOnOff(requireChallenge, "--require-challenge"))
+                : Optional<bool>.None,
+            // No clearing word, the --require-challenge shape: a plain two-state switch where 'off' is already the way back from 'on'.
+            takesFeedbackStep: settings.FeedbackStep is { } feedbackStep
+                ? Optional<bool>.Of(ChallengeRequirement.ParseOnOff(feedbackStep, "--feedback-step"))
                 : Optional<bool>.None);
 
         ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);

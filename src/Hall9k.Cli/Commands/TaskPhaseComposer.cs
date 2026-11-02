@@ -626,6 +626,7 @@ internal static class TaskPhaseComposer
     /// </summary>
     private static string BlockedDetail(TaskListItem task) => task switch
     {
+        _ when task.FeedbackStepHeld => "held for its feedback step: the daemon is checking the notes its blockers left against it",
         _ when task.DependencyFailureReason.IsNotBlank() => "a blocker will not close out on its own",
         // The remote twin of the line above: a stacked parent pull request that closed unmerged
         // is a hold nothing will clear either (task: a stacked child can stand on a pull request

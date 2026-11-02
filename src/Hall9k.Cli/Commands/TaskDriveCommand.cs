@@ -17,6 +17,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Feedback;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Notes;
@@ -996,6 +997,8 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         }
         else if (task.State == TaskState.Blocked)
         {
+            // A task held for its feedback step has nothing left to acknowledge: refused before anything is loaded, with the reason.
+            FeedbackStepRules.RefuseClaimWhileHeld(task, "claimed");
             unmetAtEntry = await TaskDependencyQuery.LoadAsync(session, task.UnmetDependencies, cancellationToken);
         }
 
@@ -1112,7 +1115,9 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         {
             (assigned, claimed, unmet) = PrepareInteractiveClaimFromPublished(
                 task, context.OwnerId, dependencies, runId, claimedAt, acknowledgeUnmetDependencies,
-                ownerRootFingerprint, resumesBranch);
+                ownerRootFingerprint, resumesBranch,
+                projectTakesFeedbackStep: await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
+                    is { TakesFeedbackStep: true });
         }
         else if (unmetAtEntry is not null)
         {
@@ -1362,9 +1367,12 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
     /// </summary>
     internal static (TaskAssigned Assigned, TaskClaimed Claimed, IReadOnlyList<TaskDependency> UnmetDependencies) PrepareInteractiveClaimFromPublished(
         TaskAggregate task, Guid ownerId, IReadOnlyList<TaskDependency> dependencies, Guid runId, DateTimeOffset now,
-        bool acknowledgeUnmetDependencies, string? ownerRootFingerprint = null, string? resumesBranch = null)
+        bool acknowledgeUnmetDependencies, string? ownerRootFingerprint = null, string? resumesBranch = null,
+        bool projectTakesFeedbackStep = false)
     {
-        TaskAssigned assigned = TaskDecider.Assign(task, ownerId, dependencies, now, ownerId, ownerRootFingerprint);
+        TaskAssigned assigned = TaskDecider.Assign(
+            task, ownerId, dependencies, now, ownerId, ownerRootFingerprint, projectTakesFeedbackStep: projectTakesFeedbackStep);
+        FeedbackStepRules.RefuseClaimWhenQueueingWouldHold(assigned, "claimed", "h9k task drive");
         IReadOnlyList<TaskDependency> unmet =
             [.. dependencies.Where(dependency => assigned.UnmetDependencies.Contains(dependency.Id))];
 

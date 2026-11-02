@@ -701,9 +701,14 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
 
         IReadOnlyList<TaskDependency> dependencies = await TaskDependencyQuery.LoadAsync(
             session, task.BlockedBy, cancellationToken);
+
+        // Queueing is one of the three doors a task the feedback step applies to is held at, so the project's setting is read
+        // here, where the project is at hand, and recorded on the event: the aggregate replays to the same answer on every node.
+        bool projectTakesFeedbackStep = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
+            is { TakesFeedbackStep: true };
         return TaskDecider.Assign(
             task, assignedOwner.Id, dependencies, DateTimeOffset.UtcNow, assignedByOwnerId,
-            assignedOwner.RootFingerprint, placeOnNode);
+            assignedOwner.RootFingerprint, placeOnNode, projectTakesFeedbackStep);
     }
 
     /// <summary>
@@ -730,6 +735,18 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
                 + $"#{stackedParent.PullRequestNumber}, which it is stacked on and which was last observed "
                 + $"{remoteState.Describe()}. It dispatches once that pull request is observed open; the "
                 + "closeout watcher's own sweep looks on its cadence.");
+            AnnouncePlacement(assigned);
+            return;
+        }
+
+        // Held for the feedback step: every blocker has already cleared, so the task is Blocked with nothing to wait for and the
+        // empty-set arm below would announce a claim the hold refuses.
+        if (assigned.UnmetDependencies.Count == 0 && assigned.HoldForFeedbackStep)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Task {shortId} queued for {owner.Name.EscapeMarkup()}[/] — held for its feedback step. "
+                + "The daemon is checking the notes its blockers left against it; it is then released, or refined and queued "
+                + $"again, or parked for you. h9k task show {shortId} says where it stands.");
             AnnouncePlacement(assigned);
             return;
         }
@@ -772,6 +789,13 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             ? "[dim]It queues itself the moment the last one clears — its stacked parent at Delivered "
               + "(pull request open), any other blocker at its merge — nothing else to do.[/]"
             : "[dim]It queues itself the moment the last one's pull request merges — nothing else to do.[/]");
+        if (assigned.HoldForFeedbackStep)
+        {
+            AnsiConsole.MarkupLine(
+                "[dim]It takes the feedback step: when the last one clears it is held while the daemon checks the notes its "
+                + "blockers left against it, and only then queued.[/]");
+        }
+
         AnnouncePlacement(assigned);
     }
 

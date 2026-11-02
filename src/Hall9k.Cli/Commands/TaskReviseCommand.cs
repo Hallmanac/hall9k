@@ -201,6 +201,18 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             + "Refused once the pull request is open, where there is no boundary left to hold")]
         public bool ClearHumanGate { get; init; }
 
+        [CommandOption("--feedback-step <on|off|default>")]
+        [Description(
+            "Override, for this one task and either way, whether it takes the feedback step: when its last blocker finishes (or it is "
+            + "queued with every blocker already finished) the daemon holds it Blocked and checks the notes its blockers left against "
+            + "it; if they affect it the task is refined, challenged once, published, and queued again for the same owner and node, "
+            + "otherwise it is released, and a step that cannot finish parks it for a person. 'default' clears the override so the "
+            + "project's own setting (h9k project set --feedback-step) decides again; a task with no blockers has no notes to read and "
+            + "is never held. A scheduling fact outside the readiness contract, like --queue-first, so it works on a Published or "
+            + "Blocked task and may be the only thing revised in the call; but narrower: refused once the task is held for its "
+            + "feedback step, has been released to Queued, or has been claimed, with the reason")]
+        public string? FeedbackStep { get; init; }
+
         [CommandOption("--kind <KIND>")]
         [Description(
             "Change a spike's own kind — research, experiment, or prototype (task: a spike is a run, "
@@ -249,6 +261,27 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             + "explicit 'never' or 'on-closeout' here beats an inherited default on every sibling task")]
         public string? CloseLinkedIssue { get; init; }
     }
+
+    /// <summary>Reads <c>--feedback-step</c>: on or off overrides the project's setting, 'default' clears the override, anything else is refused with the three words.</summary>
+    internal static Optional<bool?> ParseFeedbackStep(string? input) =>
+        input?.Trim().ToLowerInvariant() switch
+        {
+            null => Optional<bool?>.None,
+            "on" => Optional<bool?>.Of(true),
+            "off" => Optional<bool?>.Of(false),
+            "default" => Optional<bool?>.Of(null),
+            _ => throw new DomainValidationException(
+                $"--feedback-step takes on, off, or default; got '{input}'. 'on' and 'off' override the project's setting for this task, "
+                + "'default' clears the override so h9k project set --feedback-step decides again."),
+        };
+
+    private static string FeedbackStepConfirmation(string shortId, bool? value) =>
+        value switch
+        {
+            true => $"[blue]Task {shortId} now takes the feedback step[/]: when its last blocker finishes it is held while the daemon checks the notes its blockers left against it.",
+            false => $"[blue]Task {shortId} skips the feedback step[/], whatever its project's setting says.",
+            _ => $"[blue]Task {shortId}'s feedback step override cleared[/]: its project's setting (h9k project set --feedback-step) decides again.",
+        };
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
@@ -376,7 +409,10 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             Environment.GetEnvironmentVariable(TaskRevised.RefinementSessionEnvironmentVariable), out Guid parsedSession)
             ? parsedSession
             : null;
-        StreamState? fence = refinementSession is null
+        // A feedback step override is fenced the same way: whether it is still allowed depends on whether the task has been
+        // released or claimed, and a release or claim that commits after the check would otherwise leave an override that
+        // reports success past the point where it can matter.
+        StreamState? fence = refinementSession is null && settings.FeedbackStep.IsBlank()
             ? null
             : await session.Events.FetchStreamStateAsync(taskId, cancellationToken);
         TaskAggregate task = (fence is null
@@ -483,9 +519,11 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 ? Optional<bool>.Of(false)
                 : Optional<bool>.None;
 
+        Optional<bool?> feedbackStep = ParseFeedbackStep(settings.FeedbackStep);
+
         if (namesCurrentEpic && task.EpicId is { } currentEpic && objective.IsBlank() && criteria.Count == 0
             && agentContext.IsBlank() && !dependencies.HasValue && type.IsBlank() && model.IsBlank()
-            && settings.Effort is null && !humanGate.HasValue
+            && settings.Effort is null && !humanGate.HasValue && !feedbackStep.HasValue
             && !queuePriority.HasValue && settings.ReviewStageComposition is null
             && !settings.ClearInteractiveMode && settings.CloseLinkedIssue is null)
         {
@@ -530,11 +568,16 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             effort: settings.Effort is { } effort
                 ? Optional<AgentEffort>.Of(EffortInput.Parse("--effort", effort))
                 : Optional<AgentEffort>.None,
-            humanGate: humanGate);
+            humanGate: humanGate,
+            feedbackStep: feedbackStep);
 
-        if (refinementSession is not null && fence is not null)
+        if (fence is not null)
         {
-            revised = revised with { RefinementSessionId = refinementSession };
+            if (refinementSession is not null)
+            {
+                revised = revised with { RefinementSessionId = refinementSession };
+            }
+
             session.Events.Append(taskId, expectedVersion: fence.Version + 1, revised);
         }
         else
@@ -549,8 +592,8 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         catch (EventStreamUnexpectedMaxEventIdException)
         {
             throw new DomainConflictException(
-                $"Draft {taskId} changed while the revision was being applied, so nothing was applied. "
-                + "h9k task show says what it is now.");
+                $"{(refinementSession is null ? "Task" : "Draft")} {taskId} changed while the revision was being applied, so nothing "
+                + "was applied. h9k task show says what it is now.");
         }
 
         task.Apply(revised);
@@ -562,7 +605,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         // h9k task start): a call that touched only a marker gets its own confirmation, since
         // "Draft X revised" and "Next: h9k task publish" are both wrong for a task that already
         // left Draft.
-        bool markerFieldsOnly = (revised.QueuePriority.HasValue || revised.ClearInteractiveMode || revised.HumanGate.HasValue)
+        bool markerFieldsOnly = (revised.QueuePriority.HasValue || revised.ClearInteractiveMode || revised.HumanGate.HasValue || revised.FeedbackStep.HasValue)
             && !revised.Objective.HasValue && !revised.AcceptanceCriteria.HasValue
             && !revised.AgentContext.HasValue && !revised.BlockedBy.HasValue && !revised.Type.HasValue
             && !revised.Model.HasValue && !revised.EpicId.HasValue && !revised.Effort.HasValue;
@@ -574,7 +617,8 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             && !revised.Objective.HasValue && !revised.AcceptanceCriteria.HasValue
             && !revised.AgentContext.HasValue && !revised.BlockedBy.HasValue && !revised.Type.HasValue
             && !revised.Model.HasValue && !revised.EpicId.HasValue && !revised.QueuePriority.HasValue
-            && !revised.ClearInteractiveMode && !revised.Effort.HasValue && !revised.HumanGate.HasValue;
+            && !revised.ClearInteractiveMode && !revised.Effort.HasValue && !revised.HumanGate.HasValue
+            && !revised.FeedbackStep.HasValue;
         if (spikeFieldsOnly && task.State != TaskState.Draft)
         {
             AnsiConsole.MarkupLine($"[blue]Spike {shortId} revised[/]: {string.Join(", ", Changed(revised))}.");
@@ -594,6 +638,11 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             {
                 AnsiConsole.MarkupLine(
                     $"[blue]Task {shortId}'s interactive-mode flag cleared[/] — its run stops parking at phase boundaries from here on.");
+            }
+
+            if (revised.FeedbackStep.HasValue)
+            {
+                AnsiConsole.MarkupLine(FeedbackStepConfirmation(shortId, revised.FeedbackStep.Value));
             }
 
             if (revised.HumanGate.HasValue)
@@ -856,6 +905,16 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         if (revised.HumanGate.HasValue)
         {
             yield return revised.HumanGate.Value ? "human gate set" : "human gate cleared";
+        }
+
+        if (revised.FeedbackStep.HasValue)
+        {
+            yield return revised.FeedbackStep.Value switch
+            {
+                true => "feedback step on",
+                false => "feedback step off",
+                _ => "feedback step override cleared",
+            };
         }
 
         if (revised.CloseLinkedIssue.HasValue)
