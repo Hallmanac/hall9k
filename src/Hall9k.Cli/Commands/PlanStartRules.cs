@@ -1,4 +1,5 @@
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Plan.Projections;
@@ -113,6 +114,112 @@ internal static class PlanStartRules
         return new PlanStarted(
             Guid.Empty, projectId, [.. drafts.Select(draft => draft.Task.Id)], start,
             recordsNoExistingItem, recordsUntracked, ownerId, now);
+    }
+
+    /// <summary>
+    /// Every refusal <c>h9k plan start --idea</c> gives, before any session starts, over facts the command read and handed in
+    /// (who may act and whether the workspace and checkout are on this disk are the command's; the rest is pure). Records a
+    /// plan in discovery with no drafts: the drafts exist only when a person pursues the report at the gate.
+    /// <para>
+    /// There is no override of who may start: the question is asked of the idea's holder, or of its creator when nobody holds
+    /// it, and the refusal is this command's own words, because the shared owner guard's message offers a <c>--holder</c> that
+    /// this command does not take.
+    /// </para>
+    /// </summary>
+    public static PlanStarted DecideFromIdea(
+        IdeaAggregate idea,
+        bool mayAct,
+        ProjectDetails? project,
+        IReadOnlyList<PlanDetails> livePlans,
+        bool workspaceHere,
+        string? missingCheckout,
+        Guid ownerId,
+        DateTimeOffset now)
+    {
+        string id = TaskListCommand.ShortId(idea.Id);
+        if (!mayAct)
+        {
+            throw new DomainBusinessRuleException(
+                $"Only idea {id}'s assignee, or its creator when nobody holds it, may start a plan on it, because a plan spends "
+                + "model tokens in their name; there is no override of this. Ask the person who holds the idea to run "
+                + $"h9k plan start --idea {id}, or have them hand it over first (h9k idea assign {id}).");
+        }
+
+        IdeaDecider.RequireCaptured(idea, "start a plan on");
+
+        if (idea.WorkItemReference is { } reference)
+        {
+            throw new DomainValidationException(
+                $"Idea {id} carries the tracker link {reference}, and a plan does not start from such an idea: the first task cut "
+                + "from it adopts the tracker item afresh, whatever the note now says, and the item's text is its author's, "
+                + "which nobody would read once the plan ran unattended. Cut a draft by hand "
+                + $"(h9k task add --from-idea {id} --objective \"<one outcome-phrased sentence>\"), put its context in your own words "
+                + "(h9k task revise <draft> --context \"<what the work is>\"), and run h9k plan start <draft> on that draft.");
+        }
+
+        if (idea.ProjectId is null)
+        {
+            throw new DomainValidationException(
+                $"Idea {id} belongs to no project yet, and a plan runs in a project's checkout. Move it to one first: "
+                + $"h9k idea move {id} <project>");
+        }
+
+        if (project is null)
+        {
+            throw new DomainNotFoundException(
+                $"Idea {id} belongs to project {idea.ProjectId}, which this node does not hold, so it cannot run a plan for it. "
+                + "Start the plan on a node that holds the project.");
+        }
+
+        if (!workspaceHere)
+        {
+            throw new DomainBusinessRuleException(
+                $"Idea {id} has no workspace directory on this node, and discovery writes its report there and reads what is "
+                + "already in it. Start the plan on the node that captured the idea; a workspace does not travel between nodes.");
+        }
+
+        if (livePlans.FirstOrDefault(plan => plan.IsLive && plan.IdeaId == idea.Id) is { } existing)
+        {
+            throw new DomainConflictException(
+                $"Idea {id} is already in plan {Short(existing.Id)}, which is still live on this node. h9k plan show {Short(existing.Id)} "
+                + $"says where it stands; h9k plan cancel {Short(existing.Id)} --reason \"<why>\" ends it.");
+        }
+
+        if (project.IsArchived)
+        {
+            throw new DomainConflictException(
+                $"Project '{project.Name}' is archived, so no discovery session is started for its idea. "
+                + $"Reactivate it first: h9k project reactivate {project.Name}");
+        }
+
+        if (project.PurgeAt is { } purgeDeadline)
+        {
+            throw new DomainValidationException(
+                $"Project '{project.Name}' is scheduled for permanent deletion at {purgeDeadline.ToLocalTime():g}, so it cannot take "
+                + $"a plan. Cancel the purge first: h9k project cancel-purge {project.Name}");
+        }
+
+        if (missingCheckout is not null)
+        {
+            throw new DomainBusinessRuleException(
+                $"There is no working checkout of project '{project.Name}' at {missingCheckout}, and a discovery session reads "
+                + "the code there to test the idea's claims. Create the home's repo/dev worktree with "
+                + $"h9k project init {project.Name}, or point the project at an existing checkout with "
+                + $"h9k project set {project.Name} --repo <path>, then start the plan again.");
+        }
+
+        if (!project.SkipPermissions)
+        {
+            throw new DomainBusinessRuleException(
+                $"Project '{project.Name}' does not run agents with skip-permissions. A discovery session writes its report outside "
+                + "its checkout, which the plain settings refuse, so a plan needs it. Turn it on with "
+                + $"h9k project set {project.Name} --skip-permissions true, or discover the idea with a person in the terminal "
+                + "(recipes/idea-discovery.md).");
+        }
+
+        return new PlanStarted(
+            Guid.Empty, project.Id, [], PlanPhase.Discovery, NoExistingItemAttested: false, UntrackedAttested: false, ownerId, now,
+            idea.Id);
     }
 
     private static void RefuseDraft(

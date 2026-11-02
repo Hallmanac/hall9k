@@ -151,7 +151,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
 
         [CommandOption("--model-refinement <MODEL>")]
         [Description(
-            "This node's model for the Refinement role: the headless session a plan (h9k plan start) dispatches to refine a draft. "
+            "This node's model for the Refinement role: the headless session a plan (h9k plan start) dispatches to refine a draft, and "
+            + "also the discovery session of a plan started from an idea (h9k plan start --idea), which has no setting of its own. "
             + "It sits above the node's default model and below a project's (h9k project set --model); a draft's own model does not "
             + "move it. 'default' clears it.")]
         public string? ModelRefinement { get; init; }
@@ -250,7 +251,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [CommandOption("--effort-refinement <low|medium|high|xhigh>")]
         [Description(
             "This node's reasoning effort for the Refinement role: the headless session a plan (h9k plan start) dispatches to refine a "
-            + "draft. It sits above the node-wide --effort and below a project's (h9k project set --effort); a draft's own effort does "
+            + "draft, and also the discovery session of a plan started from an idea (h9k plan start --idea), which has no setting "
+            + "of its own. It sits above the node-wide --effort and below a project's (h9k project set --effort); a draft's own effort does "
             + "not move it. Accepts low, "
             + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the model's own default.")]
         public string? EffortRefinement { get; init; }

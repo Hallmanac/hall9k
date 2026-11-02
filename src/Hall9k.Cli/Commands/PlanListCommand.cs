@@ -38,24 +38,35 @@ public sealed class PlanListCommand : Hall9kAsyncCommand<PlanListCommand.Setting
             string scope = settings.All
                 ? string.Empty
                 : " are live";
-            AnsiConsole.MarkupLine($"[dim]No plans{scope} on this node. Start one with:[/] h9k plan start <draft> [[<draft>...]]");
+            AnsiConsole.MarkupLine($"[dim]No plans{scope} on this node. Start one with:[/] h9k plan start <draft> [[<draft>...]]  [dim]or, from an idea:[/] h9k plan start --idea <idea>");
             return ExitCodes.Ok;
         }
 
         Dictionary<Guid, string> names = (await session.Query<ProjectDetails>().ToListAsync(cancellationToken))
             .ToDictionary(candidate => candidate.Id, candidate => candidate.Name);
-        Table table = new Table().Border(TableBorder.Rounded).AddColumns("Plan", "Project", "State", "Drafts", "Started");
+        Table table = new Table().Border(TableBorder.Rounded).AddColumns("Plan", "Project", "Idea", "State", "Drafts", "Started");
         foreach (PlanDetails plan in plans)
         {
-            string state = plan.IsLive && plan.IsParked
-                ? "[red]parked[/]"
-                : plan.State.Value.ToLowerInvariant();
+            // Stopped at the gate is a normal ending and reads as one; a plan waiting at the gate says so.
+            string state = plan.AtGate
+                ? "[red]parked (gate)[/]"
+                : plan.IsLive && plan.IsParked
+                    ? "[red]parked[/]"
+                    : plan.State.Value.ToLowerInvariant();
             int closed = plan.Drafts.Count(draft => draft.IsClosed);
+            string drafts = plan.Discovery is not null && plan.Drafts.Count == 0
+                ? plan.IsLive
+                    ? "in discovery"
+                    : "none"
+                : $"{closed} of {plan.Drafts.Count} closed";
             table.AddRow(
                 TaskListCommand.ShortId(plan.Id),
                 names.GetValueOrDefault(plan.ProjectId, "?").EscapeMarkup(),
+                plan.IdeaId is { } ideaId
+                    ? TaskListCommand.ShortId(ideaId)
+                    : "[dim]-[/]",
                 state,
-                $"{closed} of {plan.Drafts.Count} closed",
+                drafts,
                 $"{plan.StartedAt:u}");
         }
 

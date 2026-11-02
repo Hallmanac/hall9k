@@ -114,6 +114,16 @@ public static class LaunchTextDefaults
             + $"--model {Quoted(launch.Model.Value)}{effort}{openingMessage}";
     }
 
+    /// <summary>
+    /// The line a person pastes to resume a plan's discovery session and question it: <c>cd</c> to the checkout the session ran
+    /// in, then <c>claude --resume</c> on the id the daemon gave it. The daemon's session has no row in a window's registry, so
+    /// this is how a person steps into it. Shaped like <see cref="TaskDriveLine"/> and deliberately without
+    /// <c>--dangerously-skip-permissions</c>: a resumed session is a person's own, asking and answering, and writes nothing
+    /// unasked.
+    /// </summary>
+    public static string DiscoveryResumeLine(string checkout, Guid sessionId, LaunchShell shell) =>
+        $"cd \"{EscapeForDoubleQuotes(checkout, shell)}\"{Separator(shell)} claude --resume {sessionId}";
+
     private static string Separator(LaunchShell shell) => shell == LaunchShell.PowerShell
         ? ";"
         : " &&";

@@ -52,6 +52,11 @@ public sealed class PlanResumeCommand : Hall9kAsyncCommand<PlanResumeCommand.Set
 
         await Doorbell.RingAsync($"plan-resumed:{plan.Id}", cancellationToken);
         AnsiConsole.MarkupLine($"[blue]Plan {TaskListCommand.ShortId(plan.Id)} resumed[/]");
+        if (plan.Discovery is { ParkReason.IsParked: true } discovery)
+        {
+            AnsiConsole.MarkupLine($"  discovery: the session that failed ({discovery.ParkReason.Description}) runs again");
+        }
+
         foreach (PlanDraftState draft in plan.Drafts.Where(draft => draft.IsParked))
         {
             string granted = draft.ParkReason == PlanParkReason.RoundsExhausted

@@ -120,7 +120,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             // waiting, which is the origin incident's own shape.
             await WriteAutoPrReviewAsync(session, everyoneRows, DateTimeOffset.UtcNow, cancellationToken);
             await WriteReleaseNoticeAsync(session, daemonState, cancellationToken);
-            AnsiConsole.MarkupLine("[dim]Nothing tracked yet. Draft some work with h9k task add.[/]");
+
+            // A plan started from an idea parks at its gate before any task exists, so a board with no rows can still have
+            // something that needs the viewer; the line saying nothing is tracked is only true when nothing is parked either.
+            if (await WriteParkedPlansAsync(session, cancellationToken) == 0)
+            {
+                AnsiConsole.MarkupLine("[dim]Nothing tracked yet. Draft some work with h9k task add.[/]");
+            }
+
             return ExitCodes.Ok;
         }
 
@@ -1354,6 +1361,18 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         foreach (PlanDetails plan in plans)
         {
             string shortId = TaskListCommand.ShortId(plan.Id);
+            if (plan.Discovery is { IsParked: true } discovery && plan.Drafts.Count == 0)
+            {
+                string idea = TaskListCommand.ShortId(discovery.IdeaId);
+                string answers = plan.AtGate
+                    ? $"h9k plan pursue {shortId} or h9k plan stop {shortId} --reason \"<why>\""
+                    : $"h9k plan resume {shortId}";
+                AnsiConsole.MarkupLine(
+                    $"[red bold]Needs you[/] plan {shortId} parked in discovery of idea {idea}: "
+                    + $"{discovery.ParkReason.Description.EscapeMarkup()}; h9k plan show {shortId}, then {answers.EscapeMarkup()}");
+                printed++;
+            }
+
             foreach (PlanDraftState draft in plan.Drafts.Where(draft => draft.IsParked))
             {
                 AnsiConsole.MarkupLine(

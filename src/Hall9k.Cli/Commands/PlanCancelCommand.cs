@@ -57,7 +57,7 @@ public sealed class PlanCancelCommand : Hall9kAsyncCommand<PlanCancelCommand.Set
         await Doorbell.RingAsync($"plan-cancelled:{plan.Id}", cancellationToken);
         AnsiConsole.MarkupLine($"[blue]Plan {TaskListCommand.ShortId(plan.Id)} cancelled[/]");
         AnsiConsole.MarkupLine(
-            "[dim]  The daemon stops the plan's refinement session without applying anything. Its drafts are still Drafts and free for "
+            "[dim]  The daemon stops the plan's refinement or discovery session without applying or copying anything. Its drafts, if any, are still Drafts and free for "
             + "another plan; any already published stay published.[/]");
         return ExitCodes.Ok;
     }

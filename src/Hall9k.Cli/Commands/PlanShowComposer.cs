@@ -1,4 +1,5 @@
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project.Projections;
@@ -8,8 +9,19 @@ using Spectre.Console;
 
 namespace Hall9k.Cli.Commands;
 
+/// <summary>
+/// What <c>h9k plan show</c> read about a plan started from an idea that the plan's record cannot hold: the idea's note, the
+/// report file in the workspace and what it says (read now, so a person's edit shows), and the line that resumes the discovery
+/// session. The report text is read through <see cref="DiscoveryReport"/> only; nothing of the file's prose is carried here.
+/// </summary>
+/// <param name="IdeaNote">The idea's note, or null when the idea is not on this node.</param>
+/// <param name="ReportPath">The report's path in the idea's workspace now, or null when the workspace path is not this host's.</param>
+/// <param name="Reading">What the file reads as, or null when it was not looked at.</param>
+/// <param name="ResumeLine">The line to paste to question the discovery session, or null when there is no session to resume.</param>
+internal sealed record DiscoveryShowFacts(string? IdeaNote, string? ReportPath, DiscoveryReading? Reading, string? ResumeLine);
+
 /// <summary>What <c>h9k plan show</c> knows beyond the plan's own record: whether the daemon is up, and why a live plan is not starting sessions.</summary>
-internal sealed record PlanShowFacts(bool DaemonRunning, string? LaunchGate);
+internal sealed record PlanShowFacts(bool DaemonRunning, string? LaunchGate, DiscoveryShowFacts? Discovery = null);
 
 /// <summary>
 /// The text of <c>h9k plan show</c>, as Spectre markup lines, composed from the plan's record and the drafts it names. Pure
@@ -31,11 +43,22 @@ internal static class PlanShowComposer
             $"  started: {plan.StartedAt:u}, at {plan.StartPhase.Word}",
             $"  tracker attestation: {Attestation(plan)}",
         ];
+        if (plan.IdeaId is { } ideaId)
+        {
+            string note = facts.Discovery?.IdeaNote is { } text
+                ? $" {ExternalText.OneLineMarkup(RelayedText.Truncate(text, IdeaNoteWidth))}"
+                : string.Empty;
+            lines.Insert(2, $"  idea: {TaskListCommand.ShortId(ideaId)}{note}");
+            lines.Insert(3, $"  phase: {plan.Phase.Word}");
+        }
+
         if (plan.EndedAt is { } ended)
         {
             string given = plan.CancelReason is { } why
                 ? $", reason given: {ExternalText.OneLineMarkup(why)}"
-                : string.Empty;
+                : plan.StopReason is { } stopWhy
+                    ? $", reason given: {ExternalText.OneLineMarkup(stopWhy)}"
+                    : string.Empty;
             lines.Add($"  ended: {ended:u}{given}");
         }
 
@@ -53,7 +76,16 @@ internal static class PlanShowComposer
             }
         }
 
-        lines.Add("  drafts:");
+        if (plan.Discovery is not null)
+        {
+            lines.AddRange(DiscoveryLines(plan, plan.Discovery, facts.Discovery));
+        }
+
+        lines.Add(plan.Discovery is not null && plan.Drafts.Count == 0
+            ? plan.IsLive
+                ? "  drafts: none yet (they are cut when the plan is pursued)"
+                : "  drafts: none"
+            : "  drafts:");
         foreach (PlanDraftState draft in plan.Drafts)
         {
             lines.AddRange(DraftLines(plan, draft, tasks.GetValueOrDefault(draft.DraftId), roundCap));
@@ -67,7 +99,20 @@ internal static class PlanShowComposer
         }
 
         lines.AddRange(TrackerGapLines(plan, project, tasks));
-        if (plan.IsLive && plan.IsParked)
+        if (plan.AtGate)
+        {
+            lines.Add(string.Empty);
+            lines.Add(
+                $"[dim]Next:[/] h9k plan pursue {shortId} [dim]cuts the report's proposed tasks as drafts; or[/] h9k plan stop {shortId} --reason \"<why>\" "
+                + "[dim]ends it, a normal ending that leaves the idea Captured. h9k plan resume is refused here.[/]");
+        }
+        else if (plan.IsLive && plan.IsParked && plan.Drafts.Count == 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add(
+                $"[dim]Next:[/] h9k plan resume {shortId} [dim]runs discovery again; h9k plan cancel {shortId} --reason \"<why>\" ends the plan[/]");
+        }
+        else if (plan.IsLive && plan.IsParked)
         {
             lines.Add(string.Empty);
             lines.Add($"[dim]Next:[/] h9k plan resume {shortId} [dim]— or publish or abandon the parked draft by hand, which answers its park; "
@@ -75,6 +120,66 @@ internal static class PlanShowComposer
         }
 
         return lines;
+    }
+
+    /// <summary>The width the idea's note is cut to on the idea line, so a long note does not bury the rest.</summary>
+    private const int IdeaNoteWidth = 100;
+
+    /// <summary>
+    /// Discovery's part of a plan started from an idea: whether a session is running and where its report will be, the park (a
+    /// failed session, or the gate), and at the gate what the report in the workspace says: pursue or stop, the objectives it
+    /// proposes, its path, and the line that resumes the session. A report that is missing or unreadable is said to be, and its
+    /// path and the resume line are still printed.
+    /// </summary>
+    private static IEnumerable<string> DiscoveryLines(PlanDetails plan, PlanDiscoveryState discovery, DiscoveryShowFacts? facts)
+    {
+        if (discovery.RunningSessionId is { } running)
+        {
+            yield return $"  a discovery session is running; its report will be {RunPaths.DiscoveryReportFile(running).EscapeMarkup()}";
+        }
+
+        if (discovery.ParkReason.IsParked && plan.Drafts.Count == 0)
+        {
+            yield return $"  [red]parked:[/] {discovery.ParkReason.Description}";
+            yield return $"  [dim]{discovery.ParkReason.WayForward.EscapeMarkup()}[/]";
+            if (discovery.ParkReason == PlanParkReason.SessionFailed && discovery.LatestSessionId is { } failed)
+            {
+                yield return $"  [dim]read: {RunPaths.DiscoveryReportFile(failed).EscapeMarkup()} (if the session wrote one), and the daemon log[/]";
+            }
+        }
+
+        if (facts?.Reading is not { } reading)
+        {
+            yield break;
+        }
+
+        yield return "  discovery report:";
+        yield return $"    path: {(facts.ReportPath ?? "(the idea's workspace is not on this node)").EscapeMarkup()}";
+        if (reading.Missing)
+        {
+            yield return "    [yellow]the report is not there[/] [dim](the daemon copies it to the idea's workspace when the session ends; if the copy failed, the report is still in the session directory above)[/]";
+        }
+        else if (reading.Readout is not { } readout)
+        {
+            yield return "    [yellow]the report is there but not readable[/] [dim](its closing block must hold exactly one DISCOVERY: line naming pursue or stop, "
+                + "and for a pursue one or more TASK: lines (a stop has none). Fix the end of the file; h9k plan pursue reads it as it is then)[/]";
+        }
+        else
+        {
+            yield return readout.Decision == DiscoveryDecision.Pursue
+                ? $"    the report says [green]pursue[/], proposing {readout.Objectives.Count} {(readout.Objectives.Count == 1 ? "task" : "tasks")}:"
+                : "    the report says [yellow]stop[/]: it proposes no task";
+            foreach (string objective in readout.Objectives)
+            {
+                yield return $"      - {ExternalText.OneLineMarkup(objective)}";
+            }
+        }
+
+        if (facts.ResumeLine is { } resume)
+        {
+            yield return "  to question the discovery session, paste:";
+            yield return $"    {resume.EscapeMarkup()}";
+        }
     }
 
     private static IEnumerable<string> DraftLines(PlanDetails plan, PlanDraftState draft, TaskDetails? task, int roundCap)
@@ -179,10 +284,12 @@ internal static class PlanShowComposer
 
     private static string StateWord(PlanDetails plan) => plan.State.Value switch
     {
+        "Live" when plan.AtGate => "[red]live, parked at discovery's gate[/]",
         "Live" when plan.IsParked => "[red]live, parked[/]",
         "Live" => "[green]live[/]",
         "Published" => "[green]published[/]",
         "Cancelled" => "[dim]cancelled[/]",
+        "Stopped" => "[green]stopped[/] [dim](a normal ending, not a failure or a cancellation)[/]",
         _ => "[dim]unknown[/]",
     };
 
