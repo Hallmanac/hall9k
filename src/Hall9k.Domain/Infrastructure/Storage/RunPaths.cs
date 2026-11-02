@@ -328,6 +328,14 @@ public static class RunPaths
         Path.Combine(runDirectory, $"closeout-triage-{threadSetKeyHash}-{sessionId:N}.diff");
 
     /// <summary>
+    /// The bodies of the issues a pull request's description cites, which the daemon reads before a review lens that is
+    /// told the pull request's intent starts (at most ten issues in the pull request's own repository, and no
+    /// comments), so that session reads GitHub only through what was gathered for it. One file per run directory:
+    /// every lens of one review reads the same one.
+    /// </summary>
+    public static string CitedIssuesFile(string runDirectory) => Path.Combine(runDirectory, "cited-issues.md");
+
+    /// <summary>
     /// The report a closeout triage session writes for one set of unresolved review threads (task:
     /// analysis-only closeout), named by a short hash of the set's key and the session id, so each
     /// triage has a file of its own and its permission file can name exactly that path.

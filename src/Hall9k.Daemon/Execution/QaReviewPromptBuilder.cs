@@ -57,7 +57,7 @@ public static class QaReviewPromptBuilder
         ReviewDriveDecision drive = request.Drive ?? ReviewDriveDecision.NoneFor(ReviewPersona.Qa);
         StringBuilder prompt = new();
         AppendOpening(prompt, request.BaseBranch);
-        AppendObjective(prompt, request.Task);
+        AppendObjective(prompt, request.Task, request.RunDirectory);
         AppendBlastRadius(prompt);
         AppendChecks(prompt, request.Project, request.BaseBranch, drive, request.RunSkill);
         AppendReportShape(prompt);
@@ -93,7 +93,7 @@ public static class QaReviewPromptBuilder
         AppendFragment(prompt, file, "gates-not-observed");
     }
 
-    private static void AppendObjective(StringBuilder prompt, TaskDetails task)
+    private static void AppendObjective(StringBuilder prompt, TaskDetails task, string? runDirectory)
     {
         const string file = $"{TemplateDirectory}/objective.md";
         prompt.AppendLine();
@@ -141,6 +141,13 @@ public static class QaReviewPromptBuilder
             }
 
             AppendFragment(prompt, file, "basis-thin");
+
+            // The issues that description cites, which the daemon read for this session because it cannot run gh.
+            if (runDirectory is not null)
+            {
+                prompt.AppendLine();
+                AppendFragment(prompt, file, "cited-issues", ("CitedIssuesPath", RunPaths.CitedIssuesFile(runDirectory)));
+            }
         }
         else
         {

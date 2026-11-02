@@ -3,6 +3,7 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Daemon.Review;
@@ -36,9 +37,16 @@ namespace Hall9k.Daemon.Review;
 /// fenced as another node's note unless its verified sender is in it. Null means not known, which
 /// fences a replicated reason and leaves a native one alone.
 /// </param>
+/// <param name="RunDirectory">
+/// The directory of the run this session belongs to, which is where the daemon wrote the issues the pull
+/// request's description cites (<see cref="Hall9k.Domain.Infrastructure.Storage.RunPaths.CitedIssuesFile"/>)
+/// for a session that reads them. Null leaves that pointer out of the prompt, which is what a caller that
+/// wrote no such file passes.
+/// </param>
 public sealed record ReviewPersonaPromptRequest(
     TaskDetails Task, ProjectDetails Project, string Branch, string BaseBranch, TimeSpan? CommandTimeout,
-    ReviewDriveDecision? Drive = null, string? RunSkill = null, LocalFleet? LocalFleet = null);
+    ReviewDriveDecision? Drive = null, string? RunSkill = null, LocalFleet? LocalFleet = null,
+    string? RunDirectory = null);
 
 /// <summary>
 /// One agent session a persona's review is made of. Most personas are one session; the engineer's
@@ -74,6 +82,12 @@ public sealed record ReviewPersonaPromptRequest(
 /// platform's call, not the reviewing agent's). Null — every engineer session — means the file is
 /// carried into the report verbatim, exactly as a pr-review report has always carried it.
 /// </param>
+/// <param name="ReadsCitedIssues">
+/// Whether this session's prompt points at the file of issues the pull request's description cites
+/// (<see cref="Hall9k.Domain.Infrastructure.Storage.RunPaths.CitedIssuesFile"/>), which the daemon writes into the
+/// run directory before the session starts because a pr-review session cannot run <c>gh</c>. False for the
+/// engineer's adversarial lens, whose prompt deliberately says nothing about what the change is for.
+/// </param>
 public sealed record ReviewPersonaSession(
     ReviewPersona Persona,
     string Slug,
@@ -81,7 +95,8 @@ public sealed record ReviewPersonaSession(
     string RoleName,
     bool SeesTaskContext,
     Func<ReviewPersonaPromptRequest, string> BuildPrompt,
-    Func<string, ReviewDriveDecision, string>? ComposeSection = null);
+    Func<string, ReviewDriveDecision, string>? ComposeSection = null,
+    bool ReadsCitedIssues = false);
 
 /// <summary>
 /// One persona's registration: what it reviews for, and the sessions that do the reviewing. A
@@ -211,7 +226,8 @@ public static class ReviewPersonaRegistry
                 "Conformance (weighted — thin basis reads as context notes, not blockers)",
                 SessionRoleName.ReviewConformance(PrReviewCycle),
                 SeesTaskContext: true,
-                request => BuildLens(request, ReviewLens.Conformance)),
+                request => BuildLens(request, ReviewLens.Conformance),
+                ReadsCitedIssues: true),
         ]);
 
     /// <summary>
@@ -239,7 +255,8 @@ public static class ReviewPersonaRegistry
                 // the four standards it grades against is the acceptance criteria on whatever
                 // this pull request is linked to, and that basis arrives nowhere else.
                 SeesTaskContext: true,
-                QaReviewPromptBuilder.Build),
+                QaReviewPromptBuilder.Build,
+                ReadsCitedIssues: true),
         ],
         CanDriveTheProduct: true);
 
@@ -288,7 +305,8 @@ public static class ReviewPersonaRegistry
                 // of defect over the diff itself and must not be steered by an outsider's own
                 // description of what the change is for (security review idea 6be68ee2).
                 SeesTaskContext: false,
-                SecurityReviewPromptBuilder.Build),
+                SecurityReviewPromptBuilder.Build,
+                ReadsCitedIssues: true),
         ],
         // Never drives the product: this lens reads the diff and the files it touches, and has
         // no more reason to stand the project up than the engineer's own two lenses do.
@@ -486,5 +504,5 @@ public static class ReviewPersonaRegistry
     private static string BuildLens(ReviewPersonaPromptRequest request, ReviewLens lens) =>
         AgentPromptBuilder.BuildPrReviewLens(
             request.Task, request.Project, request.Branch, lens, request.BaseBranch, request.CommandTimeout,
-            request.LocalFleet);
+            request.LocalFleet, citedIssuesPath: request.RunDirectory is { } runDirectory ? RunPaths.CitedIssuesFile(runDirectory) : null);
 }

@@ -1125,7 +1125,12 @@ reviews it and parks a findings report for you to walk. That checkout is a stand
 repository of its own that borrows the project's objects and holds its remote-tracking refs and tags
 but has no remote, so the session can run read-only git (`git show`, `git grep`, `git blame`,
 `git ls-files`) against any revision of any file. Git LFS files are not downloaded into it, so an
-LFS-tracked path holds its pointer text, and the review prompts say so. Nothing is posted to the pull request
+LFS-tracked path holds its pointer text, and the review prompts say so. The session is refused `gh`
+altogether, because a read-only review should use no credential it does not need. The daemon reads
+GitHub for it instead: before a lens that is told the pull request's intent starts, it writes the
+bodies of the issues the description cites (at most ten, in the pull request's own repository, with no
+comments, and the rest named as not read) into the run directory, and the prompt points at that
+file as source material rather than instruction. Nothing is posted to the pull request
 without your explicit go, and never under any login but your own.
 
 **A persona is the lens the review is read through.** Each member declares the personas they hold

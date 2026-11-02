@@ -783,9 +783,20 @@ public sealed class RunLauncher(
                 string baseBranch = prReviewFacts!.BaseRefName.IsNotBlank() ? prReviewFacts.BaseRefName : project.BaseBranch;
                 ReviewPersonaSession primarySession = personaPlan!.Sessions[0];
                 ReviewDriveDecision primaryDrive = personaPlan.DriveFor(primarySession.Persona);
+                // The issues the description cites, read here because the session cannot run gh. Only for a
+                // primary session whose prompt points at them: the adversarial lens is told nothing of the
+                // change's intent, and nothing is written for it to read.
+                if (primarySession.ReadsCitedIssues)
+                {
+                    await CitedIssues.EnsureWrittenAsync(
+                        processRunner, task.ExternalReference, task.AgentContext, project.RepositoryPath, runDirectory,
+                        logger, cancellationToken);
+                }
+
                 prompt = primarySession.BuildPrompt(new ReviewPersonaPromptRequest(
                     task, project, worktree.Branch, baseBranch, options.Value.VerifyGateTimeout, primaryDrive,
-                    primaryDrive.Drives ? ProjectRunSkillReader.Read(project) : null, localFleet));
+                    primaryDrive.Drives ? ProjectRunSkillReader.Read(project) : null, localFleet,
+                    primarySession.ReadsCitedIssues ? runDirectory : null));
 
                 // This mint itself came from a GitHub mention (idea 2f079bcd, decision 2 and 3):
                 // the primary session's own ordinary verdict is not enough here, so it is also
