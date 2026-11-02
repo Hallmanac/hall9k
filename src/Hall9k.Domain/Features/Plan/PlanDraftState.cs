@@ -56,6 +56,12 @@ public sealed class PlanDraftState
 
     public bool IsParked => ParkReason.IsParked;
 
+    /// <summary>
+    /// Whether a person resumed a park on this draft and nothing has happened to it since. A step that would park the draft
+    /// again for what that person already saw (a revision the park was about) moves it on instead: the resume was the answer.
+    /// </summary>
+    public bool ResumedFromPark { get; set; }
+
     /// <summary>The draft as a plan starts it.</summary>
     public static PlanDraftState Start(Guid draftId, PlanPhase startPhase) => startPhase == PlanPhase.Challenge
         ? new PlanDraftState
@@ -72,9 +78,14 @@ public sealed class PlanDraftState
         RunningSessionId = @event.SessionId;
         LatestSessionId = @event.SessionId;
         LatestReportIsChallenge = false;
+        ResumedFromPark = false;
     }
 
-    public void Apply(PlanChallengeRequested @event) => ChallengeRequestedAt = @event.RequestedAt;
+    public void Apply(PlanChallengeRequested @event)
+    {
+        ChallengeRequestedAt = @event.RequestedAt;
+        ResumedFromPark = false;
+    }
 
     public void Apply(PlanDraftMoved @event)
     {
@@ -85,6 +96,7 @@ public sealed class PlanDraftState
         Ready = @event.Ready;
         RunningSessionId = null;
         ChallengeRequestedAt = null;
+        ResumedFromPark = false;
         if (@event.SessionId is { } movedBy)
         {
             LatestSessionId = movedBy;
@@ -97,6 +109,7 @@ public sealed class PlanDraftState
         ParkReason = @event.Reason;
         RunningSessionId = null;
         ChallengeRequestedAt = null;
+        ResumedFromPark = false;
 
         // A challenge or a refinement dispatch that was refused before any session ran has no session, so nothing it wrote
         // is anywhere to be read: the earlier session's report is not this park's report, and is not offered as if it were.
@@ -127,6 +140,7 @@ public sealed class PlanDraftState
         ExtraRounds += ParkReason == PlanParkReason.RoundsExhausted
             ? 1
             : 0;
+        ResumedFromPark |= ParkReason.IsParked;
         ParkReason = PlanParkReason.Unknown;
     }
 

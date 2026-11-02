@@ -1972,14 +1972,27 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
 
     public void Apply(IEvent<DraftRefinementRecorded> @event, TaskDetails view)
     {
+        // The same guard as TaskAggregate.Apply(DraftRefinementRecorded): a late outcome for a session that is no longer the
+        // running one leaves the running session's standing alone.
+        if (@event.Data.SessionId is { } recordedSession && view.RunningRefinementSessionId is { } runningSession
+            && recordedSession != runningSession)
+        {
+            return;
+        }
+
         view.RunningRefinementSessionId = null;
         view.RunningRefinementNodeId = null;
         view.RunningRefinementDispatchedAt = null;
         view.RunningRefinementModel = null;
         view.RunningRefinementEffort = null;
         view.LatestRefinementOutcome = @event.Data;
-        view.RevisedSinceLastDraftSession = view.RevisedWhileRefinementRan;
-        view.RevisedWhileRefinementRan = false;
+
+        // A dispatch refused before any session ran read nothing, so it leaves a revision no session has read standing.
+        if (@event.Data.SessionId is not null)
+        {
+            view.RevisedSinceLastDraftSession = view.RevisedWhileRefinementRan;
+            view.RevisedWhileRefinementRan = false;
+        }
     }
 
     public void Apply(IEvent<WorkItemPublicationSessionStarted> @event, TaskDetails view)

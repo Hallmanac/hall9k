@@ -198,9 +198,16 @@ public static class PlanDecider
     /// </summary>
     public static IReadOnlyList<object> ParkReadyDraftChanged(PlanAggregate plan, PlanDraftState draft, DateTimeOffset now) =>
     [
-        Moved(plan, draft, PlanPhase.Challenge, draft.Round, draft.Outcome, RefinementPurpose.Unknown, ready: false, null, now),
+        BackToChallenge(plan, draft, now),
         Park(plan, draft.DraftId, PlanParkReason.DraftChanged, null, now),
     ];
+
+    /// <summary>
+    /// A draft whose verdict is waiting to be applied, and which a person revised after a park they have since resumed,
+    /// goes back to a challenge of the text as it now stands. No second park: the resume was the answer to the first.
+    /// </summary>
+    public static PlanDraftMoved BackToChallenge(PlanAggregate plan, PlanDraftState draft, DateTimeOffset now) =>
+        Moved(plan, draft, PlanPhase.Challenge, draft.Round, draft.Outcome, RefinementPurpose.Unknown, ready: false, null, now);
 
     /// <summary>The move a granted round makes: the draft goes back to refinement to answer the verdict that exhausted the last one.</summary>
     public static PlanDraftMoved StartNextRound(PlanAggregate plan, PlanDraftState draft, DateTimeOffset now) =>

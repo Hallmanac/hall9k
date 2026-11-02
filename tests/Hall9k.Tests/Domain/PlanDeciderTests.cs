@@ -165,6 +165,27 @@ public sealed class PlanDeciderTests
     }
 
     [Fact]
+    public void A_draft_waiting_for_its_verdict_to_be_applied_goes_back_to_a_challenge_after_a_resume_without_parking_again()
+    {
+        Guid draft = DomainId.New();
+        PlanAggregate plan = AtChallenge(draft);
+        Fold(plan, PlanDecider.AfterChallenge(plan, plan.Drafts[0], Verdict(draft, ChallengeVerdict.PublishAsRevised, must: 1), Cap, Now));
+        Fold(plan, [PlanDecider.ParkOn(plan, draft, PlanParkReason.Question, DomainId.New(), Now)]);
+        plan.Drafts[0].ResumedFromPark.Should().BeFalse("nobody has answered the park yet");
+
+        plan.ApplyEvent(PlanDecider.Resume(plan, _owner, Now));
+        plan.Drafts[0].ResumedFromPark.Should().BeTrue();
+        PlanDecider.NextStep(plan.Drafts[0]).Should().Be(PlanStepKind.DispatchRefinement);
+
+        plan.ApplyEvent(PlanDecider.BackToChallenge(plan, plan.Drafts[0], Now));
+
+        plan.Drafts[0].ResumedFromPark.Should().BeFalse();
+        plan.Drafts[0].IsParked.Should().BeFalse();
+        plan.Drafts[0].Purpose.Should().Be(RefinementPurpose.Unknown);
+        PlanDecider.NextStep(plan.Drafts[0]).Should().Be(PlanStepKind.RequestChallenge);
+    }
+
+    [Fact]
     public void Publish_as_revised_gets_one_apply_session_and_then_the_draft_is_ready_without_another_challenge()
     {
         Guid draft = DomainId.New();

@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.ComponentModel;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
@@ -12,6 +13,7 @@ using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
+using Npgsql;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -92,6 +94,10 @@ public sealed class PlanStartCommand : Hall9kAsyncCommand<PlanStartCommand.Setti
         string? missingCheckout = !Directory.Exists(checkout) || ProjectCheckout.IsBare(checkout)
             ? checkout
             : null;
+
+        // The rule that a draft sits in at most one live plan is a check followed by an act, so it holds only if two starts
+        // for one project cannot overlap: the lock is taken before the live plans are read and held until the plan is saved.
+        await RequireSoleStarterAsync(session, project.Id, cancellationToken);
         IReadOnlyList<PlanDetails> livePlans = [.. (await session.Query<PlanDetails>().ToListAsync(cancellationToken)).Where(plan => plan.IsLive)];
 
         PlanStarted decided = PlanStartRules.Decide(
@@ -126,5 +132,53 @@ public sealed class PlanStartCommand : Hall9kAsyncCommand<PlanStartCommand.Setti
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The advisory lock's first key: a constant standing for "starting a plan", so it cannot collide with an unrelated lock
+    /// taken against the same store (<c>h9k decide import</c> takes its own under a different one).
+    /// </summary>
+    private const int StartLockClass = 0x0A1A4057;
+
+    /// <summary>
+    /// Takes Postgres' own advisory lock for one project, scoped to the session's transaction, so two <c>h9k plan start</c>
+    /// commands cannot both pass the one-live-plan-per-draft rule against the same live plans. It refuses rather than
+    /// waiting: the start in flight is about to record its plan, and the honest answer is to run this again once it has.
+    /// </summary>
+    private static async Task RequireSoleStarterAsync(IDocumentSession session, Guid projectId, CancellationToken cancellationToken)
+    {
+        await session.BeginTransactionAsync(cancellationToken);
+        NpgsqlConnection connection = session.Connection
+            ?? throw new InvalidOperationException(
+                "The plan start's own session has no open connection after beginning its transaction, so the lock that keeps "
+                + "two starts from overlapping cannot be taken. Nothing was recorded.");
+
+        await using NpgsqlCommand command = new("select pg_try_advisory_xact_lock(@class, @scope)", connection);
+        command.Parameters.AddWithValue("class", StartLockClass);
+        command.Parameters.AddWithValue("scope", ProjectLockKey(projectId));
+        if (await command.ExecuteScalarAsync(cancellationToken) is true)
+        {
+            return;
+        }
+
+        throw new DomainConflictException(
+            "Another h9k plan start for this project is in flight right now, so this one recorded nothing. A draft sits in at "
+            + "most one live plan, and two starts at once could each put the same draft in one. Run it again in a moment; "
+            + "h9k plan list says whether the other start recorded its plan.");
+    }
+
+    /// <summary>The project's id folded into the <c>int4</c> Postgres takes, explicitly rather than by hash code, so every process derives the same number.</summary>
+    private static int ProjectLockKey(Guid projectId)
+    {
+        Span<byte> bytes = stackalloc byte[16];
+        projectId.TryWriteBytes(bytes);
+
+        int key = 0;
+        for (int index = 0; index < bytes.Length; index += sizeof(int))
+        {
+            key ^= BinaryPrimitives.ReadInt32LittleEndian(bytes[index..]);
+        }
+
+        return key;
     }
 }

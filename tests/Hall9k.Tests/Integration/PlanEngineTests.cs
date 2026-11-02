@@ -749,6 +749,20 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
         (await ParkedAsync(planId, draft, PlanParkReason.DraftChanged, cts.Token)).Should().BeTrue();
         session.Spawns.Should().BeEmpty("the verdict judged text that is no longer the draft");
         commands.Calls.Should().BeEmpty("nothing was applied or published");
+
+        // The resume is the person's answer: the next step is the new challenge, not a second park for the same revision.
+        await using (IDocumentSession resume = postgres.Store.LightweightSession())
+        {
+            resume.Events.Append(planId, new PlanResumed(planId, projectId, _node.OwnerId, Now));
+            await resume.SaveChangesAsync(cts.Token);
+        }
+
+        await engine.PollOnceAsync(cts.Token);
+
+        (await StreamAsync(draft, cts.Token)).OfType<DraftChallengeRequested>().Should().HaveCount(
+            2, "the first challenge was the verdict's own; the resume sent the draft back to one of the text as it now stands");
+        (await StreamAsync(planId, cts.Token)).OfType<PlanParked>().Should().ContainSingle("the resume was not met with a second park");
+        session.Spawns.Should().BeEmpty();
     }
 
     [Fact]
