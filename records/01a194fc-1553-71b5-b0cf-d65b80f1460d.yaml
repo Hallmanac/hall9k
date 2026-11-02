@@ -62,3 +62,7 @@ context: |-
   Not in this task: carrying an idea's workspace between nodes, a drafting session, `h9k plan add` or any way to add a draft to a live plan, a task list chosen by flag at the gate (edit the report), a third gate answer for another look (stop and start a new plan), a time limit on the gate, an attestation for linked ideas, plan records that travel, a new role or model setting, a separate time bound, and any change to how attended discovery runs. No plan concludes or archives an idea. Task notes, Ralph loops, agent files, multi-vendor, and the coordination layer are out of scope. No test spawns a real agent, creates a branch, or touches GitHub.
 
   Note to the orchestrator (decision 13f11af2), not to the build session: after this merges, regenerate the project recipes and adopt them, and start unattended discovery with `h9k plan start --idea` rather than a spawned session. The idea stays open; concluding it is the orchestrator's act.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-11-02 05:00:48Z
