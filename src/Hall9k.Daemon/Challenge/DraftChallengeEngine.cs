@@ -267,6 +267,36 @@ public sealed class DraftChallengeEngine(
                 $"there is no working checkout of the project at {checkout}", cancellationToken);
         }
 
+        // What the plan that requested this challenge says about starting it: a parked plan holds the request, and an ended
+        // one refuses it. Asked twice: before the join, so a request that is held for days does not move the reading
+        // checkout on every sweep for a session that cannot start, and again after it, which can wait on another session's
+        // refresh, because the plan can park or be cancelled in the meantime and must not get a session it was promised it
+        // would not.
+        async Task<Attempt?> PlanDecidesAsync()
+        {
+            PlanDetails? requestingPlan = requestedAt is { } asked
+                ? (await session.Query<PlanDetails>().ToListAsync(cancellationToken))
+                    .FirstOrDefault(plan => plan.Draft(taskId)?.ChallengeRequestedAt == asked)
+                : null;
+            switch (requestingPlan)
+            {
+                case { IsLive: true, IsParked: true }:
+                    logger.LogDebug("Task {TaskId}: its plan {PlanId} is parked, so the challenge it requested waits", taskId, requestingPlan.Id);
+                    return Attempt.NotThisSweeps;
+                case { IsLive: false }:
+                    return await RefuseAsync(
+                        session, fence, taskId, ChallengeFailureReason.PlanEnded, model, effort, $"plan {requestingPlan.Id} has ended",
+                        cancellationToken);
+                default:
+                    return null;
+            }
+        }
+
+        if (await PlanDecidesAsync() is { } beforeJoin)
+        {
+            return beforeJoin;
+        }
+
         // Only the home's own dev/ is moved, the publication engine's rule: a project registered before homes
         // reads from somebody's ordinary clone, and that one is theirs to move. The outcome is carried into the
         // prompt, because a session testing a stale tree must be told so, and a refresh that failed is otherwise
@@ -280,23 +310,9 @@ public sealed class DraftChallengeEngine(
             cancellationToken);
         using IDisposable lease = join.Lease;
 
-        // Read after the join, which can wait on another session's refresh: a plan that parked or was cancelled in the
-        // meantime must not get a session it was promised it would not.
-        PlanDetails? requestingPlan = requestedAt is { } asked
-            ? (await session.Query<PlanDetails>().ToListAsync(cancellationToken))
-                .FirstOrDefault(plan => plan.Draft(taskId)?.ChallengeRequestedAt == asked)
-            : null;
-        if (requestingPlan is { IsLive: true, IsParked: true })
+        if (await PlanDecidesAsync() is { } afterJoin)
         {
-            logger.LogDebug("Task {TaskId}: its plan {PlanId} is parked, so the challenge it requested waits", taskId, requestingPlan.Id);
-            return Attempt.NotThisSweeps;
-        }
-
-        if (requestingPlan is { IsLive: false })
-        {
-            return await RefuseAsync(
-                session, fence, taskId, ChallengeFailureReason.PlanEnded, model, effort, $"plan {requestingPlan.Id} has ended",
-                cancellationToken);
+            return afterJoin;
         }
 
         CheckoutRefresh? refresh = join.Refresh;
