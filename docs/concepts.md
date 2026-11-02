@@ -506,8 +506,10 @@ suggest asking the teammate whose node holds that project.
 A blocker already recorded as dead is explained by its recorded reason and is not also called unknown. A
 node records the failure for a blocker it purged once per dependent: if a node that still has the
 blocker lifts the hold, this node leaves it lifted rather than recording it again.
-A purge from before this change left no record, so a blocker destroyed by one shows as unknown too,
-and the dependent stays `Blocked` until its dependencies are revised.
+A purge that ran on a build that predates the purge record left no record, so a dependent of a
+blocker destroyed by one that no sweep has failed yet shows the blocker as unknown, and stays
+`Blocked` until its dependencies are revised. A dependent whose sweep already recorded the failure
+keeps showing that recorded reason instead.
 
 The edge does double duty. "This could not start until that finished" is also a statement about
 relatedness, so the graph routes context: a dispatched run receives what its **immediate**
