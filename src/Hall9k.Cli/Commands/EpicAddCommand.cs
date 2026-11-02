@@ -89,23 +89,10 @@ public sealed class EpicAddCommand : Hall9kAsyncCommand<EpicAddCommand.Settings>
 
         await session.SaveChangesAsync(cancellationToken);
 
-        string key = addition.Copies[0].SolutionEpicKey ?? string.Empty;
-        string shortKey = EpicIdResolver.ReferenceOf(addition.Copies[0].Id, key);
+        string shortKey = EpicIdResolver.ReferenceOf(addition.Copies[0].Id, addition.Copies[0].SolutionEpicKey ?? string.Empty);
         AnsiConsole.MarkupLineInterpolated(
             $"[blue]Solution epic created[/] in '{addition.View.Membership.Name}': {addition.Copies[0].Title} [dim]({shortKey})[/]");
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]A copy in each of {string.Join(", ", addition.Targets.Select(member => member.Name))}; the copies share the key {key}.[/]");
-        if (addition.Purging.Count > 0)
-        {
-            AnsiConsole.MarkupLineInterpolated(
-                $"[yellow]No copy in {string.Join(", ", addition.Purging.Select(member => member.Name))}[/] [dim](scheduled for permanent deletion).[/]");
-        }
-
-        if (addition.NotHeld.Count > 0)
-        {
-            AnsiConsole.MarkupLineInterpolated(
-                $"[yellow]No copy in {string.Join(", ", addition.NotHeld.Select(member => member.Name))}[/] [dim](not registered and joined on this node; this node makes copies only in the projects it holds).[/]");
-        }
+        addition.PrintMemberNotes(string.Empty);
 
         PrintNext(projectName, shortKey);
         return ExitCodes.Ok;

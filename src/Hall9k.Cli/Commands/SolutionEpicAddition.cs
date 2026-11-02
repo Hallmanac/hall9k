@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
+using Spectre.Console;
 
 namespace Hall9k.Cli.Commands;
 
@@ -60,5 +61,27 @@ internal sealed record SolutionEpicAddition(
         IReadOnlyList<EpicAdded> copies = SolutionEpicDecider.Add(
             view.Membership.Key, title, [.. targets.Select(member => member.Id)], DomainId.New, DateTimeOffset.UtcNow, ownerId);
         return new SolutionEpicAddition(view, copies, targets, purging, notHeld);
+    }
+
+    /// <summary>
+    /// Prints which members got a copy, the key the copies share, and any member left without one and why. Shared by
+    /// <c>h9k epic add</c> and <c>h9k plan pursue --epic-title</c> so the two never describe the same epic differently.
+    /// </summary>
+    public void PrintMemberNotes(string indent)
+    {
+        string key = Copies[0].SolutionEpicKey ?? string.Empty;
+        AnsiConsole.MarkupLineInterpolated(
+            $"[dim]{indent}A copy in each of {string.Join(", ", Targets.Select(member => member.Name))}; the copies share the key {key}.[/]");
+        if (Purging.Count > 0)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]{indent}No copy in {string.Join(", ", Purging.Select(member => member.Name))}[/] [dim](scheduled for permanent deletion).[/]");
+        }
+
+        if (NotHeld.Count > 0)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]{indent}No copy in {string.Join(", ", NotHeld.Select(member => member.Name))}[/] [dim](not registered and joined on this node; this node makes copies only in the projects it holds).[/]");
+        }
     }
 }
