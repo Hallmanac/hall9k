@@ -69,7 +69,7 @@ public sealed class PlanShowCommand : Hall9kAsyncCommand<PlanShowCommand.Setting
         string? reportPath = idea is null
             ? null
             : DiscoveryWorkspace.ReportPathOf(idea, plan.Id);
-        bool hasReport = discovery.RunningSessionId is null && (plan.AtGate || plan.Drafts.Count > 0 || !plan.IsLive);
+        bool hasReport = !plan.IsLive || (discovery.RunningSessionId is null && (plan.AtGate || plan.Drafts.Count > 0));
         DiscoveryReading? reading = hasReport && reportPath is not null
             ? await DiscoveryReport.ReadFileAsync(reportPath, cancellationToken)
             : hasReport

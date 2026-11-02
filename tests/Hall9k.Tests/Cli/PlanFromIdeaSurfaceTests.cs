@@ -203,13 +203,25 @@ public sealed class PlanFromIdeaSurfaceTests
             PlanAt(plan => plan.Discovery = new PlanDiscoveryState
             {
                 IdeaId = _ideaId, ParkReason = PlanParkReason.SessionFailed, LatestSessionId = DomainId.New(),
+                LatestFailure = RefinementFailureReason.UnreadableReport,
             }),
             null);
         failed.Should().Contain("parked:").And.Contain(PlanParkReason.SessionFailed.Description).And.Contain("h9k plan resume").And.NotContain("h9k plan pursue");
+        failed.Should().Contain(RefinementFailureReason.UnreadableReport.Description);
 
         string running = Show(
             PlanAt(plan => plan.Discovery = new PlanDiscoveryState { IdeaId = _ideaId, RunningSessionId = DomainId.New() }), null);
         running.Should().Contain("a discovery session is running").And.Contain("discovery-report.md");
+
+        string cancelledMidSession = Show(
+            PlanAt(plan =>
+            {
+                plan.State = PlanState.Cancelled;
+                plan.EndedAt = Now;
+                plan.Discovery = new PlanDiscoveryState { IdeaId = _ideaId, RunningSessionId = DomainId.New() };
+            }),
+            null);
+        cancelledMidSession.Should().Contain("cancelled").And.NotContain("a discovery session is running");
 
         string stopped = Show(
             PlanAt(plan =>
@@ -220,6 +232,7 @@ public sealed class PlanFromIdeaSurfaceTests
             }),
             new DiscoveryShowFacts("n", "/ws/r.md", new DiscoveryReading(false, DiscoveryReport.TryRead("DISCOVERY: stop")), null));
         stopped.Should().Contain("stopped").And.Contain("a normal ending").And.Contain("reason given: an exploration").And.NotContain("cancelled");
+        stopped.Should().NotContain("parked:").And.NotContain("h9k plan pursue");
     }
 
     [Fact]

@@ -138,7 +138,8 @@ public static class OrchestratorFeedDescription
                 + "concluding or archiving it stays yours",
             PlanPublished published => PlanPublishedLine(published),
             PlanCancelled cancelled =>
-                $"plan {DomainId.Short(cancelled.Id)} ended cancelled; its drafts that were neither published nor abandoned are Drafts again",
+                $"plan {DomainId.Short(cancelled.Id)} ended cancelled; any drafts it had cut that were neither published nor abandoned are Drafts again "
+                + "(a plan cancelled in discovery had cut none)",
             // A claim a person made by hand (h9k task drive, h9k task start) carries Guid.Empty as its
             // node id — the sentinel TaskAggregate.IsInteractiveClaim reads, deliberately naming no
             // node at all — so these two arms come first: shortening that sentinel would print
@@ -392,7 +393,10 @@ public static class OrchestratorFeedDescription
         string answer = parked.Reason == PlanParkReason.Gate
             ? $"then answer it with h9k plan pursue {plan} or h9k plan stop {plan} --reason \"<why>\""
             : $"then answer it with h9k plan resume {plan}";
-        return $"plan {plan} parked in discovery of idea {DomainId.Short(parked.IdeaId)}: {parked.Reason.Description}; "
+        string why = parked.Reason == PlanParkReason.SessionFailed && parked.Failure.IsFailure
+            ? $" ({parked.Failure.Description})"
+            : string.Empty;
+        return $"plan {plan} parked in discovery of idea {DomainId.Short(parked.IdeaId)}: {parked.Reason.Description}{why}; "
             + $"read it with h9k plan show {plan}, {answer}";
     }
 

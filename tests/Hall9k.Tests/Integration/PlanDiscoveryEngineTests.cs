@@ -576,6 +576,37 @@ public sealed class PlanDiscoveryEngineTests(PostgresFixture postgres) : IClassF
     }
 
     [Fact]
+    public async Task A_session_a_restart_left_running_for_a_plan_cancelled_since_is_stopped_once_and_nothing_is_recorded()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Guid projectId = await SeedProjectAsync(cts.Token);
+        (Guid ideaId, _) = await SeedIdeaAsync(projectId, cts.Token);
+        Guid planId = await StartPlanAsync(projectId, ideaId, cts.Token);
+        Guid lost = DomainId.New();
+        await using (IDocumentSession session = postgres.Store.LightweightSession())
+        {
+            session.Events.Append(planId, new PlanDiscoveryDispatched(planId, projectId, ideaId, lost, Now));
+            session.Events.Append(planId, new PlanCancelled(planId, projectId, "changed my mind", _node.OwnerId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        string processFile = RunPaths.DiscoveryProcessFile(lost);
+        Directory.CreateDirectory(Path.GetDirectoryName(processFile) ?? throw new InvalidOperationException($"No directory for {processFile}."));
+        await File.WriteAllTextAsync(processFile, $"4242\n{Now.UtcTicks}\n", cts.Token);
+        FakeProcessManager processes = new();
+        PlanEngine afterRestart = NewEngine(new ScriptedDiscovery(processes, PursueReport), processes);
+
+        PlanSweepResult first = await afterRestart.PollOnceAsync(cts.Token);
+        PlanSweepResult second = await afterRestart.PollOnceAsync(cts.Token);
+
+        first.Recovered.Should().Be(1);
+        second.Recovered.Should().Be(0, "the process file is removed once the session is stopped");
+        processes.Terminations.Should().ContainSingle().Which.ProcessId.Should().Be(4242);
+        File.Exists(processFile).Should().BeFalse();
+        (await StreamAsync(planId, cts.Token)).OfType<PlanDiscoveryParked>().Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Sessions_take_turns_oldest_plan_first_and_a_second_waits_for_the_first_to_end()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));

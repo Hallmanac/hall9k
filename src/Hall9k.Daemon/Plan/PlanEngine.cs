@@ -1455,6 +1455,13 @@ public sealed class PlanEngine(
             bool stillTheSession = plan.IsLive && plan.Discovery?.RunningSessionId == sessionId;
             if (stillTheSession && failure != RefinementFailureReason.Cancelled)
             {
+                if (failure.IsFailure)
+                {
+                    logger.LogWarning(
+                        "Plan {PlanId}: discovery session {SessionId} failed ({Failure}): {Description}",
+                        planId, sessionId, failure.Value, failure.Description);
+                }
+
                 events.Add(PlanDecider.ParkDiscovery(
                     plan,
                     failure.IsFailure
@@ -1507,7 +1514,7 @@ public sealed class PlanEngine(
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            logger.LogWarning(exception, "Could not remove {File}, a report copied for a plan that had already ended", file);
+            logger.LogWarning(exception, "Could not remove {File}, a file left for a plan that had already ended", file);
         }
     }
 
@@ -1546,7 +1553,9 @@ public sealed class PlanEngine(
 
     /// <summary>
     /// Discovery sessions this node's own record says are running that nothing in this process is watching, stopped and
-    /// recorded as failed and never dispatched again: the plan parks as session failed, and a person resumes it.
+    /// recorded as failed and never dispatched again: the plan parks as session failed, and a person resumes it. A plan that
+    /// ended while its session ran (cancelled after a crash, when no job was left to stop it) has no outcome to record, but its
+    /// session is detached and would run on unbounded, so it is stopped here too, whatever state the plan is in.
     /// </summary>
     private async Task<int> RecoverDiscoveryAsync(CancellationToken cancellationToken)
     {
@@ -1554,7 +1563,7 @@ public sealed class PlanEngine(
         await using (IQuerySession query = store.QuerySession())
         {
             running = [.. (await query.Query<PlanDetails>().ToListAsync(cancellationToken))
-                .Where(plan => plan.IsLive && plan.Discovery is { RunningSessionId: not null })];
+                .Where(plan => plan.Discovery is { RunningSessionId: not null })];
         }
 
         int recovered = 0;
@@ -1570,10 +1579,28 @@ public sealed class PlanEngine(
             await using (IQuerySession fresh = store.QuerySession())
             {
                 PlanDetails? latest = await fresh.LoadAsync<PlanDetails>(plan.Id, cancellationToken);
-                if (latest is not { IsLive: true } || latest.Discovery?.RunningSessionId != sessionId)
+                if (latest?.Discovery?.RunningSessionId != sessionId)
                 {
                     continue;
                 }
+            }
+
+            if (!plan.IsLive)
+            {
+                // Nothing to record for an ended plan, so the process file is what marks the session as still to stop: it is
+                // removed once the session has been, which keeps this from stopping the same one on every sweep.
+                string processFile = RunPaths.DiscoveryProcessFile(sessionId);
+                if (File.Exists(processFile))
+                {
+                    logger.LogWarning(
+                        "Plan {PlanId} ended while discovery session {SessionId} ran and nothing is watching it; stopping it",
+                        plan.Id, sessionId);
+                    await TerminateLeftBehindAsync(processFile, plan.Id, sessionId, cancellationToken);
+                    TryDelete(processFile);
+                    recovered++;
+                }
+
+                continue;
             }
 
             logger.LogWarning(

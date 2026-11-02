@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Plan.Events;
+using Hall9k.Domain.Features.Tasks;
 
 namespace Hall9k.Domain.Features.Plan;
 
@@ -20,6 +21,9 @@ public sealed class PlanDiscoveryState
     /// <summary>Gate or session failed while parked, else <see cref="PlanParkReason.Unknown"/>.</summary>
     public PlanParkReason ParkReason { get; set; } = PlanParkReason.Unknown;
 
+    /// <summary>Why the latest session failed, from the closed list, so <c>h9k plan show</c> can say; Unknown at the gate and until a session fails.</summary>
+    public RefinementFailureReason LatestFailure { get; set; } = RefinementFailureReason.Unknown;
+
     public bool IsParked => ParkReason.IsParked;
 
     /// <summary>Whether the report landed and waits for a person to pursue or stop.</summary>
@@ -36,6 +40,7 @@ public sealed class PlanDiscoveryState
         ParkReason = @event.Reason;
         RunningSessionId = null;
         LatestSessionId = @event.SessionId;
+        LatestFailure = @event.Failure;
     }
 
     /// <summary>A resume answers a failed session; the gate cannot be resumed, so this clears only what a resume may.</summary>
@@ -44,6 +49,7 @@ public sealed class PlanDiscoveryState
         if (ParkReason == PlanParkReason.SessionFailed)
         {
             ParkReason = PlanParkReason.Unknown;
+            LatestFailure = RefinementFailureReason.Unknown;
         }
     }
 
