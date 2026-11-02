@@ -16,6 +16,7 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Run.Queries;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Feedback;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Trust;
@@ -489,6 +490,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             ? thisNodeId ?? await OrchestratorStatusCommand.ThisNodeIdAsync(session, cancellationToken)
             : null;
         foreach ((string label, string markup) in RefinementRows(details, refinementNodeId, labels))
+        {
+            header.AddRow(label, markup);
+        }
+
+        foreach ((string label, string markup) in FeedbackStepRows(details, project))
         {
             header.AddRow(label, markup);
         }
@@ -3143,6 +3149,85 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             rows.Add((
                 "Refinement",
                 $"{result} [dim]({purpose}recorded {landed}; {tier}; {report})[/]"));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// The feedback step's rows: whether the task takes it and from what (its own override or the project's setting), the hold while
+    /// it stands, the check and the refinement while they run, and the outcome once the step has ended, with the reason a parked step
+    /// could not finish. Derived from the task's own record, so it prints on any node. Pure over its arguments.
+    /// </summary>
+    internal static IReadOnlyList<(string Label, string Markup)> FeedbackStepRows(TaskDetails details, ProjectDetails? project)
+    {
+        List<(string Label, string Markup)> rows = [];
+        string id = TaskListCommand.ShortId(details.Id);
+        bool projectTakes = project?.TakesFeedbackStep ?? false;
+        bool takes = details.FeedbackStepOverride ?? projectTakes;
+        bool inUse = takes || details.FeedbackStepBegun || details.FeedbackStepHeld;
+        if (inUse)
+        {
+            string origin = details.FeedbackStepOverride switch
+            {
+                true => "this task's own override: on",
+                false => "this task's own override: off",
+                _ => $"its project's setting: {(projectTakes ? "on" : "off")}",
+            };
+            rows.Add((
+                "Feedback step",
+                $"{(takes ? "[blue]on[/]" : "off")} [dim]({origin}; h9k task revise {id} --feedback-step on|off|default changes it until the task is held for the step, "
+                + "released, or claimed)[/]"));
+        }
+
+        if (details is { State.Value: "Blocked", FeedbackStepHeld: true })
+        {
+            rows.Add((
+                "Held",
+                "[yellow]held for its feedback step[/]: [dim]every blocker has finished, and the daemon is checking the notes they left against "
+                + "this task before it is released. Neither the dispatcher nor h9k task drive or start can claim it until the step ends; "
+                + $"h9k task dequeue {id} takes it out of the queue and ends the hold[/]"));
+        }
+
+        if (details.RunningFeedbackCheckSessionId is not null)
+        {
+            string tier = details.LatestFeedbackCheckDispatch is { } dispatch
+                ? $", {ModelEffortMarkup(dispatch.Model, dispatch.Effort)}"
+                : string.Empty;
+            rows.Add(("Feedback check", $"[yellow]running[/]: [dim]one headless session with no tools reads the blockers' notes{tier}[/]"));
+        }
+        else if (details.LatestFeedbackCheck is { } check)
+        {
+            string result = check.Answer.IsAnswer
+                ? $"[green]{check.Answer.Word}[/]"
+                : $"[red]no answer[/]: {check.Failure.Description.EscapeMarkup()}";
+            string tier = details.LatestFeedbackCheckDispatch is { } dispatch
+                ? $"; {ModelEffortMarkup(dispatch.Model, dispatch.Effort)}"
+                : string.Empty;
+            rows.Add(("Feedback check", $"{result} [dim](recorded {check.RecordedAt.ToLocalTime():g}{tier})[/]"));
+        }
+
+        if (details.FeedbackStepResult is { } outcome)
+        {
+            string color = outcome.Outcome == FeedbackStepOutcome.Parked
+                ? "red"
+                : outcome.Outcome == FeedbackStepOutcome.EndedWithoutActing
+                    ? "yellow"
+                    : "green";
+            string tail = outcome.Outcome == FeedbackStepOutcome.Parked
+                ? $" Settle it by hand: revise it, publish it, and queue it (h9k task revise {id}, h9k task publish {id}, h9k task queue {id}), or abandon it."
+                : string.Empty;
+            rows.Add((
+                "Feedback outcome",
+                $"[{color}]{outcome.Outcome.Description}[/]: {outcome.Reason.EscapeMarkup()} [dim](recorded {outcome.RecordedAt.ToLocalTime():g}.{tail.EscapeMarkup()} "
+                + "Nothing starts a second feedback step for this task.)[/]"));
+        }
+        else if (details.FeedbackStepPlanId is { } planId)
+        {
+            rows.Add((
+                "Feedback outcome",
+                $"[yellow]refining[/]: [dim]the task is back in Draft and plan {TaskListCommand.ShortId(planId)} is refining it against the "
+                + "blockers' notes; it is challenged once, published, and queued again for the same owner and node (h9k plan show)[/]"));
         }
 
         return rows;

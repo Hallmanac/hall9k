@@ -101,6 +101,9 @@ internal static class TaskNextStep
                 : $"[dim]Next:[/] {PublishStep(shortId, ChallengeGate.Shortfall(details, challengeRequired) is not null, details.ChallengeRequested || details.RunningChallengeSessionId is not null)} [dim]then[/] h9k task queue {shortId}",
             "Published" => $"[dim]Next:[/] h9k task queue {shortId} [dim]— it will not run until you do"
                 + $"{interactiveClaimHint}[/]",
+            "Blocked" when details.FeedbackStepHeld => "[dim]Held for its feedback step: the daemon is checking the notes its blockers left "
+                + "against it, then releases it, refines and queues it again, or parks it for you; nothing can claim it meanwhile. "
+                + $"To take it out of the queue:[/] h9k task dequeue {shortId}",
             "Blocked" => $"[dim]It queues itself when its dependencies close out. To stop waiting:[/] "
                 + $"h9k task dequeue {shortId} [dim]→[/] h9k task draft {shortId} [dim]→[/] h9k task revise {shortId} --clear-dependencies"
                 + $" [dim]— or claim across the open dependency yourself:[/] h9k task drive {shortId} --acknowledge-unmet-dependencies",

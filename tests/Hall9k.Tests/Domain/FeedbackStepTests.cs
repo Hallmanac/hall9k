@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Project;
@@ -538,6 +539,22 @@ public sealed class FeedbackStepTests
         view.FeedbackStepHeld.Should().BeTrue();
         view.UnmetDependencies.Should().BeEmpty("the late event's snapshot is older than the completion that already removed the sibling");
         row.UnmetDependencies.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Starting_or_driving_a_published_task_that_would_be_held_is_refused_with_the_way_forward_and_changes_nothing()
+    {
+        TaskAggregate startTask = Published();
+        TaskAggregate driveTask = Published();
+
+        Action start = () => TaskStartCommand.PrepareDeliberateClaimFromPublished(
+            startTask, Owner, [Blocker(true)], DomainId.New(), Now, acknowledgeUnmetDependencies: false, projectTakesFeedbackStep: true);
+        Action drive = () => TaskDriveCommand.PrepareInteractiveClaimFromPublished(
+            driveTask, Owner, [Blocker(true)], DomainId.New(), Now, acknowledgeUnmetDependencies: false, projectTakesFeedbackStep: true);
+
+        start.Should().Throw<DomainConflictException>().Which.Message.Should().Contain("h9k task queue").And.Contain("--feedback-step off");
+        drive.Should().Throw<DomainConflictException>().Which.Message.Should().Contain("h9k task queue");
+        (startTask.State, driveTask.State).Should().Be((TaskState.Published, TaskState.Published));
     }
 
     [Fact]

@@ -323,6 +323,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Close linked issue", CloseLinkedIssueRow(
             project, history.WasRecorded(change => change.CloseLinkedIssue)));
         table.AddRow("Require challenge", RequireChallengeRow(project));
+        table.AddRow("Feedback step", FeedbackStepRow(project));
         table.AddRow("Never-close labels", project.NeverCloseLabels.Count == 0
             ? $"[dim]none — an issue's own labels never force never; add one: h9k project set "
               + $"{project.Name.EscapeMarkup()} --never-close-labels epic,prd,adr[/]"
@@ -669,6 +670,19 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
               + $"h9k project set {name} --require-challenge off"
             : $"{value}: [dim]h9k task publish asks for no challenge verdict here, and h9k task challenge still "
               + $"works. Turn it on:[/] h9k project set {name} --require-challenge on";
+    }
+
+    /// <summary>The feedback step setting, printed always: off is the platform's default and a task's own override outranks either value.</summary>
+    internal static string FeedbackStepRow(ProjectDetails project)
+    {
+        string name = project.Name.EscapeMarkup();
+        return project.TakesFeedbackStep
+            ? "on: [dim]a task with blockers is held at its release point while the daemon checks the notes its blockers left against it, "
+              + "released if they do not affect it, and refined, challenged once, and queued again if they do (parked for a person when "
+              + "that cannot finish). A task overrides this with h9k task revise --feedback-step off. Turn it off:[/] "
+              + $"h9k project set {name} --feedback-step off"
+            : "off [dim](the default)[/]: [dim]tasks are released the moment their blockers finish. Turn it on:[/] "
+              + $"h9k project set {name} --feedback-step on";
     }
 
     /// <summary>
