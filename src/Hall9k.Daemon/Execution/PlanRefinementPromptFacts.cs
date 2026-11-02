@@ -1,4 +1,5 @@
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Tasks;
 
 namespace Hall9k.Daemon.Execution;
@@ -29,6 +30,11 @@ public sealed record PriorVerdictFacts(ChallengeVerdict Verdict, int MustCount, 
 /// <param name="PriorVerdict">The latest challenge verdict on the draft, or null when it has never been challenged.</param>
 /// <param name="OtherDrafts">The plan's other drafts by id and objective when the plan carries more than one, else empty; the session's revision may set <c>blocked-by</c> or <c>stacked-on</c> to one of them.</param>
 /// <param name="DiscoveryReport">The report the plan's discovery session wrote, when the draft was cut from it, else null.</param>
+/// <param name="OtherMemberTasks">
+/// The tasks under the draft's solution epic in the other member projects registered and joined on this node, or null when
+/// the draft is not in a solution epic (a project epic, or no epic). Empty is not null: the draft is in a solution epic and
+/// the other members hold no task under it, which the session is told rather than left to assume.
+/// </param>
 public sealed record PlanRefinementPromptFacts(
     RefinementPurpose Purpose,
     string? ProjectHome,
@@ -43,7 +49,8 @@ public sealed record PlanRefinementPromptFacts(
     string? JournalToWrite,
     PriorVerdictFacts? PriorVerdict,
     IReadOnlyList<SiblingDraftFacts>? OtherDrafts = null,
-    string? DiscoveryReport = null);
+    string? DiscoveryReport = null,
+    IReadOnlyList<SolutionMemberTask>? OtherMemberTasks = null);
 
 /// <summary>A sibling draft in the same plan, as a refinement session is told of it: the id it can name in a revision and what it is for.</summary>
 public sealed record SiblingDraftFacts(Guid Id, string Objective);

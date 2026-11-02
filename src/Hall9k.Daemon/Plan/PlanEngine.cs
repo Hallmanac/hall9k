@@ -5,6 +5,7 @@ using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Challenge;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Plan.Events;
@@ -109,7 +110,8 @@ public sealed class PlanEngine(
         string RevisionPath,
         string Prompt,
         AgentModel Model,
-        AgentEffort Effort);
+        AgentEffort Effort,
+        IReadOnlyList<SolutionMemberTask>? MemberTasks);
 
     /// <summary>What recording a session's end is told: how it ended and what it cost.</summary>
     private sealed record SessionEnd(
@@ -642,11 +644,12 @@ public sealed class PlanEngine(
                     : Path.Combine(taskDirectory, "journal.md"));
             IReadOnlyList<SiblingDraftFacts> siblings = await SiblingsOfAsync(session, plan, taskId, cancellationToken);
             string? discoveryReport = await DiscoveryReportOfAsync(session, plan, cancellationToken);
+            IReadOnlyList<SolutionMemberTask>? memberTasks = await OtherMemberTasksOfAsync(session, current, cancellationToken);
             string prompt = AgentPromptBuilder.BuildPlanRefinement(
                 current, project,
                 new PlanRefinementPromptFacts(
                     purpose, projectHome, checkout, commit, refresh, reportPath, revisionPath, sessionDirectory, ideaWorkspace,
-                    journal, journalToWrite, prior, siblings, discoveryReport));
+                    journal, journalToWrite, prior, siblings, discoveryReport, memberTasks));
 
             // Recorded before anything is spawned, RunLauncher's order, and on both streams in one save: committing first
             // is what makes a crash lose too, and the plan never claims a session the task does not know about.
@@ -668,7 +671,7 @@ public sealed class PlanEngine(
             }
 
             RefinementJob job = new(
-                plan.Id, taskId, sessionId, purpose, checkout, sessionDirectory, reportPath, revisionPath, prompt, model, effort);
+                plan.Id, taskId, sessionId, purpose, checkout, sessionDirectory, reportPath, revisionPath, prompt, model, effort, memberTasks);
             CancellationTokenSource cancel = new();
             TaskCompletionSource finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
             _sessions[sessionId] = new RunningSession(plan.Id, taskId, cancel, finished);
@@ -844,7 +847,8 @@ public sealed class PlanEngine(
     /// Applies the revision a session wrote with the same validation and effects as <c>h9k task revise --file</c>, by
     /// running that command. Applied only to the draft the session read: if anyone changed it since dispatch the revision
     /// is not applied. A revision that names a model is refused, because a refinement sets none and <c>--file</c> would
-    /// otherwise set one. A plan that ended, or a draft that was closed, while the session ran applies nothing, however the
+    /// otherwise set one, and so is one that copies another member project's task objective or project name into its
+    /// objective, criteria or context (<see cref="MemberTextCopyGuard"/>). A plan that ended, or a draft that was closed, while the session ran applies nothing, however the
     /// session ended: the stop that follows reaches a job only at the top of a sweep, so the job asks the record itself. The
     /// child asks it again inside its own fenced append, which is where a cancel that lands after this check is caught.
     /// Returns the reason nothing was applied, or null when it was.
@@ -894,6 +898,13 @@ public sealed class PlanEngine(
         {
             logger.LogWarning(exception, "Draft {TaskId}: the revision file is not a task file; refused", job.TaskId);
             await WriteRefusalAsync(job, $"The revision file is not a task file, so it was not applied: {exception.Message}", cancellationToken);
+            return RefinementFailureReason.RevisionRefused;
+        }
+
+        if (MemberTextCopyGuard.Refusal(text, job.MemberTasks) is { } copied)
+        {
+            logger.LogWarning("Draft {TaskId}: the revision copies another member project's task text; refused", job.TaskId);
+            await WriteRefusalAsync(job, copied, cancellationToken);
             return RefinementFailureReason.RevisionRefused;
         }
 
@@ -1072,6 +1083,39 @@ public sealed class PlanEngine(
             .Select(id => tasks.FirstOrDefault(task => task.Id == id))
             .OfType<TaskDetails>()
             .Select(task => new SiblingDraftFacts(task.Id, task.Objective))];
+    }
+
+    /// <summary>
+    /// The tasks under a draft's solution epic in the other member projects this node holds, for its refinement session; null when
+    /// the draft is in a project epic or none, or its own project has left the solution. Every solution-epic copy is loaded and
+    /// filtered in memory by key (case-insensitively) and membership in <see cref="SolutionEpicMemberTasks.Choose"/>; the tasks read
+    /// are only the lean row under each other member's copy, so no task's context or criteria is ever loaded for the prompt.
+    /// </summary>
+    internal static async Task<IReadOnlyList<SolutionMemberTask>?> OtherMemberTasksOfAsync(
+        IDocumentSession session, TaskDetails draft, CancellationToken cancellationToken)
+    {
+        if (draft.EpicId is not { } epicId
+            || await session.LoadAsync<EpicDetails>(epicId, cancellationToken) is not { SolutionEpicKey: { } epicKey } ownCopy)
+        {
+            return null;
+        }
+
+        // The key is compared ignoring case, as EpicGroup and SolutionEpicMemberTasks.Choose do, so the filter runs here rather than in the query.
+        IReadOnlyList<EpicDetails> solutionCopies = await session.Query<EpicDetails>()
+            .Where(epic => epic.SolutionEpicKey != null)
+            .ToListAsync(cancellationToken);
+        EpicDetails[] copies = [.. solutionCopies.Where(epic => string.Equals(epic.SolutionEpicKey, epicKey, StringComparison.OrdinalIgnoreCase))];
+        List<TaskListItem> tasks = [];
+        foreach (EpicDetails copy in copies.Where(copy => copy.ProjectId != ownCopy.ProjectId))
+        {
+            Guid copyId = copy.Id;
+            tasks.AddRange(await session.Query<TaskListItem>()
+                .Where(task => task.EpicId == copyId)
+                .ToListAsync(cancellationToken));
+        }
+
+        SolutionContext context = await SolutionContext.LoadAsync(session, cancellationToken);
+        return SolutionEpicMemberTasks.Choose(ownCopy, copies, tasks, context);
     }
 
     /// <summary>The report a plan's discovery wrote, as a path in the idea's workspace now, for the refinement of a draft cut from it; null for a plan started from drafts.</summary>

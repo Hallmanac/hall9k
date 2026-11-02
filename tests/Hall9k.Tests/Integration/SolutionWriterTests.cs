@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Daemon.Closeout;
+using Hall9k.Daemon.Plan;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
@@ -305,6 +306,39 @@ public sealed class SolutionWriterTests : IClassFixture<PostgresFixture>, IAsync
                 "each copy is an ordinary epic stream, which replicates through its own project's ledger as an epic does today");
         }
     }
+
+    [Fact]
+    public async Task A_plans_refinement_session_is_told_the_other_joined_members_tasks_under_the_solution_epic_and_nothing_else()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        await SeedJoinedProjectAsync("shop-api", ApiKey, cts.Token);
+        await SeedJoinedProjectAsync("shop-web", WebKey, cts.Token);
+        await SeedJoinedProjectAsync("shop-admin", AdminKey, cts.Token, joined: false);
+        await GroupAsync("storefront", cts.Token, "shop-api", "shop-web", "shop-admin");
+        IReadOnlyList<EpicAdded> cart = await AddEpicAsync("shop-api", "Cart", cts.Token);
+        Guid apiCopy = CopyIn(cart, await ProjectAsync("shop-api", cts.Token));
+        Guid webCopy = CopyIn(cart, await ProjectAsync("shop-web", cts.Token));
+        IReadOnlyList<EpicAdded> projectEpic = await AddEpicAsync("shop-web", "Elsewhere", cts.Token);
+        Guid draft = await AddTaskAsync("shop-api", apiCopy, null, cts.Token);
+        Guid webTask = await AddTaskAsync("shop-web", webCopy, null, cts.Token);
+        await AddTaskAsync("shop-web", null, null, cts.Token);
+        await AddTaskAsync("shop-web", projectEpic[0].Id, null, cts.Token);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        TaskDetails details = (await session.LoadAsync<TaskDetails>(draft, cts.Token))!;
+        IReadOnlyList<SolutionMemberTask>? chosen = await PlanEngine.OtherMemberTasksOfAsync(session, details, cts.Token);
+
+        SolutionMemberTask only = chosen.Should().ContainSingle().Subject;
+        only.Id.Should().Be(webTask);
+        only.ProjectName.Should().Be("shop-web");
+        only.Objective.Should().Be("Work in shop-web");
+
+        TaskDetails outside = (await session.LoadAsync<TaskDetails>(await AddTaskAsync("shop-api", null, null, cts.Token), cts.Token))!;
+        (await PlanEngine.OtherMemberTasksOfAsync(session, outside, cts.Token)).Should().BeNull("a draft in no epic is told nothing");
+    }
+
+    private static Guid CopyIn(IReadOnlyList<EpicAdded> copies, ProjectDetails project) =>
+        copies.Single(copy => copy.ProjectId == project.Id).Id;
 
     [Fact]
     public async Task A_project_outside_every_solution_adds_an_ordinary_project_epic_and_a_closed_solution_holds_nobody()

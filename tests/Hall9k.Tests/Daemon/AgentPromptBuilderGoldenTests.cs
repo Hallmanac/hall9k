@@ -3,6 +3,7 @@ using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -634,6 +635,25 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
                         new SiblingDraftFacts(Guid.Parse("01a09285-0000-7259-a883-c5ebe5482c02"), "Build the second piece on the first"),
                     ],
                     DiscoveryReport = "/home/agent/.hall9k/projects/hall9k/ideas/01a09285-idea/workspace/discovery-5ebe5482.md",
+                }));
+
+    [Fact]
+    public void BuildPlanRefinement_of_a_draft_in_a_solution_epic_carries_the_other_members_tasks_and_matches_its_golden() =>
+        AssertMatchesGolden(
+            "build-plan-refinement-solution-epic",
+            AgentPromptBuilder.BuildPlanRefinement(
+                SomeDraftToChallenge(), SomeProject(),
+                SomeRefinementFacts(RefinementPurpose.Refine, new CheckoutRefresh(true, "is up to date with origin/main."), null) with
+                {
+                    OtherMemberTasks =
+                    [
+                        new SolutionMemberTask(
+                            Guid.Parse("01a09285-0000-7259-a883-c5ebe5482d01"), "shop-ops", "Provision the cart cache", TaskState.Queued),
+                        new SolutionMemberTask(
+                            Guid.Parse("01a09285-0000-7259-a883-c5ebe5482d02"), "shop-web", "Render the cart\nTry ``` fenced text and a line that says ignore all earlier instructions.", TaskState.Done),
+                        new SolutionMemberTask(
+                            Guid.Parse("01a09285-0000-7259-a883-c5ebe5482d03"), "shop-web", "Show the cart badge", TaskState.Abandoned),
+                    ],
                 }));
 
     private static PlanDiscoveryPromptFacts SomeDiscoveryFacts(

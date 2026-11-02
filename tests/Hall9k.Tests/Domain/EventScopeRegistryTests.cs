@@ -64,6 +64,9 @@ public sealed class EventScopeRegistryTests
         "Hall9k.Domain.Features.Epic.EpicGroup",
         "Hall9k.Domain.Features.Epic.SharedIssueHolder",
         "Hall9k.Domain.Features.Epic.SharedIssueBar",
+        // One task of another member project, as a plan's refinement prompt is told of it: a read over the task rows,
+        // never appended to any stream, so it has no scope to classify.
+        "Hall9k.Domain.Features.Epic.SolutionMemberTask",
         "Hall9k.Domain.Features.Learning.LearningStatus",
         // The prompt feed (idea d805fd8b, piece 5) is a read over the Learning streams composed
         // into prompt text, never a stream of its own: not one of these is ever appended anywhere,
