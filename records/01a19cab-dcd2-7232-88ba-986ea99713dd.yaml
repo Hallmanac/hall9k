@@ -21,3 +21,7 @@ origin-branch: task/a99713dd-h9k-plan-pursue-epic-title-run
 published: 2026-11-02 14:34:58Z
 context: |-
   Found by idea 56c1b467's discovery, read at 8a6dfd597. Defect at src/Hall9k.Cli/Commands/PlanPursueCommand.cs:105 (EpicDecider.Add on the plan's project) and its help at :42. The right path is src/Hall9k.Cli/Commands/EpicAddCommand.cs:64, SolutionEpicAddition.PlanAsync, with its output at :92-108. Brian ruled (2026-11-02) that plans stay project-level and node-scoped and the solution epic is the solution-level router, so this path must work. The defect is unreleased: plan pursue arrived after v0.16.0 (d583de6e7), so it exists only on main, ahead of v0.17.0, which Brian is holding. Run PlanAsync against the fresh project read after the second RefuseIdea, before the one save. Challenge report: /Users/brianhallmanac/.hall9k/runs/01a19cab-f2ff-718c-9e5c-bf87eca23621/challenge-report.md (all six shoulds applied).
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-11-02 14:35:05Z
