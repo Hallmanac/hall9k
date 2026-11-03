@@ -309,10 +309,15 @@ worth knowing:
   elevation of the shell that ran them.
   - **Any registration at `HighestAvailable` is refused from a shell that is not elevated**, before
     `schtasks` runs, whether the level was kept from the existing task or asked for with
-    `--run-level highest`. The message names the level and the two ways forward: re-run from an
-    elevated shell, or pass `--run-level limited` (to lower an existing task on purpose, or to
-    register one that is not elevated). Elevation here is the
-    running process's own token elevation, not whether your account is an administrator.
+    `--run-level highest`. The message names the level and the way forward: re-run from an
+    elevated shell. For `--run-level highest` it also says to pass `--run-level limited` to
+    register a task that is not elevated; lowering an existing elevated task on purpose needs an
+    elevated shell too, so the message for a kept level does not offer it from here. Elevation
+    here is the running process's own token elevation, not whether your account is an administrator.
+  - **`schtasks` itself refuses to overwrite an elevated task from a shell that is not elevated.**
+    When `schtasks /Create` fails while the existing task reads `Highest` and the shell is not
+    elevated, `enable` relays the `schtasks` output and adds that changing the task needs an
+    elevated shell, where `h9k daemon autostart enable --run-level limited` lowers it.
   - **If the existing task's level cannot be read** (the read fails, or it is neither `Highest` nor
     `Limited`), `enable` says so and requires an explicit `--run-level`.
   - **`--run-level highest` makes the daemon, and every agent it dispatches, run as an
