@@ -739,7 +739,7 @@ public sealed class FeedbackStepEngineTests(PostgresFixture postgres) : IClassFi
     }
 
     [Fact]
-    public async Task A_task_the_check_says_is_affected_is_released_as_it_stood_when_its_context_still_quotes_an_adopted_item()
+    public async Task A_task_the_check_says_is_affected_is_parked_in_draft_when_its_context_still_quotes_an_adopted_item()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         Guid projectId = await SeedProjectAsync(cts.Token);
@@ -752,9 +752,11 @@ public sealed class FeedbackStepEngineTests(PostgresFixture postgres) : IClassFi
         await SweepUntilAsync(NewFeedbackEngine(sessions, processes), () => EndedAsync(taskId, cts.Token), cts.Token);
 
         TaskDetails task = await TaskAsync(taskId, cts.Token);
-        task.State.Should().Be(TaskState.Queued, "no plan rewrites a stranger's quote into the task's own words, so the step releases it unrefined");
-        task.FeedbackStepResult!.Reason.Should().Contain("adopted tracker item");
-        (await StreamAsync(taskId, cts.Token)).OfType<TaskReturnedToDraft>().Should().BeEmpty();
+        task.State.Should().Be(TaskState.Draft, "no plan rewrites a stranger's quote into the task's own words, and the task is not released against notes that affect it");
+        task.FeedbackStepResult!.Outcome.Should().Be(FeedbackStepOutcome.Parked);
+        task.FeedbackStepResult.Reason.Should().Contain("adopted tracker item");
+        task.AssigneeOwnerId.Should().Be(_node.OwnerId, "the dequeue keeps the assignee");
+        task.AssignedOwnerId.Should().BeNull("it is out of the queue");
         await using IQuerySession query = postgres.Store.QuerySession();
         (await query.Query<PlanDetails>().Where(plan => plan.FeedbackStepTaskId == taskId).CountAsync(cts.Token)).Should().Be(0);
     }
@@ -1068,6 +1070,28 @@ public sealed class FeedbackStepEngineTests(PostgresFixture postgres) : IClassFi
         TaskDetails task = await TaskAsync(taskId, cts.Token);
         task.FeedbackStepResult!.Outcome.Should().Be(FeedbackStepOutcome.Parked);
         task.State.Should().Be(TaskState.Draft);
+    }
+
+    [Fact]
+    public async Task A_person_unassigning_the_task_while_the_refinement_ran_ends_the_step_without_acting_rather_than_parking_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(5));
+        (Guid taskId, _, ScriptedSessions sessions, _, FeedbackStepEngine feedback, PlanEngine plan) = await AffectedAsync(cts.Token);
+        sessions.Refinements.Enqueue((RevisedReport, RevisionFile));
+        sessions.OnRefinement = _ =>
+        {
+            using IDocumentSession session = postgres.Store.LightweightSession();
+            session.Events.Append(taskId, new TaskAssigneeCleared(taskId, "a person let go of it", Now, _node.OwnerId));
+            session.SaveChangesAsync().GetAwaiter().GetResult();
+        };
+
+        await DriveAsync(feedback, plan, taskId, ChallengeVerdict.PublishAsWritten, must: 0, cts.Token);
+
+        TaskDetails task = await TaskAsync(taskId, cts.Token);
+        task.FeedbackStepResult!.Outcome.Should().Be(FeedbackStepOutcome.EndedWithoutActing);
+        task.FeedbackStepResult.Reason.Should().Contain("unassigned");
+        task.State.Should().Be(TaskState.Published, "the plan published it, and the person's unassign stands");
+        task.AssigneeOwnerId.Should().BeNull();
     }
 
     [Fact]

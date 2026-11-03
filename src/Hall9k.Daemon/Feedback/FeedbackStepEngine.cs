@@ -526,14 +526,14 @@ public sealed class FeedbackStepEngine(
         }
 
         // The refusals `h9k plan start` gives a draft, asked here too because this path starts the plan itself: a person who runs
-        // the command reads the quoted text into the task before the plan may rewrite it, and nobody would on this path. The task
-        // is still held, so there is nothing to park it in: it is released as it stood (the outcome a step that cannot go on
-        // takes), and the recorded reason says the notes affected it.
+        // the command reads the quoted text into the task before the plan may rewrite it, and nobody would on this path. The check
+        // answered cleanly, so the task is not released against notes it was just judged affected by: it leaves the queue for Draft,
+        // keeping its assignee, and the step is parked for the person who reads it into the task.
         if (RefinementRefusal(task) is { } refusal)
         {
-            return await ConcludeAsync(
-                session, fence, task, FeedbackStepOutcome.ReleasedAfterFailedCheck,
-                $"the check found the blockers' notes affect the task, but it was released as it stood because {refusal}", now, cancellationToken);
+            return await ParkInDraftAsync(
+                session, fence, task,
+                $"the check found the blockers' notes affect the task, but no plan may refine it because {refusal}", now, cancellationToken);
         }
 
         // Read before the dequeue and the return to draft, which clear the queued-for fields, and the tracking choice the task's
@@ -636,6 +636,15 @@ public sealed class FeedbackStepEngine(
                 session, fence, task, FeedbackStepOutcome.Parked, "queueing it again was refused: its project is archived", now, cancellationToken);
         }
 
+        // A person who unassigned the task, or handed it to someone else, while the plan refined it has taken it out of the step's
+        // hands on purpose: the step stands down rather than parking, which would ask them to undo what they just did.
+        if (task.FeedbackStep?.QueuedForOwnerId is { } queuedFor && task.AssigneeOwnerId != queuedFor)
+        {
+            return await ConcludeAsync(
+                session, fence, task, FeedbackStepOutcome.EndedWithoutActing,
+                "a person unassigned or reassigned the task while the step ran", now, cancellationToken);
+        }
+
         TaskAssigned assigned;
         try
         {
@@ -665,6 +674,33 @@ public sealed class FeedbackStepEngine(
         }
 
         logger.LogInformation("Task {TaskId}: refined and queued again for its owner on its node", task.Id);
+        await _holder.ReleaseAsync(task.Id, task.ProjectId, cancellationToken);
+        return StepOutcome.Stepped;
+    }
+
+    /// <summary>
+    /// Parks a step whose task is still held in Blocked and that no plan may refine: the task leaves the queue and returns to Draft
+    /// (the same two moves a plan's start makes) and the outcome is recorded, in one save, so a person settles it by hand.
+    /// </summary>
+    private async Task<StepOutcome> ParkInDraftAsync(
+        IDocumentSession session, StreamState fence, TaskAggregate task, string reason, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        (TaskUnassigned dequeued, TaskReturnedToDraft drafted) = FeedbackStepDecider.TakeBackToDraftForPerson(task, node.OwnerId, now);
+        task.Apply(drafted);
+        FeedbackStepOutcomeRecorded parked = FeedbackStepDecider.Conclude(task, FeedbackStepOutcome.Parked, reason, now);
+        session.Events.Append(task.Id, expectedVersion: fence.Version + 3, dequeued, drafted, parked);
+        _holder.StageRelease(session, task.Id, task.ProjectId, now);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogDebug("Task {TaskId} changed while its feedback step was being parked; deciding it again", task.Id);
+            return StepOutcome.Nothing;
+        }
+
+        logger.LogInformation("Task {TaskId}: feedback step parked, the task is back in Draft for a person ({Reason})", task.Id, reason);
         await _holder.ReleaseAsync(task.Id, task.ProjectId, cancellationToken);
         return StepOutcome.Stepped;
     }
