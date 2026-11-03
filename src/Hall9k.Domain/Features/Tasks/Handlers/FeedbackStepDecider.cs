@@ -67,6 +67,24 @@ public static class FeedbackStepDecider
     public static (TaskUnassigned Dequeued, TaskReturnedToDraft Drafted, FeedbackStepRefinementBegun Begun) TakeBackToDraft(
         TaskAggregate task, Guid planId, Guid ownerId, DateTimeOffset now)
     {
+        (TaskUnassigned dequeued, TaskReturnedToDraft drafted) = TakeOutOfQueueToDraft(
+            task, "feedback step: refining the task against its blockers' notes", ownerId, now);
+        return (dequeued, drafted, new FeedbackStepRefinementBegun(task.Id, planId, now));
+    }
+
+    /// <summary>
+    /// The check said the task is affected but no plan may refine it (a spike, or a context still quoting an adopted tracker
+    /// item): the task leaves the queue and returns to Draft, keeping its assignee, so a person reads it and settles it by hand.
+    /// The same two moves as <see cref="TakeBackToDraft"/>, with no plan beginning. The caller appends both with a
+    /// <see cref="FeedbackStepOutcome.Parked"/> outcome, in one save.
+    /// </summary>
+    public static (TaskUnassigned Dequeued, TaskReturnedToDraft Drafted) TakeBackToDraftForPerson(
+        TaskAggregate task, Guid ownerId, DateTimeOffset now)
+        => TakeOutOfQueueToDraft(task, "feedback step: the blockers' notes affect this task and a person settles it", ownerId, now);
+
+    private static (TaskUnassigned Dequeued, TaskReturnedToDraft Drafted) TakeOutOfQueueToDraft(
+        TaskAggregate task, string draftReason, Guid ownerId, DateTimeOffset now)
+    {
         RequireRunning(task);
         if (!task.FeedbackStepHeld || task.State != TaskState.Blocked)
         {
@@ -77,9 +95,8 @@ public static class FeedbackStepDecider
         TaskUnassigned dequeued = TaskDecider.Dequeue(
             task, "feedback step: the blockers' notes affect this task", leaseHeld: false, now, ownerId);
         task.Apply(dequeued);
-        TaskReturnedToDraft drafted = TaskDecider.ReturnToDraft(
-            task, "feedback step: refining the task against its blockers' notes", now, ownerId);
-        return (dequeued, drafted, new FeedbackStepRefinementBegun(task.Id, planId, now));
+        TaskReturnedToDraft drafted = TaskDecider.ReturnToDraft(task, draftReason, now, ownerId);
+        return (dequeued, drafted);
     }
 
     /// <summary>

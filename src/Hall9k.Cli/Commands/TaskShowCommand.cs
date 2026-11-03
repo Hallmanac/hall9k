@@ -3214,8 +3214,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 : outcome.Outcome == FeedbackStepOutcome.EndedWithoutActing
                     ? "yellow"
                     : "green";
+            // Published when the plan published it and queueing it again was refused: revise and publish both refuse a Published task.
             string tail = outcome.Outcome == FeedbackStepOutcome.Parked
-                ? $" Settle it by hand: revise it, publish it, and queue it (h9k task revise {id}, h9k task publish {id}, h9k task queue {id}), or abandon it."
+                ? details.State == TaskState.Published
+                    ? $" It is already published; settle it by hand: queue it (h9k task queue {id}), or abandon it."
+                    : $" Settle it by hand: revise it, publish it, and queue it (h9k task revise {id}, h9k task publish {id}, h9k task queue {id}), or abandon it."
                 : string.Empty;
             rows.Add((
                 "Feedback outcome",

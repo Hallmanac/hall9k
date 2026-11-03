@@ -440,16 +440,18 @@ record has nothing to coordinate on, so there the stream version is all that fen
 4. **Parked for a person.** The task is parked instead, with the reason shown in `h9k task show` and `h9k status`, when the
    challenge returns *do not publish* or ends with no verdict; the refinement concludes the task should not run (the closing
    word `should-not-run`); the revision names anything but the objective, criteria, or context (a dependency, a stack link, a
-   type, or a model); a refinement or judging session fails, times out, or writes no readable report; or the publish or the
-   requeue is refused. A task the check calls affected but that a plan may not refine, because it is a spike or because its
+   type, or a model); a refinement or judging session fails, times out, or writes no readable report; the judging session
+   declines every must change and revises nothing, which the step's publish refuses whatever `--require-challenge` says; or
+   the publish or the requeue is refused. A task the check calls affected but that a plan may not refine, because it is a spike or because its
    context still carries an adopted tracker item's quoted text that a person has not read into the task (the refusals
-   `h9k plan start` gives), is released as it stood instead, with that reason recorded, since the step has no person to read
-   the quote first. Once parked, the step is over: its plan is ended, nothing in the daemon queues the task on the step's
+   `h9k plan start` gives), is parked too: the daemon takes it out of the queue and back to Draft, keeping its assignee, and
+   records that reason, since the step has no person to read the quote first and releasing it unchanged would run it against
+   notes the check just judged to invalidate it. Once parked, the step is over: its plan is ended, nothing in the daemon queues the task on the step's
    behalf, and a person who settles the park revises, publishes, and queues it by hand.
 
 Each step records its outcome as an event on the task's stream, and `h9k task show` prints it: *released without a check*,
 *released after the check*, *released after a failed check*, *revised and queued again*, *parked* (with the reason), or
-*ended without acting* because a person dequeued, unassigned, abandoned, published, or revised the task while the step ran.
+*ended without acting* because a person dequeued, unassigned, reassigned, abandoned, published, or revised the task while the step ran.
 After any of them nothing starts a second step for that task: not the step's own requeue, not a later observation of the
 pull request it is stacked on, not a person queueing it again, and not a change to its parent after it has been claimed (the
 stack rebase already handles the code). A goal run that loops until a goal is met, a second step when a parent changes after
