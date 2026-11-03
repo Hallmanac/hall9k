@@ -578,7 +578,7 @@ public sealed class WindowsDaemonAutostartTests
     }
 
     [Fact]
-    public async Task Keeping_an_existing_highest_task_from_a_non_elevated_shell_is_refused_naming_both_ways_forward()
+    public async Task Keeping_an_existing_highest_task_from_a_non_elevated_shell_is_refused_naming_the_elevated_shell()
     {
         WindowsDaemonAutostart autostart = new(new FakeElevation(false), new FakeTaskInspector(true, "Highest"));
 
@@ -589,7 +589,8 @@ public sealed class WindowsDaemonAutostartTests
             .And.Contain("keeps that level")
             .And.Contain("not elevated")
             .And.Contain("Re-run from an elevated shell")
-            .And.Contain("--run-level limited");
+            .And.Contain("--run-level limited also needs an elevated shell")
+            .And.NotContain("or pass --run-level limited");
     }
 
     [Fact]
@@ -666,5 +667,76 @@ public sealed class WindowsDaemonAutostartTests
         bad.Validate().Message.Should().Contain("highest").And.Contain("limited");
         good.Validate().Successful.Should().BeTrue();
         new DaemonAutostartEnableCommand.Settings().Validate().Successful.Should().BeTrue();
+    }
+
+    private const string AccessDenied = "ERROR: Access is denied.";
+
+    private static Func<IReadOnlyList<string>, CancellationToken, Task<ExecResult>> FailingSchtasks() =>
+        (_, _) => Task.FromResult(new ExecResult(1, string.Empty, AccessDenied));
+
+    [Fact]
+    public async Task An_explicit_limited_enable_over_a_highest_task_from_a_non_elevated_shell_says_why_and_what_to_do()
+    {
+        FakeTaskInspector inspector = new(true, "Highest");
+        WindowsDaemonAutostart autostart = new(new FakeElevation(false), inspector, FailingSchtasks());
+
+        AutostartRunLevel runLevel = await autostart.ResolveRunLevelAsync(AutostartRunLevel.Limited, CancellationToken.None);
+
+        runLevel.Should().Be(AutostartRunLevel.Limited);
+        inspector.Reads.Should().Be(0);
+
+        Func<Task> create = () => autostart.CreateTaskAsync("task.xml", CancellationToken.None);
+
+        (await create.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should()
+            .Be($"schtasks /Create failed (exit 1): {AccessDenied} The existing \\Hall9k\\h9kd task runs at Highest, "
+                + "so changing it needs an elevated shell; run h9k daemon autostart enable --run-level limited "
+                + "from an elevated shell to lower it.");
+        inspector.Reads.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(false, null, false)]
+    [InlineData(true, "Limited", false)]
+    [InlineData(true, null, false)]
+    [InlineData(true, "Highest", true)]
+    public async Task A_failed_create_outside_a_highest_task_in_a_non_elevated_shell_keeps_its_wording(
+        bool exists, string? runLevelOutput, bool elevated)
+    {
+        WindowsDaemonAutostart autostart = new(
+            new FakeElevation(elevated), new FakeTaskInspector(exists, runLevelOutput), FailingSchtasks());
+
+        Func<Task> create = () => autostart.CreateTaskAsync("task.xml", CancellationToken.None);
+
+        (await create.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should()
+            .Be($"schtasks /Create failed (exit 1): {AccessDenied}");
+    }
+
+    [Fact]
+    public async Task A_token_elevation_read_that_throws_leaves_the_schtasks_failure_unchanged()
+    {
+        WindowsDaemonAutostart autostart = new(
+            new ThrowingElevation(), new FakeTaskInspector(true, "Highest"), FailingSchtasks());
+
+        Func<Task> create = () => autostart.CreateTaskAsync("task.xml", CancellationToken.None);
+
+        (await create.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should()
+            .Be($"schtasks /Create failed (exit 1): {AccessDenied}");
+    }
+
+    [Fact]
+    public async Task A_failed_create_from_an_elevated_shell_does_not_read_the_existing_task_level()
+    {
+        FakeTaskInspector inspector = new(true, "Highest");
+        WindowsDaemonAutostart autostart = new(new FakeElevation(true), inspector, FailingSchtasks());
+
+        Func<Task> create = () => autostart.CreateTaskAsync("task.xml", CancellationToken.None);
+
+        await create.Should().ThrowAsync<InvalidOperationException>();
+        inspector.Reads.Should().Be(0);
+    }
+
+    private sealed class ThrowingElevation : IProcessElevation
+    {
+        public bool IsElevated() => throw new InvalidOperationException("Could not read this process's token elevation.");
     }
 }

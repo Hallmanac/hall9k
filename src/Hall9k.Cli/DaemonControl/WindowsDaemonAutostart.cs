@@ -46,16 +46,21 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
 {
     private readonly IProcessElevation _elevation;
     private readonly IScheduledTaskInspector _inspector;
+    private readonly Func<IReadOnlyList<string>, CancellationToken, Task<ExecResult>> _runSchtasks;
 
     public WindowsDaemonAutostart()
         : this(new WindowsProcessElevation(), new SchtasksTaskInspector())
     {
     }
 
-    internal WindowsDaemonAutostart(IProcessElevation elevation, IScheduledTaskInspector inspector)
+    internal WindowsDaemonAutostart(
+        IProcessElevation elevation,
+        IScheduledTaskInspector inspector,
+        Func<IReadOnlyList<string>, CancellationToken, Task<ExecResult>>? runSchtasks = null)
     {
         _elevation = elevation;
         _inspector = inspector;
+        _runSchtasks = runSchtasks ?? ((arguments, token) => Exec.RunAsync("schtasks.exe", arguments, token));
     }
 
     /// <summary>A Task Scheduler path, not a bare name — namespaced under its own folder the
@@ -195,13 +200,7 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
         await File.WriteAllTextAsync(xmlPath, TaskXmlContent(runLevel), Encoding.Unicode, cancellationToken);
         try
         {
-            ExecResult result = await Exec.RunAsync(
-                "schtasks.exe", ["/Create", "/XML", xmlPath, "/TN", TaskName, "/F"], cancellationToken);
-            if (!result.Succeeded)
-            {
-                throw new InvalidOperationException(
-                    $"schtasks /Create failed (exit {result.ExitCode}): {result.StandardError}");
-            }
+            await CreateTaskAsync(xmlPath, cancellationToken);
         }
         finally
         {
@@ -224,6 +223,49 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     }
 
     /// <summary>
+    /// Runs <c>schtasks /Create</c> for the task XML at <paramref name="xmlPath"/> and throws when it fails.
+    /// A failure while the existing task reads Highest and this shell is not elevated also says why
+    /// and what to do; that is decided from the task and the shell, never from schtasks' localized text.
+    /// </summary>
+    internal async Task CreateTaskAsync(string xmlPath, CancellationToken cancellationToken)
+    {
+        ExecResult result = await _runSchtasks(
+            ["/Create", "/XML", xmlPath, "/TN", TaskName, "/F"], cancellationToken);
+        if (result.Succeeded)
+        {
+            return;
+        }
+
+        string message = $"schtasks /Create failed (exit {result.ExitCode}): {result.StandardError}";
+        // The cheap token read goes first so an elevated shell never pays for the schtasks and
+        // PowerShell reads of the task level.
+        if (IsNotElevated()
+            && await ReadExistingTaskLevelAsync(cancellationToken) == ExistingTaskLevel.Highest)
+        {
+            message = $"{message.TrimEnd()} The existing {TaskName} task runs at Highest, so changing it needs an "
+                + "elevated shell; run h9k daemon autostart enable --run-level limited from an elevated shell to lower it.";
+        }
+
+        throw new InvalidOperationException(message);
+    }
+
+    /// <summary>
+    /// Whether this shell is known not to be elevated. A token read that fails answers false, so the
+    /// schtasks failure being explained is still the one that surfaces.
+    /// </summary>
+    private bool IsNotElevated()
+    {
+        try
+        {
+            return !_elevation.IsElevated();
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// The level a registration is made at. An explicit <paramref name="requestedRunLevel"/>
     /// wins; otherwise the existing task's level is kept, and a first enable registers
     /// <see cref="AutostartRunLevel.Limited"/> whatever the shell's elevation, so a habit of
@@ -232,22 +274,30 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     internal async Task<AutostartRunLevel> ResolveRunLevelAsync(
         AutostartRunLevel? requestedRunLevel, CancellationToken cancellationToken)
     {
-        ExistingTaskLevel existing = ExistingTaskLevel.Absent;
-        if (requestedRunLevel is null && _inspector.Exists())
-        {
-            string? output = await _inspector.ReadRunLevelAsync(cancellationToken);
-            AutostartRunLevel? read = output is null
-                ? null
-                : AutostartRunLevel.FromPowerShellOutput(output);
-            existing = read switch
-            {
-                not null when read == AutostartRunLevel.Highest => ExistingTaskLevel.Highest,
-                not null when read == AutostartRunLevel.Limited => ExistingTaskLevel.Limited,
-                _ => ExistingTaskLevel.Unreadable,
-            };
-        }
+        ExistingTaskLevel existing = requestedRunLevel is null
+            ? await ReadExistingTaskLevelAsync(cancellationToken)
+            : ExistingTaskLevel.Absent;
 
         return ChooseRunLevel(requestedRunLevel, existing, _elevation.IsElevated);
+    }
+
+    private async Task<ExistingTaskLevel> ReadExistingTaskLevelAsync(CancellationToken cancellationToken)
+    {
+        if (!_inspector.Exists())
+        {
+            return ExistingTaskLevel.Absent;
+        }
+
+        string? output = await _inspector.ReadRunLevelAsync(cancellationToken);
+        AutostartRunLevel? read = output is null
+            ? null
+            : AutostartRunLevel.FromPowerShellOutput(output);
+        return read switch
+        {
+            not null when read == AutostartRunLevel.Highest => ExistingTaskLevel.Highest,
+            not null when read == AutostartRunLevel.Limited => ExistingTaskLevel.Limited,
+            _ => ExistingTaskLevel.Unreadable,
+        };
     }
 
     /// <summary>
@@ -276,20 +326,24 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
 
         if (chosen == AutostartRunLevel.Highest && !isElevated())
         {
-            (string origin, string alternative) = requestedRunLevel is null
+            (string origin, string way) = requestedRunLevel is null
                 ? ($"The existing {TaskName} task runs at Highest (HighestAvailable), and enable keeps that level",
-                    "to lower the level on purpose")
+                    "Re-run from an elevated shell. Lowering the level on purpose with --run-level limited also needs "
+                    + "an elevated shell, because schtasks cannot overwrite an elevated task from a shell that is not.")
                 : ("--run-level highest registers the task at Highest (HighestAvailable)",
-                    "to register it not elevated");
+                    "Re-run from an elevated shell, or pass --run-level limited to register it not elevated.");
             throw new InvalidOperationException(
                 $"{origin}, but this shell is not elevated, and a Highest registration is refused from a "
-                + $"non-elevated shell. Re-run from an elevated shell, or pass --run-level limited {alternative}.");
+                + $"non-elevated shell. {way}");
         }
 
         return chosen;
     }
 
-    /// <summary>What <see cref="ResolveRunLevelAsync"/> found registered.</summary>
+    /// <summary>
+    /// What <see cref="ReadExistingTaskLevelAsync"/> found registered: read by <see cref="ResolveRunLevelAsync"/>
+    /// to choose a level, and by <see cref="CreateTaskAsync"/> to explain a failed registration.
+    /// </summary>
     internal enum ExistingTaskLevel
     {
         Absent,
