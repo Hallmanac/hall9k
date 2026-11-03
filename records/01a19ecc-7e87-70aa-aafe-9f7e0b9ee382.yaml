@@ -1,0 +1,20 @@
+hall9k-task-record: 1
+task-id: 01a19ecc-7e87-70aa-aafe-9f7e0b9ee382
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#855
+objective: When a non-elevated h9k daemon autostart enable is refused because schtasks cannot overwrite an elevated (Highest) logon task, the refusal says why and what to do, instead of only relaying schtasks' bare 'Access is denied'.
+criteria:
+  - |-
+    When `h9k daemon autostart enable` runs `schtasks /Create` and it fails while the existing logon task's run level reads Highest and the shell is not elevated (by the same elevation check the run-level refusal uses), the refusal keeps the schtasks output it relays today and adds one sentence: the existing task runs at Highest, so changing it needs an elevated shell, and `h9k daemon autostart enable --run-level limited` run from an elevated shell lowers it. The existing level is read on this failure path even when `--run-level` was given, because the run-level choice skips that read whenever a level is passed, and `--run-level limited` is the only invocation that reaches schtasks in this state.
+  - The condition does not depend on the text of the schtasks error, which Windows localizes. Every other `schtasks /Create` failure (no existing task, an existing task at Limited, an unreadable level, or an elevated shell) keeps its current wording exactly.
+  - A unit test drives the failure path through the existing elevation and task-inspector fakes with `--run-level limited` given and the existing task reading Highest, and pins the added sentence; another test shows a failure outside that condition with its wording unchanged. No test needs Windows or touches GitHub.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/0b9ee382-when-a-non-elevated-h9k-daemon
+published: 2026-11-03 00:28:42Z
+context: |-
+  Brian's F2 ruling on #852 (pr-review 102e6d80, 2026-11-02): merge without waiting on Windows; if the non-elevated check fails, a one-sentence fix to the refusal wording follows. Windows report (transport note 9fcaccde, 2026-11-02 19:21): from a non-elevated shell, enable --run-level limited over the Highest task was refused with 'Autostart enable failed: Task Scheduler logon task was not registered. schtasks /Create failed (exit 1): ERROR: Access is denied.' The task stayed at Highest. The shell was runas /trustlevel:0x20000 (Administrators stripped, High mandatory label). Code: WindowsDaemonAutostart.cs (level read at :236 only when --run-level is null; refusal at :277-287; script written at :188-192 before schtasks /Create at :198-199). Challenge applied in full (report /Users/brianhallmanac/.hall9k/runs/01a19ecc-9c8d-7035-b77f-275076e0dcae/challenge-report.md).  The reported shell's `TokenElevation` reading is unobserved: with `--run-level limited` the elevation check never ran. The post-merge Windows recheck should confirm the added sentence appears from that shell.   Parked: a refused enable has already rewritten the launch script of the still-registered task before schtasks fails.
