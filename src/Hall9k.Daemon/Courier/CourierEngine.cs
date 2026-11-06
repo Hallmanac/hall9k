@@ -230,17 +230,6 @@ public sealed class CourierEngine(
             return CourierTickOutcome.NotThisTick;
         }
 
-        // Before the stranded-run adoption, the streak housekeeping, and the feed scan, and whether
-        // or not anything is waiting: adopting a stranded run writes the streak (its daemon-ended
-        // hold, and a registration reset if a newer window registered), so a blocked tick adopts
-        // nothing, resets nothing, pulls nothing in, and moves nothing. Whatever it would have done
-        // happens on the first unblocked tick, and it never pays the scan or the day cap.
-        bool elevationBlocked = ElevationBlocked(project, presence);
-        if (elevationBlocked)
-        {
-            return CourierTickOutcome.NotThisTick;
-        }
-
         if (stranded is not null)
         {
             // Stranded: SpawnAsync's own wait is bounded to CourierTimeout and every path out
@@ -279,6 +268,19 @@ public sealed class CourierEngine(
             await session.LoadAsync<OrchestratorFeedDrainLease>(project.Id, cancellationToken);
         bool manualDrainLeaseHeld = OrchestratorFeedDrainLease.IsHeld(lease, now);
         if (manualDrainLeaseHeld)
+        {
+            return CourierTickOutcome.NotThisTick;
+        }
+
+        // After the stranded-run adoption and the manual-drain check, and before the streak
+        // housekeeping and the feed scan, whether or not anything is waiting. The adoption runs on
+        // a blocked tick too: the run it closes really did end with the daemon that dispatched it,
+        // and left open it reads as in flight on every status surface, which outranks the block
+        // and hides it for as long as the block lasts (independent pre-PR review, conformance
+        // lens). The daemon-ended hold it writes runs out during the block like any other wait. A
+        // blocked tick resets nothing, pulls nothing in, never pays the scan, and spends none of
+        // the day cap; the first unblocked tick does what the housekeeping would have done.
+        if (ElevationBlocked(project, presence))
         {
             return CourierTickOutcome.NotThisTick;
         }
@@ -343,7 +345,6 @@ public sealed class CourierEngine(
             orchestratorLive,
             courierAlreadyRunning,
             manualDrainLeaseHeld,
-            elevationBlocked,
             newestUrgentSequence: deliverableItems.Where(item => item.IsUrgent).Select(item => (long?)item.Sequence).Max(),
             streak,
             now,

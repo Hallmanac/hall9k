@@ -1804,20 +1804,21 @@ Administrators as deny-only, so a courier it spawns cannot open that pipe, and C
 it would every minute until the day cap ran out. The block runs one way only. An elevated daemon's
 courier carries both Administrators and the user's own SID, so it can open a non-elevated window's
 pipe, and two processes at the same level always reach each other. So on every sweep tick for a
-project whose window is live, after the liveness and already-running checks and before the
-stranded-run adoption, the manual-drain check, and the streak's own reset and restart pull-in, the
-daemon compares the window's
-token elevation with its own. Its own is read once at start; a window's is read once per window
-process (pid and start time), since a token's elevation never changes while its process lives. When
-the window is elevated and the daemon is not, the tick spawns nothing, spends none of the day cap,
-skips the feed scan, and leaves the failure streak exactly as it was, so a stranded run it would
-have adopted, and a reset or pull-in it would have made, wait for the first tick that is not blocked. The daemon logs the block once per window
-process, naming the project, the session, the pid, and the fixes. Either token being unreadable
-(another account's process, say) blocks nothing: the tick goes ahead and the backoff contains
-whatever fails. The fix is to put both at the same level, whichever way: raise the daemon (`h9k
-daemon autostart enable --run-level highest` from an elevated shell, then `h9k daemon stop` and
-`h9k daemon start`, or with no autostart registered, `h9k daemon stop` and then `h9k daemon start`
-from an elevated shell),
+project whose window is live, after the liveness, already-running, stranded-run adoption, and
+manual-drain checks and before the streak's own reset and restart pull-in, the daemon compares the
+window's token elevation with its own. Its own is read once at start; a window's is read once per
+window process (pid and start time), since a token's elevation never changes while its process
+lives. When the window is elevated and the daemon is not, the tick spawns nothing, spends none of
+the day cap, skips the feed scan, and makes no reset or pull-in; those wait for the first tick that
+is not blocked. A stranded run is still adopted on a blocked tick, since left open it would read as
+in flight on `h9k status` and hide the block. The adoption writes what it always writes (its
+daemon-ended hold, and the reset a newer window earns), and that hold simply runs out during the
+block. The daemon logs the block once per window process, naming the project, the
+session, the pid, and the fixes. Either token being unreadable (another account's process, say)
+blocks nothing: the tick goes ahead and the backoff contains whatever fails. The fix is to put both
+at the same level, whichever way: raise the daemon (`h9k daemon autostart enable --run-level
+highest` from an elevated shell, then `h9k daemon stop` and `h9k daemon start`, or with no autostart
+registered, `h9k daemon stop` and then `h9k daemon start` from an elevated shell),
 or open the window without elevation. macOS and Linux have no such check.
 
 Failure is visible in two places. The courier line of `h9k status` reads `failing`, with the
