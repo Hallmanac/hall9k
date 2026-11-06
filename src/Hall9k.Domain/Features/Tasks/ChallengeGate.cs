@@ -24,8 +24,10 @@ public sealed record ChallengeGateInput(bool Required, string ProjectName, strin
 /// <para>
 /// The latest verdict decides, and a failure replaces nothing. A missing verdict and a <c>do not publish</c>
 /// refuse. A <c>publish as written</c> passes. A <c>publish as revised</c> passes when it holds no must change,
-/// or when the draft has been revised since it landed, because revising is how a verdict gets applied. Any
-/// other state passes, including later revisions of a verdict that already passed.
+/// when the draft has been revised since it landed, because revising is how a verdict gets applied, or when a
+/// feedback step's judging session has since judged it, because that session applies what it accepts and records
+/// a reason for each change it declines, so declining every must is an applied judgment rather than an ignored
+/// verdict. Any other state passes, including later revisions of a verdict that already passed.
 /// </para>
 /// <para>
 /// It never applies to a pr-review task, which has no author to challenge, or to a spike, which is bounded by
@@ -43,18 +45,30 @@ public static class ChallengeGate
     public static string? Shortfall(TaskAggregate task, bool required) =>
         Shortfall(
             task.Type, task.LatestChallengeVerdict, task.LatestChallengeOutcome, task.RevisedSinceChallengeVerdict,
-            required);
+            task.JudgedSinceChallengeVerdict, required);
 
     /// <summary>The same question asked of the read model, for the displays that hold a document and not a stream.</summary>
     public static string? Shortfall(TaskDetails task, bool required) =>
         Shortfall(
             task.Type, task.LatestChallengeVerdict, task.LatestChallengeOutcome, task.RevisedSinceChallengeVerdict,
-            required);
+            task.JudgedSinceChallengeVerdict, required);
 
-    /// <summary>The rule itself, over the four facts it reads.</summary>
+    /// <summary>
+    /// Whether a refinement outcome is a feedback step's judging session that ended with a readable outcome while a verdict
+    /// stood: the fact behind <see cref="TaskAggregate.JudgedSinceChallengeVerdict"/>. A session refused before it ran, one
+    /// that failed, and one that asked a question or concluded the task should not run judged nothing the gate can lean on.
+    /// </summary>
+    public static bool JudgedTheVerdict(DraftRefinementRecorded outcome, DraftChallengeRecorded? latestVerdict) =>
+        latestVerdict is not null
+        && outcome.SessionId is not null
+        && outcome.Purpose == RefinementPurpose.JudgeVerdict
+        && outcome.Failure == RefinementFailureReason.Unknown
+        && (outcome.Outcome == RefinementOutcome.Revised || outcome.Outcome == RefinementOutcome.Unchanged);
+
+    /// <summary>The rule itself, over the five facts it reads.</summary>
     public static string? Shortfall(
         TaskType type, DraftChallengeRecorded? latestVerdict, DraftChallengeRecorded? latestOutcome,
-        bool revisedSinceVerdict, bool required)
+        bool revisedSinceVerdict, bool judgedSinceVerdict, bool required)
     {
         if (!required || !AppliesTo(type))
         {
@@ -76,6 +90,7 @@ public static class ChallengeGate
         return verdict.Verdict == ChallengeVerdict.PublishAsRevised
             && verdict.MustCount > 0
             && !revisedSinceVerdict
+            && !judgedSinceVerdict
             ? $"its latest challenge verdict is 'publish as revised' holding {verdict.MustCount} must "
               + $"change{(verdict.MustCount == 1 ? string.Empty : "s")} and the draft has not been revised since it landed"
             : null;

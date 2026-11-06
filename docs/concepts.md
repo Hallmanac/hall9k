@@ -442,9 +442,10 @@ record has nothing to coordinate on, so there the stream version is all that fen
 4. **Parked for a person.** The task is parked instead, with the reason shown in `h9k task show` and `h9k status`, when the
    challenge returns *do not publish* or ends with no verdict; the refinement concludes the task should not run (the closing
    word `should-not-run`); the revision names anything but the objective, criteria, or context (a dependency, a stack link, a
-   type, or a model); a refinement or judging session fails, times out, or writes no readable report; the judging session
-   declines every must change and revises nothing, which the step's publish refuses whatever `--require-challenge` says; or
-   the publish or the requeue is refused. A task the check calls affected but that a plan may not refine, because it is a spike or because its
+   type, or a model); a refinement or judging session fails, times out, or writes no readable
+   report; or the publish or the requeue is refused. A judging session that declines every must change, with a reason for
+   each in the journal, and revises nothing has applied the verdict as far as the publish gate is concerned, so the task is
+   published rather than parked. A task the check calls affected but that a plan may not refine, because it is a spike or because its
    context still carries an adopted tracker item's quoted text that a person has not read into the task (the refusals
    `h9k plan start` gives), is parked too: the daemon takes it out of the queue and back to Draft, keeping its assignee, and
    records that reason, since the step has no person to read the quote first and releasing it unchanged would run it against
