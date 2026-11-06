@@ -5,6 +5,7 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
+using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Feedback;
 using Hall9k.Daemon.Plan;
@@ -216,43 +217,6 @@ public sealed class FeedbackStepEngineTests(PostgresFixture postgres) : IClassFi
         }
     }
 
-    /// <summary>Wraps the ledger and, once armed, throws on the next read the way a daemon that is stopping cancels its work.</summary>
-    private sealed class StoppingLedger(ILedger inner) : ILedger
-    {
-        public bool StopOnNextRead { get; set; }
-
-        public bool Stopped { get; private set; }
-
-        public Task<LedgerFile> ReadAsync(string repositoryPath, string refName, string path, CancellationToken cancellationToken)
-        {
-            if (StopOnNextRead && !Stopped)
-            {
-                Stopped = true;
-                throw new OperationCanceledException("the daemon is stopping");
-            }
-
-            return inner.ReadAsync(repositoryPath, refName, path, cancellationToken);
-        }
-
-        public Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken) =>
-            inner.WriteAsync(request, cancellationToken);
-
-        public Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken) =>
-            inner.WriteManyAsync(request, cancellationToken);
-
-        public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
-            inner.DeleteAsync(request, cancellationToken);
-
-        public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
-            inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
-
-        public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
-            inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
-
-        public Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
-            inner.ReadAllAsync(repositoryPath, refName, pathPrefix, cancellationToken);
-    }
-
     private sealed class FixedWorktrees : IWorktreeManager
     {
         public Task<CheckoutRefresh> RefreshReadingCheckoutAsync(string checkoutPath, string branch, CancellationToken cancellationToken) =>
@@ -289,16 +253,21 @@ public sealed class FeedbackStepEngineTests(PostgresFixture postgres) : IClassFi
     }
 
     private FeedbackStepEngine NewFeedbackEngine(
-        IExecutor executor, FakeProcessManager processes, NodeContext? node = null, Action<DaemonOptions>? tweak = null, ILedger? ledger = null)
+        IExecutor executor, FakeProcessManager processes, NodeContext? node = null, Action<DaemonOptions>? tweak = null)
     {
         DaemonOptions options = new() { FeedbackCheckTimeout = TimeSpan.FromSeconds(20) };
         tweak?.Invoke(options);
         FeedbackStepEngine engine = new(
             postgres.Store, node ?? _node, executor, processes, new LaunchHoldEngine(postgres.Store, NullLogger<LaunchHoldEngine>.Instance),
-            new DaemonConnection(postgres.ConnectionString), Options.Create(options), NullLogger<FeedbackStepEngine>.Instance, ledger ?? _ledger);
+            new DaemonConnection(postgres.ConnectionString), Options.Create(options), NullLogger<FeedbackStepEngine>.Instance, _ledger);
         _feedbackEngines.Add(engine);
         return engine;
     }
+
+    private DispatchEngine NewDispatcher() => new(
+        postgres.Store, _node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+        new LaunchHoldEngine(postgres.Store, NullLogger<LaunchHoldEngine>.Instance), Options.Create(new DaemonOptions()),
+        NullLogger<DispatchEngine>.Instance, ledger: _ledger);
 
     private PlanEngine NewPlanEngine(IExecutor executor, FakeProcessManager processes, IPlanTaskCommands commands)
     {
@@ -653,7 +622,7 @@ public sealed class FeedbackStepEngineTests(PostgresFixture postgres) : IClassFi
     }
 
     [Fact]
-    public async Task The_node_that_begins_a_step_holds_the_ledger_record_while_it_runs_and_gives_it_back_when_the_step_ends()
+    public async Task The_node_that_begins_a_step_holds_the_ledger_record_while_it_runs_and_the_dispatcher_gives_it_back_when_the_step_ends()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         Guid projectId = await SeedProjectAsync(cts.Token);
@@ -669,14 +638,26 @@ public sealed class FeedbackStepEngineTests(PostgresFixture postgres) : IClassFi
 
         heldDuringCheck.Should().NotBeNull("the holder is written before the begun event, so it stands while the check runs");
         heldDuringCheck!.NodeId.Should().Be(_node.NodeId);
-        (await LedgerHolderAsync(taskId, cts.Token)).Should().BeNull("the step is over, so the dispatcher's own claim finds the task free");
+
+        // The ending save made the task claimable, so the step never clears the holder itself, which would race the dispatcher's
+        // claim of the same task. The save records the release the dispatcher owes instead, which also outlives a daemon restart.
+        (await LedgerHolderAsync(taskId, cts.Token))!.NodeId.Should().Be(_node.NodeId, "the dispatcher, not the step, gives the holder back");
+        string pendingKey = TaskHolderReleasePending.KeyFor(taskId, _node.NodeId);
+        await using (IQuerySession owed = postgres.Store.QuerySession())
+        {
+            (await owed.LoadAsync<TaskHolderReleasePending>(pendingKey, cts.Token))!.ProjectId.Should().Be(projectId);
+        }
+
+        await NewDispatcher().SweepExpiredLeasesAsync(DateTimeOffset.UtcNow, cts.Token);
+
+        (await LedgerHolderAsync(taskId, cts.Token)).Should().BeNull("the dispatcher's sweep gave the holder back, so its own claim finds the task free");
         await using IQuerySession query = postgres.Store.QuerySession();
-        (await query.LoadAsync<TaskHolderReleasePending>(TaskHolderReleasePending.KeyFor(taskId, _node.NodeId), cts.Token))
+        (await query.LoadAsync<TaskHolderReleasePending>(pendingKey, cts.Token))
             .Should().BeNull("the release landed, so the row recorded with the outcome has nothing left to retry");
     }
 
     [Fact]
-    public async Task A_daemon_that_stops_after_a_step_ends_but_before_its_holder_release_still_owes_the_release()
+    public async Task The_dispatcher_leaves_the_holder_alone_when_it_has_already_leased_the_task_the_step_released()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         Guid projectId = await SeedProjectAsync(cts.Token);
@@ -685,57 +666,29 @@ public sealed class FeedbackStepEngineTests(PostgresFixture postgres) : IClassFi
         await SeedLedgerRecordAsync(taskId, null, cts.Token);
         FakeProcessManager processes = new();
         ScriptedSessions sessions = new(processes);
-        StoppingLedger stopping = new(_ledger);
-
-        // The outcome's save has landed by the time the release reads the ledger, so stopping there is the daemon dying in between.
-        sessions.OnCheck = _ => stopping.StopOnNextRead = true;
-        FeedbackStepEngine engine = NewFeedbackEngine(sessions, processes, ledger: stopping);
-        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(60);
-        while (!stopping.Stopped)
-        {
-            try
-            {
-                await engine.PollOnceAsync(cts.Token);
-            }
-            catch (OperationCanceledException) when (!cts.IsCancellationRequested)
-            {
-            }
-
-            DateTimeOffset.UtcNow.Should().BeBefore(deadline, "the release should have been reached");
-            await Task.Delay(50, cts.Token);
-        }
-
-        (await EndedAsync(taskId, cts.Token)).Should().BeTrue();
-        (await LedgerHolderAsync(taskId, cts.Token))!.NodeId.Should().Be(_node.NodeId, "the release never ran");
-        await using IQuerySession query = postgres.Store.QuerySession();
-        TaskHolderReleasePending? owed = await query.LoadAsync<TaskHolderReleasePending>(TaskHolderReleasePending.KeyFor(taskId, _node.NodeId), cts.Token);
-        owed.Should().NotBeNull("the release was recorded with the outcome, so the dispatcher's sweep gives the holder back after a restart");
-        owed!.ProjectId.Should().Be(projectId);
-    }
-
-    [Fact]
-    public async Task A_step_that_ends_leaves_the_ledger_holder_alone_when_this_node_already_leases_the_task()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        Guid projectId = await SeedProjectAsync(cts.Token);
-        (TaskDependency blocker, _) = await SeedBlockerAsync(projectId, cts.Token, ("The API returns pages.", true));
-        (Guid taskId, _) = await SeedHeldTaskAsync(projectId, blocker, cts.Token, placed: false);
-        await SeedLedgerRecordAsync(taskId, null, cts.Token);
-        FakeProcessManager processes = new();
-        ScriptedSessions sessions = new(processes);
-
-        // The release runs after the outcome event made the task Queued, so the dispatcher may have claimed it by then: its claim is a
-        // lease naming this node over a holder that already names this node. Clearing that holder would leave a running task unguarded.
-        sessions.OnCheck = _ =>
-        {
-            using IDocumentSession lease = postgres.Store.LightweightSession();
-            lease.Store(new TaskLease { Id = taskId, NodeId = _node.NodeId, LeaseGeneration = 1, HeartbeatAt = DateTimeOffset.UtcNow });
-            lease.SaveChangesAsync(CancellationToken.None).GetAwaiter().GetResult();
-        };
 
         await SweepUntilAsync(NewFeedbackEngine(sessions, processes), () => EndedAsync(taskId, cts.Token), cts.Token);
 
+        // The dispatcher may claim the released task before its sweep reaches the release: its claim is a lease naming this node
+        // over a holder that already names this node. Clearing that holder would leave a running task unguarded.
+        await using (IDocumentSession lease = postgres.Store.LightweightSession())
+        {
+            lease.Store(new TaskLease { Id = taskId, NodeId = _node.NodeId, LeaseGeneration = 1, HeartbeatAt = DateTimeOffset.UtcNow });
+            await lease.SaveChangesAsync(cts.Token);
+        }
+
+        await NewDispatcher().SweepExpiredLeasesAsync(DateTimeOffset.UtcNow, cts.Token);
+
         (await LedgerHolderAsync(taskId, cts.Token))!.NodeId.Should().Be(_node.NodeId, "the lease says the holder now belongs to the dispatcher's run");
+        await using (IDocumentSession cleanup = postgres.Store.LightweightSession())
+        {
+            cleanup.Delete<TaskLease>(taskId);
+            await cleanup.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession query = postgres.Store.QuerySession();
+        (await query.LoadAsync<TaskHolderReleasePending>(TaskHolderReleasePending.KeyFor(taskId, _node.NodeId), cts.Token))
+            .Should().BeNull("the release the claim superseded is dropped rather than retried");
     }
 
     [Fact]
