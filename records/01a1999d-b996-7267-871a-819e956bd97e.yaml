@@ -41,3 +41,7 @@ context: |-
   - Tests: `tests/Hall9k.Tests/Domain/CourierGateTests.cs` and 93dca1b2's courier tests. CI runs ubuntu-latest and windows-latest only.
 
   Placement: build on this Windows node (Brian places it). A build session runs under the daemon, which is elevated here, so it cannot see the non-elevated-daemon case directly. For a manual check, a non-elevated process comes from `explorer.exe <script.cmd>` started from an elevated shell (the script runs with the filtered token), or from a one-off non-elevated scheduled task as the discovery session used (created, run, deleted). `runas /trustlevel:0x20000` does not de-elevate on this Windows 11 build.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-11-06 17:42:30Z
