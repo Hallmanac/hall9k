@@ -2684,10 +2684,29 @@ Once the next-attempt time has passed it says `next try at the next sweep`, neve
 negative duration. The reason is the text after `COURIER-OUTCOME: failed -` when the courier's
 session gave one, and otherwise `no reason given`, `timed out after 3m`, `ended without an outcome
 line`, or `daemon error: <message>`; newlines are collapsed to spaces and it is cut to 120
-characters with an ellipsis. When states overlap, `in flight` wins, then `day cap spent`, then
-`failing`, and the winner appends the streak count (`in flight (dispatched 20s ago), 14 failed in a
-row`). While a project's day cap has held a courier back today, the line says `day cap spent` and
-gives the local time the day rolls over (00:00 UTC).
+characters with an ellipsis. When states overlap, `in flight` wins, then `blocked`, then `day cap
+spent`, then `failing`, and the winner appends the streak count (`in flight (dispatched 20s ago), 14
+failed in a row`). While a project's day cap has held a courier back today, the line says `day cap
+spent` and gives the local time the day rolls over (00:00 UTC).
+
+On Windows, while a project's window is live, elevated, and the running daemon is not, no courier can
+reach it (see [concepts.md's The feed courier](concepts.md#the-feed-courier)), and the courier line
+reads:
+
+```
+courier: blocked, the window is elevated and the daemon is not; never delivered
+```
+
+with the fix on the next line. With autostart registered the fix is `h9k daemon autostart enable
+--run-level highest` from an elevated shell, then `h9k daemon stop` and `h9k daemon start`; with no
+autostart it is `h9k daemon stop`, then `h9k daemon start` from an elevated shell; either way,
+opening the window without elevation fixes it too. The CLI works the verdict out live, reading the
+registered window's process and the running daemon's with the same reader the daemon uses, so it
+is never stored, and with no daemon running nothing reads as blocked. `h9k orchestrator status`,
+which prints no courier line, appends the same `courier: blocked, ...` sentence and fix after the
+window's presence sentence. `h9k orchestrator register` still registers such a window but prints a
+warning with the same fix; it says nothing when the levels match, when no daemon is running, or when
+either level cannot be read.
 
 `h9k doctor` has a **courier section**, run after the database check passes and skipped under
 `--no-configure` like the release check. It lists every project with an orchestrator window
@@ -2697,7 +2716,12 @@ hour while the project's window is live and was registered at least an hour ago;
 warned for its streak is not warned again for the undrained hour. The undrained check pages past a
 long run of unrelated events without moving the feed cursor, and says so, rather than reporting `ok`,
 if the feed is too long to reach the end of. A healthy or quiet project gets one `ok` line, and a node
-with no registered window says so in one line.
+with no registered window says so in one line. On Windows the section also gives each live window's
+elevation beside the daemon's (`hall9k: window elevated, daemon not elevated`), each one `elevated`,
+`not elevated`, or `unknown` when the token cannot be read, and warns for a window that is blocked,
+with the same fix the status line gives; a project warned for a block is not warned again for its
+undrained hour. With no daemon running it says so in one line and compares nothing. macOS and Linux
+show no elevation.
 
 `register`/`deregister`/`status` are how the platform knows whether a window is actually up for a
 project on this node. A window registers itself as the anchor's first start-up step, naming its
