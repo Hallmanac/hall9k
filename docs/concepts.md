@@ -1796,10 +1796,35 @@ next wait is the next step up, and since that courier carried the item it gets n
 a burst of urgent items spawns at most one courier per base interval. With no streak running,
 urgent items bypass the wait exactly as before.
 
+**On Windows, an elevated window under a non-elevated daemon gets no courier at all.** An elevated
+Claude window creates its named pipe with the elevated token's default DACL, which grants write
+access only to Administrators and SYSTEM. A non-elevated daemon's filtered token holds
+Administrators as deny-only, so a courier it spawns cannot open that pipe, and Claude Code's
+`ListAgents` silently drops a peer it cannot open: the courier reports the window unreachable, and
+it would every minute until the day cap ran out. The block runs one way only. An elevated daemon's
+courier carries both Administrators and the user's own SID, so it can open a non-elevated window's
+pipe, and two processes at the same level always reach each other. So on every sweep tick for a
+project whose window is live, after the liveness and already-running checks and before the
+stranded-run adoption, the manual-drain check, and the streak's own reset and restart pull-in, the
+daemon compares the window's
+token elevation with its own. Its own is read once at start; a window's is read once per window
+process (pid and start time), since a token's elevation never changes while its process lives. When
+the window is elevated and the daemon is not, the tick spawns nothing, spends none of the day cap,
+skips the feed scan, and leaves the failure streak exactly as it was, so a stranded run it would
+have adopted, and a reset or pull-in it would have made, wait for the first tick that is not blocked. The daemon logs the block once per window
+process, naming the project, the session, the pid, and the fixes. Either token being unreadable
+(another account's process, say) blocks nothing: the tick goes ahead and the backoff contains
+whatever fails. The fix is to put both at the same level, whichever way: raise the daemon (`h9k
+daemon autostart enable --run-level highest` from an elevated shell, then `h9k daemon stop` and
+`h9k daemon start`, or with no autostart registered, `h9k daemon stop` and then `h9k daemon start`
+from an elevated shell),
+or open the window without elevation. macOS and Linux have no such check.
+
 Failure is visible in two places. The courier line of `h9k status` reads `failing`, with the
-count, when the streak began, when the next try is, and the last reason; and `h9k doctor` has a
-courier section that warns on a streak of five or more, on a spent day cap, and on a feed item
-left undrained for over an hour under a live window. Both are described in
+count, when the streak began, when the next try is, and the last reason (or `blocked` for an
+elevation block); and `h9k doctor` has a courier section that warns on a streak of five or more, on
+a spent day cap, on a window blocked by elevation, and on a feed item left undrained for over an
+hour under a live window. Both are described in
 [cli.md's Orchestrator windows](cli.md#orchestrator-windows).
 
 **The courier's own prompt is deliberately small** — no recipe, no AGENTS.md, none of the
