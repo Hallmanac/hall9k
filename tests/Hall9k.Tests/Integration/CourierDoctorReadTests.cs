@@ -8,6 +8,7 @@ using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Tests.Fakes;
 using Marten;
 using Xunit;
@@ -37,7 +38,7 @@ public sealed class CourierDoctorReadTests : IClassFixture<PostgresFixture>, IAs
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         FakeOrchestratorProcessProbe probe = new();
 
-        IReadOnlyList<string> noNode = await CourierDoctor.ReadAsync(_postgres.Store, probe, Now, cts.Token);
+        IReadOnlyList<string> noNode = await CourierDoctor.ReadAsync(_postgres.Store, probe, elevation: null, Now, cts.Token);
         noNode.Should().Equal(CourierDoctor.NoWindowLine);
 
         Guid nodeId = DomainId.New();
@@ -48,7 +49,7 @@ public sealed class CourierDoctorReadTests : IClassFixture<PostgresFixture>, IAs
             await session.SaveChangesAsync(cts.Token);
         }
 
-        IReadOnlyList<string> noWindow = await CourierDoctor.ReadAsync(_postgres.Store, probe, Now, cts.Token);
+        IReadOnlyList<string> noWindow = await CourierDoctor.ReadAsync(_postgres.Store, probe, elevation: null, Now, cts.Token);
         noWindow.Should().Equal(CourierDoctor.NoWindowLine);
     }
 
@@ -90,12 +91,81 @@ public sealed class CourierDoctorReadTests : IClassFixture<PostgresFixture>, IAs
 
         FakeOrchestratorProcessProbe probe = new FakeOrchestratorProcessProbe()
             .Running(41_000, launchedAt).Running(41_001, launchedAt);
-        IReadOnlyList<string> lines = await CourierDoctor.ReadAsync(_postgres.Store, probe, Now, cts.Token);
+        IReadOnlyList<string> lines = await CourierDoctor.ReadAsync(_postgres.Store, probe, elevation: null, Now, cts.Token);
 
         lines.Should().HaveCount(2);
         lines.Should().ContainSingle(line => line.Contains("warn:") && line.Contains("failing: courier failing, 7 in a row")
             && line.Contains("last: no session by that name"));
         lines.Should().ContainSingle(line => line.Contains("quiet: courier ok"));
+    }
+
+    private async Task SeedOneWindowAsync(int processId, DateTimeOffset launchedAt, CancellationToken cancellationToken)
+    {
+        Guid nodeId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        session.Events.StartStream<NodeAggregate>(
+            nodeId, new NodeRegistered(nodeId, ownerId, Environment.MachineName, "Windows", Now));
+        session.Events.StartStream<ProjectAggregate>(
+            projectId, ProjectDecider.Register(projectId, ownerId, DomainId.New(), "elevated", "/repo", null, null, Now));
+        session.Events.StartStream<OrchestratorPresenceAggregate>(
+            OrchestratorPresenceStreamId.For(nodeId, projectId),
+            new OrchestratorLaunched(nodeId, projectId, "orchestrator", processId, "claude-code", launchedAt, launchedAt));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    [Fact]
+    public async Task A_window_elevated_over_a_non_elevated_daemon_reads_both_levels_and_warns_with_the_autostart_fix()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DateTimeOffset launchedAt = Now.AddMinutes(-20);
+        await SeedOneWindowAsync(41_100, launchedAt, cts.Token);
+        FakeProcessElevationReader reader = new FakeProcessElevationReader()
+            .With(41_200, ProcessElevation.NotElevated).With(41_100, ProcessElevation.Elevated);
+        bool autostartAsked = false;
+        CourierDoctorElevationSource elevation = new(
+            reader, new DaemonProcessDescriptor(41_200, Now.AddHours(-1)), () => autostartAsked = true);
+
+        IReadOnlyList<string> lines = await CourierDoctor.ReadAsync(
+            _postgres.Store, new FakeOrchestratorProcessProbe().Running(41_100, launchedAt), elevation, Now, cts.Token);
+
+        lines.Should().HaveCount(2);
+        lines[0].Should().Contain("elevated: window elevated, daemon not elevated");
+        lines[1].Should().Contain("warn:").And.Contain("courier blocked, the window is elevated and the daemon is not")
+            .And.Contain("autostart enable --run-level highest");
+        autostartAsked.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task With_no_daemon_running_the_section_says_so_and_compares_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DateTimeOffset launchedAt = Now.AddMinutes(-20);
+        await SeedOneWindowAsync(41_101, launchedAt, cts.Token);
+        FakeProcessElevationReader reader = new FakeProcessElevationReader().With(41_101, ProcessElevation.Elevated);
+        CourierDoctorElevationSource elevation = new(reader, Daemon: null, () => true);
+
+        IReadOnlyList<string> lines = await CourierDoctor.ReadAsync(
+            _postgres.Store, new FakeOrchestratorProcessProbe().Running(41_101, launchedAt), elevation, Now, cts.Token);
+
+        lines.Should().Equal(CourierDoctor.NoDaemonElevationLine, "[dim]  elevated: courier ok[/]");
+        reader.ReadsOf(41_101).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Off_Windows_the_section_shows_no_elevation()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DateTimeOffset launchedAt = Now.AddMinutes(-20);
+        await SeedOneWindowAsync(41_102, launchedAt, cts.Token);
+        CourierDoctorElevationSource elevation = new(
+            new FakeProcessElevationReader { IsSupported = false }, new DaemonProcessDescriptor(41_200, Now), () => true);
+
+        IReadOnlyList<string> lines = await CourierDoctor.ReadAsync(
+            _postgres.Store, new FakeOrchestratorProcessProbe().Running(41_102, launchedAt), elevation, Now, cts.Token);
+
+        lines.Should().Equal("[dim]  elevated: courier ok[/]");
     }
 
     [Fact]
@@ -147,7 +217,7 @@ public sealed class CourierDoctorReadTests : IClassFixture<PostgresFixture>, IAs
 
         // Read two hours on, so the item the store just stamped is well over an hour old.
         FakeOrchestratorProcessProbe probe = new FakeOrchestratorProcessProbe().Running(42_000, launchedAt);
-        IReadOnlyList<string> lines = await CourierDoctor.ReadAsync(_postgres.Store, probe, Now.AddHours(2), cts.Token);
+        IReadOnlyList<string> lines = await CourierDoctor.ReadAsync(_postgres.Store, probe, elevation: null, Now.AddHours(2), cts.Token);
 
         lines.Should().ContainSingle().Which.Should().Contain("warn:").And.Contain("a feed item has sat undrained");
         await using IQuerySession query = _postgres.Store.QuerySession();

@@ -14,13 +14,15 @@ namespace Hall9k.Cli.Orchestrator;
 /// <param name="DayCounter">The project's day spawn counter document, if one exists.</param>
 /// <param name="PresenceRegistered">Whether the project's orchestrator presence on this node is registered.</param>
 /// <param name="LaunchedAt">When the registered window launched, or the last time it re-registered with a changed address.</param>
+/// <param name="ElevationBlocked">Whether the live window is elevated and the running daemon is not (<see cref="CourierElevationCheck.Blocks"/>).</param>
 public sealed record CourierStatusFacts(
     CourierRunDetails? InFlight,
     DateTimeOffset? LastDeliveredAt,
     CourierFailureStreak? Streak,
     CourierDaySpawnCounter? DayCounter,
     bool PresenceRegistered,
-    DateTimeOffset? LaunchedAt)
+    DateTimeOffset? LaunchedAt,
+    bool ElevationBlocked = false)
 {
     /// <summary>The failure streak as far as this line is concerned: running, and the project's presence registered.</summary>
     public CourierFailureStreak? RunningStreak =>
@@ -34,7 +36,8 @@ public sealed record CourierStatusFacts(
 /// all and nothing is wrong, the same "a quiet pane says nothing" posture
 /// <see cref="OrchestratorPresenceLine"/> holds for a project that has never registered a window.
 /// <para>
-/// One branch per state, in precedence order: in flight, then day cap spent, then failing. The
+/// One branch per state, in precedence order: in flight, then blocked by elevation, then day cap
+/// spent, then failing. The
 /// winner appends the failed count when a streak is also running, so a state hidden by a
 /// higher-precedence one is still counted. A further state is one more branch in
 /// <see cref="Describe"/>.
@@ -50,9 +53,11 @@ public static class CourierStatusLine
         // is the only one whose line carries no delivery text.
         string? state = facts.InFlight is { } running
             ? $"in flight (dispatched {DurationFormat.Short(Elapsed(running.DispatchedAt, now))} ago)"
-            : DayCapSpent(facts, now)
-                ? DayCapText(now)
-                : null;
+            : facts.ElevationBlocked
+                ? CourierElevationFix.BlockedState
+                : DayCapSpent(facts, now)
+                    ? DayCapText(now)
+                    : null;
 
         if (state is null)
         {
