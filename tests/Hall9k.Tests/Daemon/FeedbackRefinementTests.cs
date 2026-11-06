@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Plan;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -94,6 +95,23 @@ public sealed class FeedbackRefinementTests : IDisposable
             .And.Contain("/runs/c1/challenge-report.md")
             .And.Contain("no further challenge")
             .And.NotContain("Apply the verdict's must and should changes");
+    }
+
+    [Fact]
+    public void A_feedback_step_under_a_solution_epic_is_never_told_its_revision_may_set_blocked_by()
+    {
+        IReadOnlyList<SolutionMemberTask> members = [new(Guid.Parse("01a09285-6a21-7259-a883-c5ebe5482c3f"), "other", "Ship the client", TaskState.Queued)];
+        ProjectDetails project = new() { Name = "demo", WritingConventions = WritingConventions.Default };
+
+        string feedback = AgentPromptBuilder.BuildPlanRefinement(
+            Task(), project,
+            Facts(RefinementPurpose.FeedbackRefine, new FeedbackStepPromptFacts(Notes("The API returns pages."))) with { OtherMemberTasks = members });
+        string ordinary = AgentPromptBuilder.BuildPlanRefinement(
+            Task(), project, Facts(RefinementPurpose.Refine, feedback: null) with { OtherMemberTasks = members });
+
+        ordinary.Should().Contain("may set `blocked-by` to a listed task", "an ordinary plan's session may still choose the edge");
+        feedback.Should().NotContain("may set `blocked-by`").And.NotContain("Ship the client")
+            .And.Contain("must not name a `type`, `blocked-by`, `stacked-on`");
     }
 
     [Fact]
