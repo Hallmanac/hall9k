@@ -4838,7 +4838,10 @@ public static class AgentPromptBuilder
             prompt.AppendLine(Fragment(file, "discovery-report", ("DiscoveryReport", OneLine(discoveryReport))));
         }
 
-        if (facts.OtherDrafts is { Count: > 0 } siblings)
+        // Both lists below exist so a revision can choose a dependency edge, and their rules tell the session it may set one. A feedback
+        // step's revision may set none (FeedbackRevisionRules refuses it whole), so its session is shown neither list or its rules.
+        bool mayNameDependencies = facts.FeedbackStep is null;
+        if (mayNameDependencies && facts.OtherDrafts is { Count: > 0 } siblings)
         {
             prompt.AppendLine();
             prompt.AppendLine(Fragment(file, "siblings-heading"));
@@ -4853,7 +4856,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine(RelayedText.Fenced(others));
         }
 
-        if (facts.OtherMemberTasks is { } memberTasks)
+        if (mayNameDependencies && facts.OtherMemberTasks is { } memberTasks)
         {
             AppendMemberTasks(prompt, file, memberTasks);
         }

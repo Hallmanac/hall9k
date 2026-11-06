@@ -34,7 +34,8 @@ public sealed record PriorVerdictFacts(ChallengeVerdict Verdict, int MustCount, 
 /// <param name="OtherMemberTasks">
 /// The tasks under the draft's solution epic in the other member projects registered and joined on this node, or null when
 /// the draft is not in a solution epic (a project epic, or no epic). Empty is not null: the draft is in a solution epic and
-/// the other members hold no task under it, which the session is told rather than left to assume.
+/// the other members hold no task under it, which the session is told rather than left to assume. A feedback step's prompt
+/// shows neither this nor <paramref name="OtherDrafts"/>, because its revision may name no dependency.
 /// </param>
 public sealed record PlanRefinementPromptFacts(
     RefinementPurpose Purpose,
