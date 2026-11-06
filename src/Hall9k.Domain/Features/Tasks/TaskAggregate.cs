@@ -2728,6 +2728,14 @@ public sealed class TaskAggregate
     public bool RevisedSinceChallengeVerdict { get; private set; }
 
     /// <summary>
+    /// Whether a feedback step's judging session (<see cref="RefinementPurpose.JudgeVerdict"/>) ended with a readable
+    /// outcome after <see cref="LatestChallengeVerdict"/> landed, in stream order. That session applies the changes it
+    /// accepts and records a reason for each it declines, so its ending is the verdict applied even when it revised
+    /// nothing, and the publish gate reads it beside <see cref="RevisedSinceChallengeVerdict"/>.
+    /// </summary>
+    public bool JudgedSinceChallengeVerdict { get; private set; }
+
+    /// <summary>
     /// Whether <see cref="LatestChallengeVerdict"/> judged an older draft than the one now on record, because the
     /// draft was revised while its session ran. The session's prompt was built at dispatch and the session runs for
     /// up to half an hour, so such a verdict is about text that has since changed. A display fact only
@@ -2765,6 +2773,7 @@ public sealed class TaskAggregate
         {
             LatestChallengeVerdict = @event;
             RevisedSinceChallengeVerdict = false;
+            JudgedSinceChallengeVerdict = false;
             LatestChallengeVerdictJudgedOlderDraft = RevisedWhileChallengeRan;
 
             // A revision made while this challenge ran is text the verdict never read, so it is still unread.
@@ -2806,6 +2815,7 @@ public sealed class TaskAggregate
 
         RunningRefinementSessionId = null;
         LatestRefinementOutcome = @event;
+        JudgedSinceChallengeVerdict |= ChallengeGate.JudgedTheVerdict(@event, LatestChallengeVerdict);
 
         // The session read the draft as it stood at dispatch and its own revision does not count, so what a person changed
         // while it ran is the one thing left that no session has read. A dispatch refused before any session ran read

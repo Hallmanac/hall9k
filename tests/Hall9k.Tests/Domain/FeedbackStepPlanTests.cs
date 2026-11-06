@@ -110,7 +110,7 @@ public sealed class FeedbackStepPlanTests
             plan, judging, RefinementPurpose.JudgeVerdict, (RefinementOutcome)outcome, DomainId.New(), Now);
 
         PlanDraftMoved moved = after.OfType<PlanDraftMoved>().Single();
-        moved.Ready.Should().BeTrue("declining every change with a reason is the session's call; the publish gate refuses an unrevised declined must");
+        moved.Ready.Should().BeTrue("declining every change with a reason is the session's call, and the publish gate counts it as the verdict applied");
         moved.Phase.Should().Be(PlanPhase.Challenge, "and there is no second challenge");
     }
 

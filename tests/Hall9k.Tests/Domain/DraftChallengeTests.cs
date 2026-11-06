@@ -335,6 +335,6 @@ public sealed class DraftChallengeTests
     {
         TaskType taskType = type == "Spike" ? TaskType.Spike : TaskType.PrReview;
         ChallengeGate.AppliesTo(taskType).Should().BeFalse();
-        ChallengeGate.Shortfall(taskType, null, null, false, required: true).Should().BeNull();
+        ChallengeGate.Shortfall(taskType, null, null, false, false, required: true).Should().BeNull();
     }
 }

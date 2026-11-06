@@ -112,6 +112,9 @@ public sealed class TaskDetails
     /// <summary>Whether the draft was revised after <see cref="LatestChallengeVerdict"/> landed.</summary>
     public bool RevisedSinceChallengeVerdict { get; set; }
 
+    /// <summary>Whether a feedback step's judging session ended after <see cref="LatestChallengeVerdict"/> landed; see <see cref="TaskAggregate.JudgedSinceChallengeVerdict"/>.</summary>
+    public bool JudgedSinceChallengeVerdict { get; set; }
+
     /// <summary>Whether <see cref="LatestChallengeVerdict"/> judged an older draft than the current one; see <see cref="TaskAggregate.LatestChallengeVerdictJudgedOlderDraft"/>.</summary>
     public bool LatestChallengeVerdictJudgedOlderDraft { get; set; }
 
@@ -2061,6 +2064,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         {
             view.LatestChallengeVerdict = @event.Data;
             view.RevisedSinceChallengeVerdict = false;
+            view.JudgedSinceChallengeVerdict = false;
             view.LatestChallengeVerdictJudgedOlderDraft = view.RevisedWhileChallengeRan;
 
             // A revision made while this challenge ran is text the verdict never read, so it is still unread.
@@ -2098,6 +2102,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.RunningRefinementModel = null;
         view.RunningRefinementEffort = null;
         view.LatestRefinementOutcome = @event.Data;
+        view.JudgedSinceChallengeVerdict |= ChallengeGate.JudgedTheVerdict(@event.Data, view.LatestChallengeVerdict);
 
         // A dispatch refused before any session ran read nothing, so it leaves a revision no session has read standing.
         if (@event.Data.SessionId is not null)

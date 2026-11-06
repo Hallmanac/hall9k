@@ -969,7 +969,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         string publishStep = TaskNextStep.PublishStep(
             shortId,
             ChallengeGate.Shortfall(
-                added.Type, latestVerdict: null, latestOutcome: null, revisedSinceVerdict: false,
+                added.Type, latestVerdict: null, latestOutcome: null, revisedSinceVerdict: false, judgedSinceVerdict: false,
                 projectDetails.ChallengeRequirementSetting.IsOn) is not null,
             challengePending: false);
         AnsiConsole.MarkupLine(added.AcceptanceCriteria.Count == 0

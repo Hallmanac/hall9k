@@ -219,8 +219,7 @@ public static class PlanDecider
         bool changed = outcome == RefinementOutcome.Revised;
 
         // A session that judged a verdict may decline every change with a reason in the journal and revise nothing: the draft is
-        // ready as it stands, and the publish, not this step, refuses a verdict whose musts were all declined unrevised, whatever the
-        // project's challenge requirement says (TaskDecider.Publish).
+        // ready as it stands, and the publish gate counts the judgment as the verdict applied (ChallengeGate.JudgedTheVerdict).
         if (purpose == RefinementPurpose.JudgeVerdict)
         {
             return [Moved(plan, draft, PlanPhase.Challenge, draft.Round, PlanOutcome.Applied, RefinementPurpose.Unknown, ready: true, sessionId, now)];

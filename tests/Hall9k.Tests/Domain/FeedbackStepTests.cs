@@ -262,7 +262,7 @@ public sealed class FeedbackStepTests
     }
 
     [Fact]
-    public void A_judged_verdict_whose_every_must_was_declined_unrevised_is_not_published_by_the_step_even_with_the_requirement_off()
+    public void A_verdict_whose_every_must_the_judging_session_declined_unrevised_publishes_even_with_the_requirement_on()
     {
         TaskAggregate task = Held();
         task.Apply(FeedbackStepDecider.Start(task, Node, Now));
@@ -273,18 +273,23 @@ public sealed class FeedbackStepTests
             task.Id, DomainId.New(), Node, ChallengeVerdict.PublishAsRevised, ChallengeFailureReason.Unknown, 2, 0, 0,
             AgentModel.ChallengeDefault, AgentEffort.High, Now));
         TaskDependencyGraph graph = new([Blocker(true)]);
+        ChallengeGateInput required = new(true, "demo", null);
 
-        Action byThePlan = () => TaskDecider.Publish(task, graph, Now, Owner);
-        Action withTheRequirementOff = () => TaskDecider.Publish(task, graph, Now, Owner, challenge: new ChallengeGateInput(false, "demo", null));
+        Action beforeJudging = () => TaskDecider.Publish(task, graph, Now, Owner, challenge: required);
+        beforeJudging.Should().Throw<DomainBusinessRuleException>().WithMessage("*not been revised since*");
 
-        byThePlan.Should().Throw<DomainBusinessRuleException>().WithMessage("*feedback step*");
-        withTheRequirementOff.Should().Throw<DomainBusinessRuleException>().WithMessage("*--skip-challenge*");
-        TaskDecider.Publish(task, graph, Now, Owner, challenge: new ChallengeGateInput(false, "demo", "the notes were wrong"))
-            .ChallengeSkipReason.Should().Be("the notes were wrong", "a person publishing by hand may still say why");
+        task.Apply(Judged(task.Id, RefinementOutcome.Unknown, RefinementFailureReason.TimedOut));
+        Action afterAFailedJudging = () => TaskDecider.Publish(task, graph, Now, Owner, challenge: required);
+        afterAFailedJudging.Should().Throw<DomainBusinessRuleException>("a judging session that failed judged nothing");
 
-        task.Apply(TaskDecider.Revise(task, Optional<string>.Of("Applied a must"), default, default, default, default, default, Now, Owner));
-        TaskDecider.Publish(task, graph, Now, Owner).ChallengeSkipReason.Should().BeNull("a revision is how the verdict gets applied");
+        task.Apply(Judged(task.Id, RefinementOutcome.Unchanged, RefinementFailureReason.Unknown));
+        task.JudgedSinceChallengeVerdict.Should().BeTrue();
+        TaskDecider.Publish(task, graph, Now, Owner, challenge: required).ChallengeSkipReason
+            .Should().BeNull("declining every must with a reason for each is the verdict applied, so the daemon publishes the result");
     }
+
+    private static DraftRefinementRecorded Judged(Guid taskId, RefinementOutcome outcome, RefinementFailureReason failure) =>
+        new(taskId, DomainId.New(), Node, outcome, failure, RefinementPurpose.JudgeVerdict, AgentModel.ChallengeDefault, AgentEffort.High, Now);
 
     [Fact]
     public void The_requeue_is_refused_when_the_assignee_changed_while_the_step_ran()
