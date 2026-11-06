@@ -33,8 +33,9 @@ public sealed class OrchestratorProcessTableProbe : IOrchestratorProcessProbe
             }
             catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
             {
-                // The id is in use, but this user cannot read that process's start time (an
-                // elevated or root-owned one, most often). Sighted with an unknown start time
+                // The id is in use, but this user cannot read that process's start time (another
+                // account's or a root-owned one; a same-user elevated process on Windows is
+                // readable). Sighted with an unknown start time
                 // rather than reported gone, and never stamped with a plausible substitute:
                 // OrchestratorLiveness decides what the unknown means.
                 return new OrchestratorProcessSighting(null);
