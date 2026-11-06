@@ -308,6 +308,7 @@ builder.Services.AddSingleton<MessageSweepEngine>();
 builder.Services.AddSingleton<InviteSweepEngine>();
 builder.Services.AddSingleton<PromptAddendaSweepEngine>();
 builder.Services.AddSingleton<IOrchestratorProcessProbe, OrchestratorProcessTableProbe>();
+builder.Services.AddSingleton(ProcessElevationReader.ForCurrentPlatform());
 builder.Services.AddSingleton<OrchestratorPresenceSweepEngine>();
 builder.Services.AddSingleton<CourierEngine>();
 builder.Services.AddSingleton<RunSkillSweepEngine>();
