@@ -647,12 +647,18 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             }
 
             OrchestratorProcessTableProbe probe = new();
+            IProcessElevationReader elevationReader = ProcessElevationReader.ForCurrentPlatform();
+            ProcessElevation? daemonElevation = CourierElevationCheck.DaemonElevation(elevationReader, DaemonProcess.Probe());
+            Lazy<bool> autostartRegistered = new(() => DaemonAutostart.ForCurrentPlatform().IsEnabled);
             DateTimeOffset now = DateTimeOffset.UtcNow;
             foreach (OrchestratorPresenceDetails presence in presences.OrderBy(presence => presence.ProjectId))
             {
                 ProjectDetails? project = await session.LoadAsync<ProjectDetails>(presence.ProjectId, cancellationToken);
-                string line = OrchestratorPresenceLine.Describe(presence, probe, now);
-                AnsiConsole.MarkupLineInterpolated($"[dim]{project?.Name ?? "unknown project"} {line}[/]");
+                string presenceLine = OrchestratorPresenceLine.Describe(presence, probe, now);
+                bool windowLive = presence.Registered
+                    && OrchestratorLiveness.IsStillRunning(presence.ProcessId, presence.ProcessStartedAt, probe);
+                bool elevationBlocked = CourierElevationCheck.Blocks(
+                    daemonElevation, windowLive, presence.ProcessId, elevationReader);
 
                 CourierRunDetails? inFlight = await session.Query<CourierRunDetails>()
                     .Where(run => run.ProjectId == presence.ProjectId && run.CompletedAt == null)
@@ -669,10 +675,15 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                     await session.LoadAsync<CourierFailureStreak>(presence.ProjectId, cancellationToken),
                     await session.LoadAsync<CourierDaySpawnCounter>(presence.ProjectId, cancellationToken),
                     presence.Registered,
-                    presence.LaunchedAt);
-                if (CourierStatusLine.Describe(courierFacts, now) is { } courierLine)
+                    presence.LaunchedAt,
+                    elevationBlocked);
+                foreach (string line in OrchestratorLines(
+                    project?.Name ?? "unknown project",
+                    presenceLine,
+                    CourierStatusLine.Describe(courierFacts, now),
+                    elevationBlocked ? CourierElevationFix.For(autostartRegistered.Value) : null))
                 {
-                    AnsiConsole.MarkupLineInterpolated($"[dim]{project?.Name ?? "unknown project"} {courierLine}[/]");
+                    AnsiConsole.MarkupLineInterpolated($"[dim]{line}[/]");
                 }
             }
         }
@@ -680,6 +691,29 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]orchestrator: unavailable ({exception.Message})[/]");
         }
+    }
+
+    /// <summary>
+    /// One project's orchestrator lines, in print order: the presence sentence, the courier line,
+    /// and the elevation fix under a blocked courier line. The blocked state is the courier line's
+    /// alone; the presence sentence <c>h9k orchestrator status</c> shares never carries it, so it
+    /// prints once here.
+    /// </summary>
+    internal static IReadOnlyList<string> OrchestratorLines(
+        string projectName, string presenceLine, string? courierLine, string? elevationFix)
+    {
+        List<string> lines = [$"{projectName} {presenceLine}"];
+        if (courierLine is not null)
+        {
+            lines.Add($"{projectName} {courierLine}");
+        }
+
+        if (elevationFix is not null)
+        {
+            lines.Add($"{projectName} courier {elevationFix}");
+        }
+
+        return lines;
     }
 
     /// <summary>

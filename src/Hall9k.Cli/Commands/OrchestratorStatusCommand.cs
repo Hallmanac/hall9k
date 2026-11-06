@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Node;
@@ -55,6 +56,9 @@ public sealed class OrchestratorStatusCommand : Hall9kAsyncCommand<OrchestratorS
 
         Guid? nodeId = await ThisNodeIdAsync(session, cancellationToken);
         OrchestratorProcessTableProbe probe = new();
+        IProcessElevationReader elevationReader = ProcessElevationReader.ForCurrentPlatform();
+        ProcessElevation? daemonElevation = CourierElevationCheck.DaemonElevation(elevationReader, DaemonProcess.Probe());
+        Lazy<bool> autostartRegistered = new(() => DaemonAutostart.ForCurrentPlatform().IsEnabled);
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         foreach (ProjectDetails project in projects)
@@ -64,7 +68,15 @@ public sealed class OrchestratorStatusCommand : Hall9kAsyncCommand<OrchestratorS
                     OrchestratorPresenceStreamId.For(node, project.Id), cancellationToken)
                 : null;
 
-            string line = OrchestratorPresenceLine.Describe(presence, probe, now);
+            bool elevationBlocked = presence is { Registered: true }
+                && CourierElevationCheck.Blocks(
+                    daemonElevation,
+                    OrchestratorLiveness.IsStillRunning(presence.ProcessId, presence.ProcessStartedAt, probe),
+                    presence.ProcessId,
+                    elevationReader);
+            string line = WithElevation(
+                OrchestratorPresenceLine.Describe(presence, probe, now),
+                elevationBlocked ? autostartRegistered.Value : null);
             if (projects.Count > 1)
             {
                 AnsiConsole.MarkupLineInterpolated($"{project.Name}: {line}");
@@ -80,6 +92,17 @@ public sealed class OrchestratorStatusCommand : Hall9kAsyncCommand<OrchestratorS
             + "closes or restarts; the daemon records a registered window whose process is gone as lost.[/]");
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// The presence sentence with the elevation block appended when there is one
+    /// (<paramref name="blockedWithAutostart"/> carries whether autostart is registered, null when
+    /// nothing is blocked). Appended here rather than inside <see cref="OrchestratorPresenceLine"/>,
+    /// which <c>h9k status</c> shares and which already prints the block on its own courier line.
+    /// </summary>
+    internal static string WithElevation(string presenceLine, bool? blockedWithAutostart) =>
+        blockedWithAutostart is { } autostartRegistered
+            ? $"{presenceLine}; {CourierElevationCheck.BlockedSentence(autostartRegistered)}"
+            : presenceLine;
 
     /// <summary>
     /// This machine's own node record, or <see langword="null"/> when nothing has ever bootstrapped

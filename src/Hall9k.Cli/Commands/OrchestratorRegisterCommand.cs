@@ -1,9 +1,13 @@
 using ExistingStreamIdCollisionException = Marten.Exceptions.ExistingStreamIdCollisionException;
 using System.ComponentModel;
+using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.Orchestrator;
+using Hall9k.Domain.Features.Courier;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using JasperFx.Events;
 using Marten;
@@ -101,6 +105,7 @@ public sealed class OrchestratorRegisterCommand : Hall9kAsyncCommand<Orchestrato
         {
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]Already registered[/] as the live orchestrator for {project.Name} (pid {settings.ProcessId}) — nothing recorded.");
+            WriteElevationWarning(settings.ProcessId);
             return ExitCodes.Ok;
         }
 
@@ -160,6 +165,35 @@ public sealed class OrchestratorRegisterCommand : Hall9kAsyncCommand<Orchestrato
             $"[green]Registered[/] '{launched.SessionName}' ({launched.Cli}, pid {launched.ProcessId}) as the orchestrator for {project.Name}.");
         AnsiConsole.MarkupLineInterpolated(
             $"[dim]h9k status and h9k orchestrator status name it from here. Deregister it when this window closes or restarts: h9k orchestrator deregister --project {project.Name} --pid {launched.ProcessId}[/]");
+        WriteElevationWarning(launched.ProcessId);
         return ExitCodes.Ok;
     }
+
+    private static void WriteElevationWarning(int processId)
+    {
+        if (ElevationWarning(
+                ProcessElevationReader.ForCurrentPlatform(),
+                DaemonProcess.Probe(),
+                processId,
+                () => DaemonAutostart.ForCurrentPlatform().IsEnabled) is { } warning)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[yellow]Warning:[/] {warning}");
+        }
+    }
+
+    /// <summary>
+    /// The warning a registration earns when the window it registers is elevated and the running
+    /// daemon is not, so no courier can reach it; null with no daemon running, off Windows, when
+    /// either level is unknown, or when nothing is blocked. Registration goes ahead either way.
+    /// </summary>
+    internal static string? ElevationWarning(
+        IProcessElevationReader reader,
+        DaemonProcessDescriptor? daemon,
+        int processId,
+        Func<bool> autostartRegistered) =>
+        CourierElevationCheck.Blocks(
+            CourierElevationCheck.DaemonElevation(reader, daemon), windowLive: true, processId, reader)
+            ? $"this window (pid {processId}) is elevated and the daemon is not, so the daemon's feed courier "
+                + $"cannot reach it; {CourierElevationFix.For(autostartRegistered())}."
+            : null;
 }
