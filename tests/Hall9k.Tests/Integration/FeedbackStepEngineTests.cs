@@ -185,6 +185,9 @@ public sealed class FeedbackStepEngineTests(PostgresFixture postgres) : IClassFi
 
         public (bool NoExistingItem, bool Untracked)? LastAttestation { get; private set; }
 
+        /// <summary>The next publish commits and then fails before the plan can record it, as a daemon stopping in that window leaves it.</summary>
+        public bool StopsAfterCommit { get; set; }
+
         public async Task<TaskCommandResult> ReviseAsync(Guid planId, Guid sessionId, Guid taskId, string revisionFile, CancellationToken cancellationToken)
         {
             lock (Calls)
@@ -211,9 +214,23 @@ public sealed class FeedbackStepEngineTests(PostgresFixture postgres) : IClassFi
             LastAttestation = (noExistingItem, untracked);
             await using IDocumentSession session = store.LightweightSession();
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+            session.Events.Append(taskId, TaskDecider.Publish(task, graph, Now, owner, byPlan: true));
+            await session.SaveChangesAsync(cancellationToken);
+            if (StopsAfterCommit)
+            {
+                StopsAfterCommit = false;
+                throw new IOException("the daemon stopped after the publish committed");
+            }
+
+            return new TaskCommandResult(0, false, "ok.txt");
+        }
+
+        public async Task PublishByHandAsync(Guid taskId, CancellationToken cancellationToken)
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
             session.Events.Append(taskId, TaskDecider.Publish(task, graph, Now, owner));
             await session.SaveChangesAsync(cancellationToken);
-            return new TaskCommandResult(0, false, "ok.txt");
         }
     }
 
@@ -1066,12 +1083,33 @@ public sealed class FeedbackStepEngineTests(PostgresFixture postgres) : IClassFi
             await Task.Delay(30, cts.Token);
         }
 
-        await commands.PublishAsync(Guid.Empty, taskId, false, false, cts.Token);
+        await commands.PublishByHandAsync(taskId, cts.Token);
         await DriveAsync(feedback, plan, taskId, ChallengeVerdict.PublishAsWritten, must: 0, cts.Token);
 
         TaskDetails task = await TaskAsync(taskId, cts.Token);
         task.FeedbackStepResult!.Outcome.Should().Be(FeedbackStepOutcome.EndedWithoutActing);
         task.State.Should().Be(TaskState.Published, "a person who got there first publishes and queues it by hand");
+    }
+
+    [Fact]
+    public async Task A_plan_publish_that_committed_before_the_daemon_stopped_is_still_queued_again_rather_than_read_as_by_hand()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(5));
+        (Guid taskId, string? fingerprint, ScriptedSessions sessions, FakeCommands commands, FeedbackStepEngine feedback, PlanEngine plan) =
+            await AffectedAsync(cts.Token);
+        sessions.Refinements.Enqueue((RevisedReport, RevisionFile));
+        commands.StopsAfterCommit = true;
+
+        await DriveAsync(feedback, plan, taskId, ChallengeVerdict.PublishAsWritten, must: 0, cts.Token);
+
+        commands.StopsAfterCommit.Should().BeFalse("the publish did commit and then fail");
+        TaskDetails task = await TaskAsync(taskId, cts.Token);
+        task.FeedbackStepResult!.Outcome.Should().Be(FeedbackStepOutcome.RevisedAndRequeued, "the publish was the plan's own, not a person's");
+        task.State.Should().Be(TaskState.Queued);
+        task.AssignedOwnerFingerprint.Should().Be(fingerprint);
+        await using IQuerySession query = postgres.Store.QuerySession();
+        PlanDetails plans = (await query.Query<PlanDetails>().Where(p => p.FeedbackStepTaskId == taskId).ToListAsync(cts.Token)).Single();
+        plans.Drafts.Single().PublishedByHand.Should().BeFalse();
     }
 
     [Fact]
