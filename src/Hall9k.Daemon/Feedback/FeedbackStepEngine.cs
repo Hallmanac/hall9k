@@ -206,7 +206,7 @@ public sealed class FeedbackStepEngine(
                 ? StepOutcome.Nothing
                 : await RecordCheckAsync(
                     task.Id, running, FeedbackCheckAnswer.Failed, RefinementFailureReason.DaemonRestarted, null, task.LatestFeedbackCheckDispatch?.Model ?? AgentModel.Unknown,
-                    cancellationToken, expectedVersion: fence.Version);
+                    expectedVersion: fence.Version, cancellationToken);
         }
 
         if (task.FeedbackStepPlanId is { } planId)
@@ -215,7 +215,7 @@ public sealed class FeedbackStepEngine(
         }
 
         return task.LatestFeedbackCheckDispatch is null
-            ? await DispatchOrReleaseAsync(session, fence, task, now, cancellationToken)
+            ? await DispatchOrReleaseAsync(session, fence, task, started, now, cancellationToken)
             : await DecideAfterCheckAsync(session, fence, task, now, cancellationToken);
     }
 
@@ -290,7 +290,8 @@ public sealed class FeedbackStepEngine(
     /// is dispatched (unless the node's launch gate stands, in which case the step waits and the task stays held).
     /// </summary>
     private async Task<StepOutcome> DispatchOrReleaseAsync(
-        IDocumentSession session, StreamState fence, TaskAggregate task, DateTimeOffset now, CancellationToken cancellationToken)
+        IDocumentSession session, StreamState fence, TaskAggregate task, FeedbackStepStarted started, DateTimeOffset now,
+        CancellationToken cancellationToken)
     {
         if (!task.FeedbackStepHeld || task.State != TaskState.Blocked)
         {
@@ -300,7 +301,7 @@ public sealed class FeedbackStepEngine(
         }
 
         InjectedTaskNotes notes = await FeedbackNotes.LoadAsync(
-            session, task.FeedbackStep!.BlockerIds, node.NodeId, FleetReader(task.ProjectId), cancellationToken);
+            session, started.BlockerIds, node.NodeId, FleetReader(task.ProjectId), cancellationToken);
         if (!notes.Any)
         {
             return await ConcludeAsync(
@@ -392,7 +393,7 @@ public sealed class FeedbackStepEngine(
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 logger.LogWarning(exception, "Task {TaskId}: the feedback check session could not be started", taskId);
-                await RecordCheckAsync(taskId, sessionId, FeedbackCheckAnswer.Failed, RefinementFailureReason.StartFailed, null, model, CancellationToken.None);
+                await RecordCheckAsync(taskId, sessionId, FeedbackCheckAnswer.Failed, RefinementFailureReason.StartFailed, null, model, expectedVersion: null, CancellationToken.None);
                 return;
             }
 
@@ -447,7 +448,7 @@ public sealed class FeedbackStepEngine(
             using CancellationTokenSource shutdown = new(TimeSpan.FromSeconds(5));
             try
             {
-                await RecordCheckAsync(taskId, sessionId, FeedbackCheckAnswer.Failed, RefinementFailureReason.DaemonRestarted, result, model, shutdown.Token);
+                await RecordCheckAsync(taskId, sessionId, FeedbackCheckAnswer.Failed, RefinementFailureReason.DaemonRestarted, result, model, expectedVersion: null, shutdown.Token);
             }
             catch (Exception recording)
             {
@@ -463,7 +464,7 @@ public sealed class FeedbackStepEngine(
             failure = RefinementFailureReason.SessionError;
         }
 
-        await RecordCheckAsync(taskId, sessionId, answer, failure, result, model, CancellationToken.None);
+        await RecordCheckAsync(taskId, sessionId, answer, failure, result, model, expectedVersion: null, CancellationToken.None);
     }
 
     /// <summary>
@@ -474,7 +475,7 @@ public sealed class FeedbackStepEngine(
     /// </summary>
     private async Task<StepOutcome> RecordCheckAsync(
         Guid taskId, Guid sessionId, FeedbackCheckAnswer answer, RefinementFailureReason failure, AgentResult? result, AgentModel model,
-        CancellationToken cancellationToken, long? expectedVersion = null)
+        long? expectedVersion, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -610,7 +611,7 @@ public sealed class FeedbackStepEngine(
         {
             return await ConcludeAsync(
                 session, fence, task, FeedbackStepOutcome.EndedWithoutActing, "a person abandoned the task while the step ran", now,
-                cancellationToken, plan, planFence);
+                plan, planFence, cancellationToken);
         }
 
         if (draft.Published)
@@ -618,7 +619,7 @@ public sealed class FeedbackStepEngine(
             return draft.PublishedByHand
                 ? await ConcludeAsync(
                     session, fence, task, FeedbackStepOutcome.EndedWithoutActing, "a person published the task by hand while the step ran", now,
-                    cancellationToken, plan, planFence)
+                    plan, planFence, cancellationToken)
                 : await RequeueAsync(session, fence, task, now, cancellationToken);
         }
 
@@ -635,9 +636,9 @@ public sealed class FeedbackStepEngine(
             return reason == PlanParkReason.DraftChanged
                 ? await ConcludeAsync(
                     session, fence, task, FeedbackStepOutcome.EndedWithoutActing, "a person revised the task while the step ran", now,
-                    cancellationToken, plan, planFence)
+                    plan, planFence, cancellationToken)
                 : await ConcludeAsync(
-                    session, fence, task, FeedbackStepOutcome.Parked, ParkText(reason), now, cancellationToken, plan, planFence);
+                    session, fence, task, FeedbackStepOutcome.Parked, ParkText(reason), now, plan, planFence, cancellationToken);
         }
 
         return StepOutcome.Nothing;
@@ -735,9 +736,15 @@ public sealed class FeedbackStepEngine(
     /// a requeue, the plan ended too (cancelled, leaving its draft a Draft) when it is still live, so a person's later resume of it
     /// cannot bring the step back to life.
     /// </summary>
+    private Task<StepOutcome> ConcludeAsync(
+        IDocumentSession session, StreamState fence, TaskAggregate task, FeedbackStepOutcome outcome, string reason, DateTimeOffset now,
+        CancellationToken cancellationToken) =>
+        ConcludeAsync(session, fence, task, outcome, reason, now, plan: null, planFence: null, cancellationToken);
+
+    /// <inheritdoc cref="ConcludeAsync(IDocumentSession, StreamState, TaskAggregate, FeedbackStepOutcome, string, DateTimeOffset, CancellationToken)"/>
     private async Task<StepOutcome> ConcludeAsync(
         IDocumentSession session, StreamState fence, TaskAggregate task, FeedbackStepOutcome outcome, string reason, DateTimeOffset now,
-        CancellationToken cancellationToken, PlanAggregate? plan = null, StreamState? planFence = null)
+        PlanAggregate? plan, StreamState? planFence, CancellationToken cancellationToken)
     {
         // A task still held when its step ends without releasing it would sit Blocked with nothing to wait for and nothing to free
         // it. The step ending is never a reason to strand it, so the release is what ends the step when the hold is still there.
