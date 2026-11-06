@@ -41,7 +41,7 @@ public static class FeedbackCheckPromptBuilder
         prompt.AppendLine(PromptTemplates.Load(Template, "context-heading"));
         prompt.AppendLine(task.AgentContext.IsBlank()
             ? PromptTemplates.Load(Template, "context-none")
-            : RelayedText.Fenced(RelayedText.Printable(task.AgentContext!)));
+            : RelayedText.Fenced(RelayedText.Printable(task.AgentContext)));
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(Template, "notes-heading"));
         prompt.AppendLine();
