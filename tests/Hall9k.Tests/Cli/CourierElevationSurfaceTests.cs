@@ -157,24 +157,13 @@ public sealed class CourierElevationSurfaceTests
             .And.Contain(CourierElevationFix.For(autostartRegistered: true));
     }
 
-    [Theory]
-    [InlineData(ProcessElevation.Elevated, ProcessElevation.Elevated)]
-    [InlineData(ProcessElevation.Elevated, ProcessElevation.NotElevated)]
-    [InlineData(ProcessElevation.NotElevated, ProcessElevation.NotElevated)]
-    [InlineData(ProcessElevation.Unknown, ProcessElevation.Elevated)]
-    [InlineData(ProcessElevation.NotElevated, ProcessElevation.Unknown)]
-    public void Register_says_nothing_when_nothing_is_blocked_or_a_level_is_unknown(
-        ProcessElevation daemon, ProcessElevation window)
-    {
-        OrchestratorRegisterCommand.ElevationWarning(Reader(daemon, window), Daemon, WindowPid, () => true)
-            .Should().BeNull();
-    }
-
     [Fact]
-    public void Register_says_nothing_with_no_daemon_running()
+    public void Register_says_nothing_when_nothing_is_blocked()
     {
+        // One row for the warning's null branch: which pairings block, and that no daemon blocks
+        // nothing, is CourierElevationCheck.Blocks' own coverage.
         OrchestratorRegisterCommand.ElevationWarning(
-                Reader(ProcessElevation.NotElevated, ProcessElevation.Elevated), daemon: null, WindowPid, () => true)
+                Reader(ProcessElevation.NotElevated, ProcessElevation.NotElevated), Daemon, WindowPid, () => true)
             .Should().BeNull();
     }
 
