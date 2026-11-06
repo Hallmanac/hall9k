@@ -251,7 +251,7 @@ public sealed class PlanEngine(
             cancellationToken, [.. plan.Drafts.Select(draft => draft.DraftId)]);
         Dictionary<Guid, TaskDetails> tasks = loaded.ToDictionary(task => task.Id);
 
-        // A draft a person published or abandoned by hand is closed here, which also answers any park on it.
+        // A draft published or abandoned outside the plan's own publish step is closed here, which also answers any park on it.
         foreach (PlanDraftState draft in plan.Drafts.Where(draft => !draft.IsClosed))
         {
             if (!tasks.TryGetValue(draft.DraftId, out TaskDetails? task))
@@ -265,10 +265,12 @@ public sealed class PlanEngine(
                     session, fence, [new PlanDraftAbandoned(plan.Id, plan.ProjectId, draft.DraftId, now)], cancellationToken);
             }
 
+            // The plan's own publish can commit and the daemon stop before the plan records it, so the task, not the plan,
+            // says whose publish it was: one that reads by hand here would tell a feedback step a person took over.
             if (task.State != TaskState.Draft)
             {
                 return await SavePlanAsync(
-                    session, fence, [new PlanDraftPublished(plan.Id, plan.ProjectId, draft.DraftId, ByHand: true, now)],
+                    session, fence, [new PlanDraftPublished(plan.Id, plan.ProjectId, draft.DraftId, ByHand: !task.LatestPublishByPlan, now)],
                     cancellationToken);
             }
         }

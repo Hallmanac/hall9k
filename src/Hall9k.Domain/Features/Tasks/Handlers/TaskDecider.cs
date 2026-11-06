@@ -364,7 +364,8 @@ public static class TaskDecider
         bool untracked = false,
         PreApprovalMode? preApproval = null,
         Optional<string?> closeLinkedIssue = default,
-        ChallengeGateInput? challenge = null)
+        ChallengeGateInput? challenge = null,
+        bool byPlan = false)
     {
         if (task.State != TaskState.Draft)
         {
@@ -508,7 +509,7 @@ public static class TaskDecider
         return new TaskPublished(
             task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded, untrackedRecorded,
             preApprovalRecorded.LegacyPreApproved, preApprovalRecorded, closeLinkedIssueForEvent,
-            challengeSkipRecorded);
+            challengeSkipRecorded, byPlan);
     }
 
     /// <summary>

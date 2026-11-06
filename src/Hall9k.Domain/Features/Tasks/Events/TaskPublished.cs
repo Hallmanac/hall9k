@@ -81,7 +81,13 @@ public sealed record TaskPublished(
     /// reason passed where the gate asked for nothing is clamped to null rather than asserting an unobserved
     /// fact, as <see cref="NoExistingItemAttested"/> is. <see cref="PublishedByOwnerId"/> is who gave it.
     /// </summary>
-    string? ChallengeSkipReason = null)
+    string? ChallengeSkipReason = null,
+    /// <summary>
+    /// Whether this was the publish the daemon runs for a plan (<see cref="PlanPublishEnvironmentVariable"/>), rather than a
+    /// person's. A plan that finds its draft already published reads it to tell its own publish, committed before the plan
+    /// could record it, from one made by hand. Absent on events written before it existed, which reads as a person's.
+    /// </summary>
+    bool ByPlan = false)
 {
     /// <summary>
     /// Read by <c>h9k task publish</c>: set to any non-blank value by the publish the daemon runs for a plan. The publish is

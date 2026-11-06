@@ -155,8 +155,8 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
 
         // Set only by the daemon's own publish for a plan. The plan checked that no person revised the draft since a session
         // read it, but a revision can land after that check, so the publish asks again here, against the version it is fenced on.
-        if (Environment.GetEnvironmentVariable(TaskPublished.PlanPublishEnvironmentVariable).IsNotBlank()
-            && task.State == TaskState.Draft && task.RevisedSinceLastDraftSession)
+        bool byPlan = Environment.GetEnvironmentVariable(TaskPublished.PlanPublishEnvironmentVariable).IsNotBlank();
+        if (byPlan && task.State == TaskState.Draft && task.RevisedSinceLastDraftSession)
         {
             throw new DomainConflictException(
                 $"Draft {taskId} was revised after a challenge or a refinement session last read it, so a plan does not publish it: "
@@ -176,7 +176,8 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             settings.CloseLinkedIssue is { } closeLinkedIssue
                 ? Optional<string?>.Of(closeLinkedIssue)
                 : Optional<string?>.None,
-            new ChallengeGateInput(project.ChallengeRequirementSetting.IsOn, project.Name, settings.SkipChallenge));
+            new ChallengeGateInput(project.ChallengeRequirementSetting.IsOn, project.Name, settings.SkipChallenge),
+            byPlan);
 
         // A Linear project's publish that will create an issue needs the team's id and default state
         // from Linear, and asks for them here rather than after the commit: past the save there is
