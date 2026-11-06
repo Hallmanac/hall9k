@@ -417,7 +417,9 @@ node only, the node the task is placed on or, with no placement, a node of the o
 own database, so the stream version fences only two daemons of one database; what decides between two nodes is the task's
 ledger record, the same conditional write of its holder that the dispatcher's claim goes through. A node writes itself in as
 the holder before it begins the step, a node that finds another node named stands down, and a holder write that cannot
-complete holds the step rather than letting it begin. The holder is given back when the step ends. A task with no ledger
+complete holds the step rather than letting it begin. When the step ends, the save that records its outcome also records
+that the holder is owed back, and the dispatcher gives it back on its next sweep, in the same loop as its claims, so a
+release can never clear a holder that a claim of the released task has just written. A task with no ledger
 record has nothing to coordinate on, so there the stream version is all that fences the step.
 
 1. **No notes, no cost.** When none of the blockers left a note that the trust rule lets into a prompt, no session runs and the

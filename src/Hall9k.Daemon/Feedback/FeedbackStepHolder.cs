@@ -4,6 +4,7 @@ using Hall9k.Daemon.Dispatch;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Marten;
 
 namespace Hall9k.Daemon.Feedback;
@@ -17,8 +18,14 @@ internal enum FeedbackStepHolderVerdict
     /// <summary>The record names another node, so that node's step is the one: this node stands down.</summary>
     HeldByOther,
 
-    /// <summary>The ledger could not be read or written, so the step waits and the next sweep asks again.</summary>
+    /// <summary>The ledger could not be read or written, so the step waits and a later sweep asks again.</summary>
     Failed,
+}
+
+/// <summary>The verdict, and, for one that is not <see cref="FeedbackStepHolderVerdict.Held"/>, why, for the caller to report once.</summary>
+internal sealed record FeedbackStepHolderAnswer(FeedbackStepHolderVerdict Verdict, string? Why)
+{
+    public static readonly FeedbackStepHolderAnswer Held = new(FeedbackStepHolderVerdict.Held, null);
 }
 
 /// <summary>
@@ -26,14 +33,19 @@ internal enum FeedbackStepHolderVerdict
 /// daemons of one database cannot stop two nodes of one owner from both beginning the step on a task with no placement. What
 /// decides between nodes is the task's ledger record holder, the same conditional write the dispatcher's claim goes through
 /// (<see cref="TaskLedgerHolder"/>): a node writes itself in before it appends the begun event, and a node that finds another
-/// node named stands down. The holder is given back when the step ends, so the dispatcher's own claim of the released task finds
-/// it free, unless the dispatcher on this node has already claimed the released task, in which case the holder is that run's
-/// and is left alone. A holder write that cannot complete holds the step rather than letting it begin, the fail-closed rule every holder
-/// write follows.
+/// node named stands down. A holder write that cannot complete holds the step rather than letting it begin, the fail-closed rule
+/// every holder write follows.
+/// <para>
+/// The holder is never given back from here. The step's ending save is what makes the task claimable, and the dispatcher on this
+/// node writes the same holder when it claims, so a release run from this engine would be a check-then-act against that claim:
+/// it could find no lease yet, then clear the holder the claim had just refreshed, leaving a running task unguarded. Instead the
+/// ending save records the dispatcher's own pending release (<see cref="StageRelease"/>), and the dispatcher gives the holder
+/// back on its next sweep, in the same loop as its claims, so the two can never overlap.
+/// </para>
 /// </summary>
-internal sealed class FeedbackStepHolder(IDocumentStore store, NodeContext node, ILedger ledger, ILogger logger)
+internal sealed class FeedbackStepHolder(IDocumentStore store, NodeContext node, ILedger ledger, DaemonConnection connection)
 {
-    public async Task<FeedbackStepHolderVerdict> TryHoldAsync(
+    public async Task<FeedbackStepHolderAnswer> TryHoldAsync(
         IDocumentSession session, Guid taskId, ProjectDetails project, string? ownerRootFingerprint, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -43,15 +55,13 @@ internal sealed class FeedbackStepHolder(IDocumentStore store, NodeContext node,
                 project.RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cancellationToken);
             if (existing.FetchFailed)
             {
-                logger.LogWarning(
-                    "Task {TaskId}: its feedback step waits: the ledger record could not be read to check for a holder, because the fetch failed",
-                    taskId);
-                return FeedbackStepHolderVerdict.Failed;
+                return new FeedbackStepHolderAnswer(
+                    FeedbackStepHolderVerdict.Failed, "the ledger record could not be read to check for a holder, because the fetch failed");
             }
 
             if (!existing.Exists)
             {
-                return FeedbackStepHolderVerdict.Held;
+                return FeedbackStepHolderAnswer.Held;
             }
 
             (LedgerCommitter committer, LedgerSigningKey signingKey, string fingerprint) =
@@ -61,34 +71,27 @@ internal sealed class FeedbackStepHolder(IDocumentStore store, NodeContext node,
             HolderClaimResult result = await TaskLedgerHolder.TryClaimAsync(
                 ledger, project.RepositoryPath, taskId, new TaskRecordHolder(fingerprint, node.NodeId, nodeName, now), committer, signingKey,
                 cancellationToken);
-            switch (result.Verdict)
+            return result.Verdict switch
             {
-                case HolderClaimVerdict.Claimed:
-                case HolderClaimVerdict.NoRecord:
-                    return FeedbackStepHolderVerdict.Held;
-                case HolderClaimVerdict.HeldByOther:
-                    logger.LogInformation(
-                        "Task {TaskId}: another node ({HolderNode}) holds its ledger record, so its feedback step is that node's", taskId,
-                        result.Holder?.NodeName);
-                    return FeedbackStepHolderVerdict.HeldByOther;
-                default:
-                    logger.LogWarning("Task {TaskId}: its feedback step waits: the ledger holder could not be written: {Reason}", taskId, result.FailureReason);
-                    return FeedbackStepHolderVerdict.Failed;
-            }
+                HolderClaimVerdict.Claimed or HolderClaimVerdict.NoRecord => FeedbackStepHolderAnswer.Held,
+                HolderClaimVerdict.HeldByOther => new FeedbackStepHolderAnswer(
+                    FeedbackStepHolderVerdict.HeldByOther, $"another node ({result.Holder?.NodeName}) holds the task's ledger record"),
+                _ => new FeedbackStepHolderAnswer(
+                    FeedbackStepHolderVerdict.Failed, $"the ledger holder could not be written: {result.FailureReason}"),
+            };
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            logger.LogWarning(exception, "Task {TaskId}: its feedback step waits: checking or writing its ledger holder threw", taskId);
-            return FeedbackStepHolderVerdict.Failed;
+            return new FeedbackStepHolderAnswer(
+                FeedbackStepHolderVerdict.Failed, $"checking or writing the task's ledger holder threw: {exception.Message}");
         }
     }
 
     /// <summary>
-    /// Records, in the same save as the step's outcome, that this node owes the task's holder back. The release itself runs
-    /// after that save, so a daemon that stops in between would otherwise leave this node named as the holder with nothing to
-    /// give it back: the ended step has left the feedback sweep, and the step took neither a lease nor the task's holder field
-    /// for any other sweep to find. The row is the dispatcher's own pending release, which its lease sweep retries until the
-    /// write lands, and <see cref="ReleaseAsync"/> deletes it once the release is settled.
+    /// Records, in the same save as the step's outcome, that this node owes the task's holder back. The row is the dispatcher's
+    /// own pending release: its sweep gives the holder back (or, finding this node's lease on the task because it has already
+    /// claimed it, leaves the holder to that run) and retries until the write lands, which also covers a daemon that stops
+    /// straight after the outcome's save.
     /// </summary>
     public void StageRelease(IDocumentSession session, Guid taskId, Guid projectId, DateTimeOffset now) =>
         session.Store(new TaskHolderReleasePending
@@ -98,99 +101,22 @@ internal sealed class FeedbackStepHolder(IDocumentStore store, NodeContext node,
             ProjectId = projectId,
             NodeId = node.NodeId,
             RecordedAt = now,
-            LastFailureReason = "the feedback step ended and its holder release had not run yet",
+            LastFailureReason = "the feedback step ended, and the dispatcher's sweep gives its holder back",
         });
 
     /// <summary>
-    /// Gives the holder back once the step is over, or once the begun event lost its race. Best effort, because the step's own
-    /// outcome has landed: a write that cannot complete is recorded as the pending release the dispatcher's lease sweep retries,
-    /// and a release that is settled deletes the row <see cref="StageRelease"/> recorded with the outcome.
+    /// Records the release on its own, for a holder written for a begun event that then lost its race, so there is no outcome
+    /// save to carry it, and wakes the dispatcher to give the holder back.
     /// </summary>
-    public async Task ReleaseAsync(Guid taskId, Guid projectId, CancellationToken cancellationToken)
+    public async Task StageReleaseAloneAsync(Guid taskId, Guid projectId, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        string pendingKey = TaskHolderReleasePending.KeyFor(taskId, node.NodeId);
-        string? failure = null;
-        try
-        {
-            await using IDocumentSession session = store.LightweightSession();
-
-            // This runs after the outcome event that made the task Queued, so the dispatcher on this node may already have claimed
-            // it: a holder that is already this node is a reclaim to the dispatcher, and its claim lands as a lease. A lease naming
-            // this node means the holder now belongs to that run, and clearing it would leave a running task with no holder for a
-            // teammate's node to win, the same guard the dispatcher's own release path makes before it clears one.
-            if (await session.LoadAsync<TaskLease>(taskId, cancellationToken) is { NodeId: var leaseNodeId }
-                && leaseNodeId == node.NodeId)
-            {
-                await SettleAsync(session, pendingKey, cancellationToken);
-                return;
-            }
-
-            ProjectDetails? project = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken);
-            if (project is null)
-            {
-                await SettleAsync(session, pendingKey, cancellationToken);
-                return;
-            }
-
-            LedgerFile existing = await ledger.ReadAsync(
-                project.RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cancellationToken);
-            if (!existing.Exists)
-            {
-                failure = existing.FetchFailed
-                    ? "the ledger record could not be read: the fetch failed"
-                    : null;
-            }
-            else
-            {
-                (LedgerCommitter committer, LedgerSigningKey signingKey, _) =
-                    await DispatchEngine.ResolveLedgerIdentityAsync(session, node, ownerRootFingerprint: null, cancellationToken);
-                HolderReleaseResult result = await TaskLedgerHolder.TryReleaseAsync(
-                    ledger, project.RepositoryPath, taskId, node.NodeId, committer, signingKey, cancellationToken);
-                failure = result.Verdict == HolderReleaseVerdict.Failed
-                    ? result.FailureReason ?? "the release failed"
-                    : null;
-            }
-
-            if (failure is null)
-            {
-                await SettleAsync(session, pendingKey, cancellationToken);
-            }
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            failure = exception.Message;
-        }
-
-        if (failure is null)
-        {
-            return;
-        }
-
-        logger.LogWarning("Task {TaskId}: releasing the ledger holder after its feedback step failed: {Reason}. It is retried.", taskId, failure);
-        try
-        {
-            await using IDocumentSession pending = store.LightweightSession();
-            pending.Store(new TaskHolderReleasePending
-            {
-                Id = pendingKey,
-                TaskId = taskId,
-                ProjectId = projectId,
-                NodeId = node.NodeId,
-                RecordedAt = DateTimeOffset.UtcNow,
-                LastFailureReason = failure,
-            });
-            await pending.SaveChangesAsync(cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(exception, "Task {TaskId}: could not record the ledger holder release as pending", taskId);
-        }
-    }
-
-    /// <summary>The release is settled, so the pending row staged with the outcome (if any) has nothing left to retry.</summary>
-    private static async Task SettleAsync(IDocumentSession session, string pendingKey, CancellationToken cancellationToken)
-    {
-        session.Delete<TaskHolderReleasePending>(pendingKey);
+        await using IDocumentSession session = store.LightweightSession();
+        StageRelease(session, taskId, projectId, now);
         await session.SaveChangesAsync(cancellationToken);
+        await WakeDispatcherAsync(taskId, cancellationToken);
     }
+
+    /// <summary>Rings the doorbell after a save that staged a release, so the dispatcher gives the holder back now rather than at its next poll.</summary>
+    public Task WakeDispatcherAsync(Guid taskId, CancellationToken cancellationToken) =>
+        Doorbell.RingAsync(connection.ConnectionString, $"feedback-step-holder-release:{taskId}", cancellationToken);
 }

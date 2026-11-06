@@ -73,13 +73,21 @@ public sealed class FeedbackStepEngine(
     private readonly CancellationTokenSource _stopping = new();
     private readonly ConcurrentDictionary<Guid, RunningCheck> _sessions = [];
     private readonly Dictionary<Guid, string> _reportedGate = [];
-    private readonly FeedbackStepHolder _holder = new(store, node, ledger, logger);
-    private readonly HashSet<Guid> _reportedHolderWait = [];
+    private readonly FeedbackStepHolder _holder = new(store, node, ledger, connection);
+    private readonly Dictionary<Guid, HolderWait> _holderWaits = [];
 
     /// <summary>Set by the loop to its own doorbell, so a check that ends wakes the next step at once.</summary>
     public Action? OnWork { get; set; }
 
+    /// <summary>The first wait after a begin that found the ledger holder taken or unwritable; each further miss doubles it, up to <see cref="LongestHolderWait"/>.</summary>
+    private static readonly TimeSpan FirstHolderWait = TimeSpan.FromSeconds(30);
+
+    private static readonly TimeSpan LongestHolderWait = TimeSpan.FromMinutes(5);
+
     private sealed record RunningCheck(Guid TaskId, TaskCompletionSource Finished);
+
+    /// <summary>When a held task whose holder this node could not take is next asked about, and how long the wait after that is.</summary>
+    private sealed record HolderWait(DateTimeOffset NextAttemptAt, TimeSpan Wait);
 
     private enum StepOutcome
     {
@@ -117,6 +125,12 @@ public sealed class FeedbackStepEngine(
                     .Where(task => task.FeedbackStepHeld || task.FeedbackStepRunning)
                     .Select(task => task.Id)
                     .ToListAsync(cancellationToken);
+            }
+
+            // A task that is no longer held needs no wait remembered for its holder.
+            foreach (Guid waited in _holderWaits.Keys.Except(candidates).ToList())
+            {
+                _holderWaits.Remove(waited);
             }
 
             int steps = 0;
@@ -221,26 +235,33 @@ public sealed class FeedbackStepEngine(
         }
 
         // The stream version fences two daemons of one database; nodes keep a database each, so what decides between them is the
-        // task's ledger record holder, written before the begun event the way the dispatcher writes it before a claim.
+        // task's ledger record holder, written before the begun event the way the dispatcher writes it before a claim. Each ask is
+        // a fetch or two, so a task whose holder this node could not take is asked about again only after a wait that grows.
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
         if (project is not null)
         {
-            FeedbackStepHolderVerdict verdict = await _holder.TryHoldAsync(session, task.Id, project, ownerFingerprint, now, cancellationToken);
-            if (verdict != FeedbackStepHolderVerdict.Held)
+            HolderWait? waiting = _holderWaits.GetValueOrDefault(task.Id);
+            if (waiting is not null && now < waiting.NextAttemptAt)
             {
-                if (_reportedHolderWait.Add(task.Id))
-                {
-                    logger.LogInformation(
-                        "Task {TaskId}: its feedback step does not begin on this node: {Why}", task.Id,
-                        verdict == FeedbackStepHolderVerdict.HeldByOther
-                            ? "another node holds the task's ledger record"
-                            : "the ledger holder could not be written");
-                }
-
                 return StepOutcome.Nothing;
             }
 
-            _reportedHolderWait.Remove(task.Id);
+            FeedbackStepHolderAnswer answer = await _holder.TryHoldAsync(session, task.Id, project, ownerFingerprint, now, cancellationToken);
+            if (answer.Verdict != FeedbackStepHolderVerdict.Held)
+            {
+                if (waiting is null)
+                {
+                    logger.LogInformation("Task {TaskId}: its feedback step does not begin on this node yet: {Why}", task.Id, answer.Why);
+                }
+
+                TimeSpan wait = waiting is null
+                    ? FirstHolderWait
+                    : TimeSpan.FromTicks(Math.Min(waiting.Wait.Ticks * 2, LongestHolderWait.Ticks));
+                _holderWaits[task.Id] = new HolderWait(now + wait, wait);
+                return StepOutcome.Nothing;
+            }
+
+            _holderWaits.Remove(task.Id);
         }
 
         FeedbackStepStarted started = FeedbackStepDecider.Start(task, node.NodeId, now);
@@ -252,7 +273,11 @@ public sealed class FeedbackStepEngine(
         catch (EventStreamUnexpectedMaxEventIdException)
         {
             logger.LogDebug("Task {TaskId} changed while its feedback step was beginning; deciding it again", task.Id);
-            await _holder.ReleaseAsync(task.Id, task.ProjectId, cancellationToken);
+            if (project is not null)
+            {
+                await _holder.StageReleaseAloneAsync(task.Id, task.ProjectId, now, cancellationToken);
+            }
+
             return StepOutcome.Nothing;
         }
 
@@ -674,7 +699,7 @@ public sealed class FeedbackStepEngine(
         }
 
         logger.LogInformation("Task {TaskId}: refined and queued again for its owner on its node", task.Id);
-        await _holder.ReleaseAsync(task.Id, task.ProjectId, cancellationToken);
+        await _holder.WakeDispatcherAsync(task.Id, cancellationToken);
         return StepOutcome.Stepped;
     }
 
@@ -701,7 +726,7 @@ public sealed class FeedbackStepEngine(
         }
 
         logger.LogInformation("Task {TaskId}: feedback step parked, the task is back in Draft for a person ({Reason})", task.Id, reason);
-        await _holder.ReleaseAsync(task.Id, task.ProjectId, cancellationToken);
+        await _holder.WakeDispatcherAsync(task.Id, cancellationToken);
         return StepOutcome.Stepped;
     }
 
@@ -740,7 +765,7 @@ public sealed class FeedbackStepEngine(
         }
 
         logger.LogInformation("Task {TaskId}: feedback step ended: {Outcome} ({Reason})", task.Id, ending.Description, reason);
-        await _holder.ReleaseAsync(task.Id, task.ProjectId, cancellationToken);
+        await _holder.WakeDispatcherAsync(task.Id, cancellationToken);
         return StepOutcome.Stepped;
     }
 
