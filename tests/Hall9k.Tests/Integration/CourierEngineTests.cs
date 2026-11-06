@@ -889,7 +889,7 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
     }
 
     [Fact]
-    public async Task A_blocked_tick_leaves_a_stranded_run_s_adoption_to_the_first_unblocked_tick()
+    public async Task A_blocked_tick_still_adopts_a_stranded_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         Seeded seeded = await SeedProjectWithUrgentItemAsync(48_411, DateTimeOffset.UtcNow.AddMinutes(-1), cts.Token);
@@ -920,26 +920,24 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
         CourierEngine engine = ElevationEngineFor(seeded, probe, reader, executor);
 
         await engine.SweepOnceAsync(cts.Token);
-        CourierFailureStreak held = (await StreakAsync(seeded.ProjectId, cts.Token))!;
-        held.Count.Should().Be(7, "adopting the stranded run would write its daemon-ended hold, which a blocked tick defers");
-        held.NextAttemptAt.Should().Be(nextAttemptAt);
         await using (IQuerySession query = _postgres.Store.QuerySession())
         {
             CourierRunDetails? run = await query.LoadAsync<CourierRunDetails>(strandedRunId, cts.Token);
-            run!.CompletedAt.Should().BeNull("the adoption waits for the first unblocked tick");
+            run!.CompletedAt.Should().NotBeNull(
+                "left open, the run reads as in flight on h9k status, which outranks the block and hides it");
         }
+
+        CourierFailureStreak held = (await StreakAsync(seeded.ProjectId, cts.Token))!;
+        held.Count.Should().Be(
+            0, "the adoption writes its own bookkeeping as always, the reset the newer elevated window earns included");
+        held.NextAttemptAt.Should().NotBe(nextAttemptAt, "the adoption's daemon-ended hold replaces the old next attempt");
+        executor.Spawns.Should().BeEmpty();
 
         await RegisterWindowAsync(seeded, unelevatedWindow, unelevatedStartedAt, unelevatedStartedAt, cts.Token);
         await engine.SweepOnceAsync(cts.Token);
 
-        await using (IQuerySession query = _postgres.Store.QuerySession())
-        {
-            CourierRunDetails? run = await query.LoadAsync<CourierRunDetails>(strandedRunId, cts.Token);
-            run!.CompletedAt.Should().NotBeNull("the first unblocked tick adopts the stranded run");
-        }
-
-        (await StreakAsync(seeded.ProjectId, cts.Token))!.Count.Should().Be(
-            0, "the adoption applies the new window's reset and keeps its own daemon-ended hold");
+        (await StreakAsync(seeded.ProjectId, cts.Token))!.NextAttemptAt.Should().Be(
+            held.NextAttemptAt, "the first unblocked tick keeps the adoption's own hold");
         executor.Spawns.Should().BeEmpty("the daemon-ended hold still stands");
     }
 
