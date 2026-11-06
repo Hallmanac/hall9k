@@ -20,12 +20,6 @@ public enum CourierSpawnDecision
     /// <summary>A manual `h9k orchestrator feed --drain` currently holds this project's short lease.</summary>
     ManualDrainInProgress,
 
-    /// <summary>
-    /// The registered window runs elevated and the daemon does not, so a courier it spawned could
-    /// not open the window's pipe (<see cref="CourierGate.ElevationBlocks"/>).
-    /// </summary>
-    WindowElevatedDaemonNot,
-
     /// <summary>This project's per-day spawn cap is spent.</summary>
     DayCapReached,
 
