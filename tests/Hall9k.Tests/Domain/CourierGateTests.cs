@@ -23,7 +23,6 @@ public sealed class CourierGateTests
         bool orchestratorLive = true,
         bool courierAlreadyRunning = false,
         bool manualDrainLeaseHeld = false,
-        bool elevationBlocked = false,
         bool hasUrgentItem = false,
         long urgentSequence = 100,
         CourierFailureStreak? streak = null,
@@ -33,7 +32,7 @@ public sealed class CourierGateTests
         int spawnsToday = 0,
         int daySpawnCap = 500) =>
         CourierGate.Decide(
-            hasUndrainedItems, orchestratorLive, courierAlreadyRunning, manualDrainLeaseHeld, elevationBlocked,
+            hasUndrainedItems, orchestratorLive, courierAlreadyRunning, manualDrainLeaseHeld,
             hasUrgentItem ? urgentSequence : null, streak, Now, elapsedSinceLastCourier, quietFor ?? TimeSpan.Zero,
             QuietThreshold, maxWait ?? MaxWait, spawnsToday, daySpawnCap);
 
@@ -94,19 +93,6 @@ public sealed class CourierGateTests
         ProcessElevation daemon, ProcessElevation window, bool blocks)
     {
         CourierGate.ElevationBlocks(daemon, window).Should().Be(blocks);
-    }
-
-    [Fact]
-    public void An_elevation_block_refuses_ahead_of_the_day_cap_and_even_an_urgent_item()
-    {
-        Decide(elevationBlocked: true, hasUrgentItem: true, spawnsToday: 500, daySpawnCap: 500)
-            .Should().Be(CourierSpawnDecision.WindowElevatedDaemonNot);
-    }
-
-    [Fact]
-    public void A_manual_drain_still_outranks_an_elevation_block()
-    {
-        Decide(manualDrainLeaseHeld: true, elevationBlocked: true).Should().Be(CourierSpawnDecision.ManualDrainInProgress);
     }
 
     [Fact]

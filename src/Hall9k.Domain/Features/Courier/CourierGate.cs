@@ -16,7 +16,6 @@ public static class CourierGate
         bool orchestratorLive,
         bool courierAlreadyRunning,
         bool manualDrainLeaseHeld,
-        bool elevationBlocked,
         long? newestUrgentSequence,
         CourierFailureStreak? streak,
         DateTimeOffset now,
@@ -48,13 +47,6 @@ public static class CourierGate
         if (manualDrainLeaseHeld)
         {
             return CourierSpawnDecision.ManualDrainInProgress;
-        }
-
-        // Ahead of the day cap and the urgent override: a courier spawned into a window it cannot
-        // reach fails for certain, so spending the cap or a bypass on it buys nothing.
-        if (elevationBlocked)
-        {
-            return CourierSpawnDecision.WindowElevatedDaemonNot;
         }
 
         // Checked ahead of the wait and the urgent override, and applied to both: a storm of
@@ -107,6 +99,9 @@ public static class CourierGate
     /// to Administrators and SYSTEM, and a non-elevated token holds Administrators as deny-only, so
     /// the courier cannot open it. Every other pairing reaches, an elevated daemon included, and an
     /// unreadable level on either side never blocks: the backoff contains whatever fails then.
+    /// <see cref="Decide"/> takes no part in this block: the daemon's tick refuses a blocked window
+    /// before it reads the feed or calls the gate at all, so the scan and the streak housekeeping
+    /// never run for one, and the engine's own tests pin that refusal.
     /// </summary>
     public static bool ElevationBlocks(ProcessElevation daemon, ProcessElevation window) =>
         (daemon, window) is (ProcessElevation.NotElevated, ProcessElevation.Elevated);
