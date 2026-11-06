@@ -13,6 +13,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Marten;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -178,8 +179,8 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
         FakeProcessManager processManager = new();
         CountingExecutor executor = new();
         CourierEngine engine = new(
-            store, node, executor, processManager, probe, Options.Create(new DaemonOptions()),
-            NullLogger<CourierEngine>.Instance);
+            store, node, executor, processManager, probe, new UnsupportedProcessElevationReader(),
+            Options.Create(new DaemonOptions()), NullLogger<CourierEngine>.Instance);
 
         CourierSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
 
@@ -254,8 +255,8 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
         FakeProcessManager processManager = new();
         CountingExecutor executor = new();
         CourierEngine engine = new(
-            store, node, executor, processManager, probe, Options.Create(new DaemonOptions()),
-            NullLogger<CourierEngine>.Instance);
+            store, node, executor, processManager, probe, new UnsupportedProcessElevationReader(),
+            Options.Create(new DaemonOptions()), NullLogger<CourierEngine>.Instance);
 
         CourierSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
 
@@ -425,7 +426,37 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
         new(
             _postgres.Store, seeded.Node, executor, processManager,
             new FakeOrchestratorProcessProbe().Running(seeded.ProcessId, seeded.ProcessStartedAt),
+            new UnsupportedProcessElevationReader(),
             Options.Create(options ?? new DaemonOptions()), NullLogger<CourierEngine>.Instance);
+
+    private CourierEngine ElevationEngineFor(
+        Seeded seeded,
+        FakeOrchestratorProcessProbe probe,
+        FakeProcessElevationReader reader,
+        IExecutor executor,
+        ILogger<CourierEngine>? logger = null) =>
+        new(
+            _postgres.Store, seeded.Node, executor, new FakeProcessManager(), probe, reader,
+            Options.Create(new DaemonOptions()), logger ?? NullLogger<CourierEngine>.Instance);
+
+    /// <summary>A new window registering over the seeded one, the way a re-opened orchestrator does.</summary>
+    private async Task RegisterWindowAsync(
+        Seeded seeded, int processId, DateTimeOffset processStartedAt, DateTimeOffset launchedAt,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        session.Events.Append(
+            OrchestratorPresenceStreamId.For(seeded.Node.NodeId, seeded.ProjectId),
+            new OrchestratorLaunched(
+                seeded.Node.NodeId, seeded.ProjectId, "orchestrator", processId, "claude-code", processStartedAt, launchedAt));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<CourierDaySpawnCounter?> DayCounterAsync(Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession session = _postgres.Store.QuerySession();
+        return await session.LoadAsync<CourierDaySpawnCounter>(projectId, cancellationToken);
+    }
 
     private async Task SeedStreakAsync(CourierFailureStreak streak, CancellationToken cancellationToken)
     {
@@ -748,6 +779,238 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
         streak.Count.Should().Be(1);
         streak.LastFailureReason.Should().StartWith(
             "daemon error: ", "a spawn that throws is the daemon's own failure, not the session's");
+    }
+
+    [Fact]
+    public async Task An_elevated_window_under_a_non_elevated_daemon_spawns_nothing_and_spends_no_cap()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_401, DateTimeOffset.UtcNow.AddHours(-3), cts.Token);
+        FakeProcessElevationReader reader = new FakeProcessElevationReader()
+            .Self(ProcessElevation.NotElevated).With(seeded.ProcessId, ProcessElevation.Elevated);
+        CountingExecutor executor = new();
+        CourierEngine engine = ElevationEngineFor(
+            seeded, new FakeOrchestratorProcessProbe().Running(seeded.ProcessId, seeded.ProcessStartedAt), reader, executor);
+
+        CourierSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+
+        sweep.Should().Be(new CourierSweepResult(Delivered: 0, Failed: 0, NoAdapter: 0, DayCapHits: 0));
+        executor.Spawns.Should().BeEmpty("an urgent item waits too, since the courier could not reach the window");
+        (await DayCounterAsync(seeded.ProjectId, cts.Token)).Should().BeNull("a blocked tick spends none of the day cap");
+        (await StreakAsync(seeded.ProjectId, cts.Token)).Should().BeNull("a blocked tick is not a failure");
+    }
+
+    [Theory]
+    [InlineData(ProcessElevation.Elevated, ProcessElevation.NotElevated)]
+    [InlineData(ProcessElevation.NotElevated, ProcessElevation.Unknown)]
+    public async Task Every_pairing_but_the_blocked_one_spawns_as_before(ProcessElevation daemon, ProcessElevation window)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_402, DateTimeOffset.UtcNow.AddHours(-3), cts.Token);
+        FakeProcessElevationReader reader = new FakeProcessElevationReader().Self(daemon).With(seeded.ProcessId, window);
+        CountingExecutor executor = new();
+
+        await ElevationEngineFor(
+                seeded, new FakeOrchestratorProcessProbe().Running(seeded.ProcessId, seeded.ProcessStartedAt), reader, executor)
+            .SweepOnceAsync(cts.Token);
+
+        executor.Spawns.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task A_blocked_first_tick_after_a_start_leaves_the_pull_in_to_the_first_unblocked_tick()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_403, DateTimeOffset.UtcNow.AddHours(-3), cts.Token);
+        DateTimeOffset failedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await SeedCompletedFailedRunAsync(seeded, failedAt, cts.Token);
+        DateTimeOffset far = DateTimeOffset.UtcNow.AddMinutes(29);
+        await SeedStreakAsync(RunningStreak(seeded.ProjectId, 9, failedAt, far, carried: long.MaxValue), cts.Token);
+
+        const int unelevatedWindow = 48_404;
+        DateTimeOffset unelevatedStartedAt = DateTimeOffset.UtcNow.AddHours(-2);
+        FakeOrchestratorProcessProbe probe = new FakeOrchestratorProcessProbe()
+            .Running(seeded.ProcessId, seeded.ProcessStartedAt).Running(unelevatedWindow, unelevatedStartedAt);
+        FakeProcessElevationReader reader = new FakeProcessElevationReader()
+            .Self(ProcessElevation.NotElevated)
+            .With(seeded.ProcessId, ProcessElevation.Elevated)
+            .With(unelevatedWindow, ProcessElevation.NotElevated);
+        CountingExecutor executor = new();
+        CourierEngine engine = ElevationEngineFor(seeded, probe, reader, executor);
+
+        await engine.SweepOnceAsync(cts.Token);
+        (await StreakAsync(seeded.ProjectId, cts.Token))!.NextAttemptAt.Should().Be(
+            far, "a blocked tick is not the first tick the restart pull-in is for");
+
+        // Launched before the last failure, so this registration resets nothing; only the pull-in can move the time.
+        await RegisterWindowAsync(seeded, unelevatedWindow, unelevatedStartedAt, unelevatedStartedAt, cts.Token);
+        DateTimeOffset before = DateTimeOffset.UtcNow;
+        await engine.SweepOnceAsync(cts.Token);
+        DateTimeOffset after = DateTimeOffset.UtcNow;
+
+        CourierFailureStreak pulled = (await StreakAsync(seeded.ProjectId, cts.Token))!;
+        pulled.Count.Should().Be(9);
+        pulled.NextAttemptAt.Should().BeOnOrAfter(before.AddSeconds(60)).And.BeOnOrBefore(after.AddSeconds(60));
+        executor.Spawns.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_blocked_tick_leaves_a_new_window_s_reset_to_the_first_unblocked_tick()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_405, DateTimeOffset.UtcNow.AddMinutes(-1), cts.Token);
+        DateTimeOffset failedAt = DateTimeOffset.UtcNow.AddMinutes(-30);
+        DateTimeOffset nextAttemptAt = DateTimeOffset.UtcNow.AddMinutes(25);
+        await SeedStreakAsync(RunningStreak(seeded.ProjectId, 7, failedAt, nextAttemptAt, carried: long.MaxValue), cts.Token);
+
+        const int unelevatedWindow = 48_406;
+        DateTimeOffset unelevatedStartedAt = DateTimeOffset.UtcNow.AddSeconds(-30);
+        FakeOrchestratorProcessProbe probe = new FakeOrchestratorProcessProbe()
+            .Running(seeded.ProcessId, seeded.ProcessStartedAt).Running(unelevatedWindow, unelevatedStartedAt);
+        FakeProcessElevationReader reader = new FakeProcessElevationReader()
+            .Self(ProcessElevation.NotElevated)
+            .With(seeded.ProcessId, ProcessElevation.Elevated)
+            .With(unelevatedWindow, ProcessElevation.NotElevated);
+        CountingExecutor executor = new();
+        CourierEngine engine = ElevationEngineFor(seeded, probe, reader, executor);
+
+        await engine.SweepOnceAsync(cts.Token);
+        CourierFailureStreak held = (await StreakAsync(seeded.ProjectId, cts.Token))!;
+        held.Count.Should().Be(7, "the elevated window registered after the failure, but a blocked tick resets nothing");
+        held.NextAttemptAt.Should().Be(nextAttemptAt);
+        executor.Spawns.Should().BeEmpty();
+
+        await RegisterWindowAsync(seeded, unelevatedWindow, unelevatedStartedAt, unelevatedStartedAt, cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+
+        executor.Spawns.Should().ContainSingle("the first unblocked tick applies the reset and spawns");
+        (await StreakAsync(seeded.ProjectId, cts.Token))!.Count.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task A_blocked_tick_leaves_a_stranded_run_s_adoption_to_the_first_unblocked_tick()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(48_411, DateTimeOffset.UtcNow.AddMinutes(-1), cts.Token);
+        DateTimeOffset failedAt = DateTimeOffset.UtcNow.AddMinutes(-30);
+        DateTimeOffset nextAttemptAt = DateTimeOffset.UtcNow.AddMinutes(25);
+        await SeedStreakAsync(RunningStreak(seeded.ProjectId, 7, failedAt, nextAttemptAt, carried: long.MaxValue), cts.Token);
+
+        // Past CourierTimeout plus the stranded-run grace with no completion: what a daemon that
+        // stopped mid-courier leaves for the restarted one to adopt.
+        Guid strandedRunId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream(strandedRunId, new CourierRunDispatched(
+                strandedRunId, seeded.ProjectId, seeded.Node.NodeId, AgentModel.CourierDefault,
+                DateTimeOffset.UtcNow.AddMinutes(-6)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const int unelevatedWindow = 48_412;
+        DateTimeOffset unelevatedStartedAt = DateTimeOffset.UtcNow.AddSeconds(-30);
+        FakeOrchestratorProcessProbe probe = new FakeOrchestratorProcessProbe()
+            .Running(seeded.ProcessId, seeded.ProcessStartedAt).Running(unelevatedWindow, unelevatedStartedAt);
+        FakeProcessElevationReader reader = new FakeProcessElevationReader()
+            .Self(ProcessElevation.NotElevated)
+            .With(seeded.ProcessId, ProcessElevation.Elevated)
+            .With(unelevatedWindow, ProcessElevation.NotElevated);
+        CountingExecutor executor = new();
+        CourierEngine engine = ElevationEngineFor(seeded, probe, reader, executor);
+
+        await engine.SweepOnceAsync(cts.Token);
+        CourierFailureStreak held = (await StreakAsync(seeded.ProjectId, cts.Token))!;
+        held.Count.Should().Be(7, "adopting the stranded run would write its daemon-ended hold, which a blocked tick defers");
+        held.NextAttemptAt.Should().Be(nextAttemptAt);
+        await using (IQuerySession query = _postgres.Store.QuerySession())
+        {
+            CourierRunDetails? run = await query.LoadAsync<CourierRunDetails>(strandedRunId, cts.Token);
+            run!.CompletedAt.Should().BeNull("the adoption waits for the first unblocked tick");
+        }
+
+        await RegisterWindowAsync(seeded, unelevatedWindow, unelevatedStartedAt, unelevatedStartedAt, cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+
+        await using (IQuerySession query = _postgres.Store.QuerySession())
+        {
+            CourierRunDetails? run = await query.LoadAsync<CourierRunDetails>(strandedRunId, cts.Token);
+            run!.CompletedAt.Should().NotBeNull("the first unblocked tick adopts the stranded run");
+        }
+
+        (await StreakAsync(seeded.ProjectId, cts.Token))!.Count.Should().Be(
+            0, "the adoption applies the new window's reset and keeps its own daemon-ended hold");
+        executor.Spawns.Should().BeEmpty("the daemon-ended hold still stands");
+    }
+
+    [Fact]
+    public async Task A_window_s_elevation_is_read_once_per_window_process()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(
+            48_407, DateTimeOffset.UtcNow.AddHours(-3), cts.Token, withItem: false);
+        const int nextWindow = 48_408;
+        DateTimeOffset nextStartedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        FakeOrchestratorProcessProbe probe = new FakeOrchestratorProcessProbe()
+            .Running(seeded.ProcessId, seeded.ProcessStartedAt).Running(nextWindow, nextStartedAt);
+        FakeProcessElevationReader reader = new FakeProcessElevationReader()
+            .Self(ProcessElevation.NotElevated)
+            .With(seeded.ProcessId, ProcessElevation.Elevated)
+            .With(nextWindow, ProcessElevation.Elevated);
+        CourierEngine engine = ElevationEngineFor(seeded, probe, reader, new CountingExecutor());
+
+        await engine.SweepOnceAsync(cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+        reader.ReadsOf(Environment.ProcessId).Should().Be(1, "the daemon's own elevation is read once, at start");
+        reader.ReadsOf(seeded.ProcessId).Should().Be(1);
+
+        await RegisterWindowAsync(seeded, nextWindow, nextStartedAt, nextStartedAt, cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+        reader.ReadsOf(nextWindow).Should().Be(1, "a new window process is read once too");
+        reader.ReadsOf(seeded.ProcessId).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task The_block_is_logged_once_per_window_process_whether_or_not_items_wait()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedProjectWithUrgentItemAsync(
+            48_409, DateTimeOffset.UtcNow.AddHours(-3), cts.Token, withItem: false);
+        const int nextWindow = 48_410;
+        DateTimeOffset nextStartedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        FakeOrchestratorProcessProbe probe = new FakeOrchestratorProcessProbe()
+            .Running(seeded.ProcessId, seeded.ProcessStartedAt).Running(nextWindow, nextStartedAt);
+        FakeProcessElevationReader reader = new FakeProcessElevationReader()
+            .Self(ProcessElevation.NotElevated)
+            .With(seeded.ProcessId, ProcessElevation.Elevated)
+            .With(nextWindow, ProcessElevation.Elevated);
+        ListLogger<CourierEngine> logger = new();
+        CourierEngine engine = ElevationEngineFor(seeded, probe, reader, new CountingExecutor(), logger);
+        int BlockLines() => logger.Lines.Count(line => line.Contains("is elevated and this daemon is not"));
+
+        await engine.SweepOnceAsync(cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+        BlockLines().Should().Be(1);
+        logger.Lines.Should().ContainSingle(line => line.Contains("is elevated and this daemon is not")).Which.Should()
+            .Contain($"pid {seeded.ProcessId}").And.Contain("'orchestrator'")
+            .And.Contain(CourierElevationFix.For(autostartRegistered: null));
+
+        await RegisterWindowAsync(seeded, nextWindow, nextStartedAt, nextStartedAt, cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+        BlockLines().Should().Be(2, "a new window at the same mismatch is a new episode");
+
+        probe.Gone(nextWindow);
+        await engine.SweepOnceAsync(cts.Token);
+        probe.Running(nextWindow, nextStartedAt);
+        await engine.SweepOnceAsync(cts.Token);
+        BlockLines().Should().Be(3, "a tick that found the window no longer live ended the episode");
+
+        ListLogger<CourierEngine> restarted = new();
+        await ElevationEngineFor(seeded, probe, reader, new CountingExecutor(), restarted).SweepOnceAsync(cts.Token);
+        restarted.Lines.Should().ContainSingle(line => line.Contains("is elevated and this daemon is not"));
     }
 
     /// <summary>Records every spawn request without ever completing one — any call here at all

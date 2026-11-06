@@ -1,3 +1,5 @@
+using Hall9k.Domain.Features.Orchestrator;
+
 namespace Hall9k.Domain.Features.Courier;
 
 /// <summary>
@@ -14,6 +16,7 @@ public static class CourierGate
         bool orchestratorLive,
         bool courierAlreadyRunning,
         bool manualDrainLeaseHeld,
+        bool elevationBlocked,
         long? newestUrgentSequence,
         CourierFailureStreak? streak,
         DateTimeOffset now,
@@ -45,6 +48,13 @@ public static class CourierGate
         if (manualDrainLeaseHeld)
         {
             return CourierSpawnDecision.ManualDrainInProgress;
+        }
+
+        // Ahead of the day cap and the urgent override: a courier spawned into a window it cannot
+        // reach fails for certain, so spending the cap or a bypass on it buys nothing.
+        if (elevationBlocked)
+        {
+            return CourierSpawnDecision.WindowElevatedDaemonNot;
         }
 
         // Checked ahead of the wait and the urgent override, and applied to both: a storm of
@@ -90,6 +100,16 @@ public static class CourierGate
 
         return CourierSpawnDecision.Waiting;
     }
+
+    /// <summary>
+    /// Whether a courier the daemon spawns cannot reach the window because of token elevation: the
+    /// window is elevated and the daemon is not. An elevated window's pipe grants write access only
+    /// to Administrators and SYSTEM, and a non-elevated token holds Administrators as deny-only, so
+    /// the courier cannot open it. Every other pairing reaches, an elevated daemon included, and an
+    /// unreadable level on either side never blocks: the backoff contains whatever fails then.
+    /// </summary>
+    public static bool ElevationBlocks(ProcessElevation daemon, ProcessElevation window) =>
+        (daemon, window) is (ProcessElevation.NotElevated, ProcessElevation.Elevated);
 
     /// <summary>
     /// The one early attempt a running streak grants: an urgent item no failed courier of the

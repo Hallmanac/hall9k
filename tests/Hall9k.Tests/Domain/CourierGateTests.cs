@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Domain.Features.Courier;
+using Hall9k.Domain.Features.Orchestrator;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -22,6 +23,7 @@ public sealed class CourierGateTests
         bool orchestratorLive = true,
         bool courierAlreadyRunning = false,
         bool manualDrainLeaseHeld = false,
+        bool elevationBlocked = false,
         bool hasUrgentItem = false,
         long urgentSequence = 100,
         CourierFailureStreak? streak = null,
@@ -31,7 +33,7 @@ public sealed class CourierGateTests
         int spawnsToday = 0,
         int daySpawnCap = 500) =>
         CourierGate.Decide(
-            hasUndrainedItems, orchestratorLive, courierAlreadyRunning, manualDrainLeaseHeld,
+            hasUndrainedItems, orchestratorLive, courierAlreadyRunning, manualDrainLeaseHeld, elevationBlocked,
             hasUrgentItem ? urgentSequence : null, streak, Now, elapsedSinceLastCourier, quietFor ?? TimeSpan.Zero,
             QuietThreshold, maxWait ?? MaxWait, spawnsToday, daySpawnCap);
 
@@ -78,6 +80,33 @@ public sealed class CourierGateTests
     public void A_manual_drain_holding_its_lease_refuses_even_an_urgent_item()
     {
         Decide(manualDrainLeaseHeld: true, hasUrgentItem: true).Should().Be(CourierSpawnDecision.ManualDrainInProgress);
+    }
+
+    [Theory]
+    [InlineData(ProcessElevation.NotElevated, ProcessElevation.Elevated, true)]
+    [InlineData(ProcessElevation.Elevated, ProcessElevation.Elevated, false)]
+    [InlineData(ProcessElevation.NotElevated, ProcessElevation.NotElevated, false)]
+    [InlineData(ProcessElevation.Elevated, ProcessElevation.NotElevated, false)]
+    [InlineData(ProcessElevation.Unknown, ProcessElevation.Elevated, false)]
+    [InlineData(ProcessElevation.NotElevated, ProcessElevation.Unknown, false)]
+    [InlineData(ProcessElevation.Unknown, ProcessElevation.Unknown, false)]
+    public void Only_an_elevated_window_under_a_daemon_known_not_to_be_elevated_blocks(
+        ProcessElevation daemon, ProcessElevation window, bool blocks)
+    {
+        CourierGate.ElevationBlocks(daemon, window).Should().Be(blocks);
+    }
+
+    [Fact]
+    public void An_elevation_block_refuses_ahead_of_the_day_cap_and_even_an_urgent_item()
+    {
+        Decide(elevationBlocked: true, hasUrgentItem: true, spawnsToday: 500, daySpawnCap: 500)
+            .Should().Be(CourierSpawnDecision.WindowElevatedDaemonNot);
+    }
+
+    [Fact]
+    public void A_manual_drain_still_outranks_an_elevation_block()
+    {
+        Decide(manualDrainLeaseHeld: true, elevationBlocked: true).Should().Be(CourierSpawnDecision.ManualDrainInProgress);
     }
 
     [Fact]

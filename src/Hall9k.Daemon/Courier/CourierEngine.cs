@@ -46,6 +46,7 @@ public sealed class CourierEngine(
     IExecutor executor,
     IProcessManager processManager,
     IOrchestratorProcessProbe probe,
+    IProcessElevationReader elevationReader,
     IOptions<DaemonOptions> options,
     ILogger<CourierEngine> logger)
 {
@@ -70,6 +71,29 @@ public sealed class CourierEngine(
     /// a crash loop still gets at most one courier per restart.
     /// </summary>
     private readonly ConcurrentDictionary<Guid, byte> _pulledInAfterStart = new();
+
+    /// <summary>This daemon's own token elevation, read once: a token's elevation never changes for the life of its process.</summary>
+    private readonly ProcessElevation _daemonElevation = elevationReader.Read(Environment.ProcessId);
+
+    /// <summary>
+    /// Each project's window elevation, read once per window process (pid and start time) for the
+    /// same reason. One entry per project, replaced when a new window registers, so it never grows
+    /// past the projects this node has. An unreadable level is not cached and is read again next tick.
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, WindowElevation> _windowElevations = new();
+
+    /// <summary>
+    /// The window process each project's elevation block was last logged for, so one blocked window
+    /// logs once rather than every tick (the <see cref="_reportedNoAdapter"/> idiom). Removed when a
+    /// tick finds the window no longer blocked or no longer live; a new window at the same mismatch
+    /// differs from the stored one and logs again, and a restarted daemon starts with none.
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, WindowProcess> _reportedElevationBlock = new();
+
+    /// <summary>One window process: the identity a token belongs to (Decisions Log #2).</summary>
+    private sealed record WindowProcess(int ProcessId, DateTimeOffset? StartedAt);
+
+    private sealed record WindowElevation(WindowProcess Process, ProcessElevation Elevation);
 
     public async Task<CourierSweepResult> SweepOnceAsync(CancellationToken cancellationToken)
     {
@@ -168,6 +192,8 @@ public sealed class CourierEngine(
             && OrchestratorLiveness.IsStillRunning(presence.ProcessId, presence.ProcessStartedAt, probe);
         if (!orchestratorLive)
         {
+            _reportedElevationBlock.TryRemove(presence.ProjectId, out _);
+
             // CourierGate.Decide refuses the instant it sees no live orchestrator regardless of
             // what the feed holds, so the expensive full-history scan below (independent pre-PR
             // review, conformance lens) is never worth paying for a project nobody is watching
@@ -185,60 +211,13 @@ public sealed class CourierEngine(
             .FirstOrDefaultAsync(cancellationToken);
 
         CourierFailureStreak? streak = await session.LoadAsync<CourierFailureStreak>(project.Id, cancellationToken);
-        if (streak is not null && CourierFailureStreak.WasResetByRegistration(streak, presence.LaunchedAt))
-        {
-            // A window that registered after the one the last failed courier addressed has a
-            // delivery address the failed couriers never tried: the streak says nothing about it.
-            // An unchanged same-pid register appends no launch at all, so it never lands here. A
-            // courier the daemon ended after that failure still keeps its own hold, since the
-            // window may have registered only after that ending was written.
-            streak = CourierFailureStreak.AfterRegistrationReset(streak, lastRun?.CompletedAt, waits);
-            if (streak is null)
-            {
-                session.Delete<CourierFailureStreak>(project.Id);
-            }
-            else
-            {
-                session.Store(streak);
-            }
-
-            await session.SaveChangesAsync(cancellationToken);
-        }
+        CourierRunDetails? stranded = null;
         bool courierAlreadyRunning = false;
         if (lastRun is { CompletedAt: null } running)
         {
             if (now - running.DispatchedAt > _options.CourierTimeout + StrandedRunGrace)
             {
-                // Stranded: SpawnAsync's own wait is bounded to CourierTimeout and every path out
-                // of it now records an outcome, so a run still unfinished this far past dispatch
-                // means the daemon that dispatched it stopped existing before any of those paths
-                // could run. Adopted here as failed rather than left to block every future
-                // courier for this project forever (RecordOutcomeAsync's own doc names exactly
-                // this hazard; independent pre-PR review, conformance and adversarial lenses).
-                logger.LogWarning(
-                    "Project {ProjectName}: the feed courier dispatched at {DispatchedAt:u} never "
-                    + "recorded an outcome and has stood past its own timeout ({Timeout}) — marking it "
-                    + "failed so future couriers for this project are not blocked",
-                    project.Name, running.DispatchedAt, _options.CourierTimeout);
-                await RecordOutcomeAsync(
-                    store, project.Id, running.Id, AgentModel.Unknown, CourierEnding.EndedByDaemon,
-                    "The daemon that dispatched this courier never recorded how it ended (a stop, a "
-                    + "crash, or an unclean shutdown); marked failed after it stood past its own "
-                    + "timeout so future couriers for this project are not blocked.",
-                    drainableThroughSequence: 0, result: null, now, waits, failureReason: null,
-                    addressedLaunchAt: null, cancellationToken);
-                streak = await session.LoadAsync<CourierFailureStreak>(project.Id, cancellationToken);
-
-                // running is the same object lastRun points at, and RecordOutcomeAsync just wrote
-                // this completion to the store. It is mutated here so the elapsedSinceLastCourier
-                // read below sees it too, rather than the stale CompletedAt: null this local copy
-                // was fetched with before the adoption above; the streak it just wrote is reloaded
-                // above for the same reason. Left stale, the gate reads a null
-                // elapsedSinceLastCourier as "no courier has ended yet", so the early attempt a
-                // streak grants an urgent item could spawn in this same tick without waiting out
-                // the base wait that attempt needs (independent pre-PR review, adversarial lens).
-                running.CompletedAt = now;
-                running.Delivered = false;
+                stranded = running;
             }
             else
             {
@@ -251,20 +230,49 @@ public sealed class CourierEngine(
             return CourierTickOutcome.NotThisTick;
         }
 
-        // After the adoption above on purpose: a crash loop adopts its stranded courier on every
-        // restart, which rewrites the next attempt to a full step, and this is what brings it
-        // back to one base wait so each restart gets exactly one courier.
-        // The project is marked on its first tick whether or not a streak exists yet: a streak
-        // this very daemon run builds up later must keep the backoff it earned, not be pulled in.
-        if (_pulledInAfterStart.TryAdd(project.Id, 0) && streak is not null)
+        // Before the stranded-run adoption, the streak housekeeping, and the feed scan, and whether
+        // or not anything is waiting: adopting a stranded run writes the streak (its daemon-ended
+        // hold, and a registration reset if a newer window registered), so a blocked tick adopts
+        // nothing, resets nothing, pulls nothing in, and moves nothing. Whatever it would have done
+        // happens on the first unblocked tick, and it never pays the scan or the day cap.
+        bool elevationBlocked = ElevationBlocked(project, presence);
+        if (elevationBlocked)
         {
-            CourierFailureStreak pulledIn = CourierFailureStreak.PulledIn(streak, now, waits);
-            if (!ReferenceEquals(pulledIn, streak))
-            {
-                session.Store(pulledIn);
-                await session.SaveChangesAsync(cancellationToken);
-                streak = pulledIn;
-            }
+            return CourierTickOutcome.NotThisTick;
+        }
+
+        if (stranded is not null)
+        {
+            // Stranded: SpawnAsync's own wait is bounded to CourierTimeout and every path out
+            // of it now records an outcome, so a run still unfinished this far past dispatch
+            // means the daemon that dispatched it stopped existing before any of those paths
+            // could run. Adopted here as failed rather than left to block every future
+            // courier for this project forever (RecordOutcomeAsync's own doc names exactly
+            // this hazard; independent pre-PR review, conformance and adversarial lenses).
+            logger.LogWarning(
+                "Project {ProjectName}: the feed courier dispatched at {DispatchedAt:u} never "
+                + "recorded an outcome and has stood past its own timeout ({Timeout}) — marking it "
+                + "failed so future couriers for this project are not blocked",
+                project.Name, stranded.DispatchedAt, _options.CourierTimeout);
+            await RecordOutcomeAsync(
+                store, project.Id, stranded.Id, AgentModel.Unknown, CourierEnding.EndedByDaemon,
+                "The daemon that dispatched this courier never recorded how it ended (a stop, a "
+                + "crash, or an unclean shutdown); marked failed after it stood past its own "
+                + "timeout so future couriers for this project are not blocked.",
+                drainableThroughSequence: 0, result: null, now, waits, failureReason: null,
+                addressedLaunchAt: null, cancellationToken);
+            streak = await session.LoadAsync<CourierFailureStreak>(project.Id, cancellationToken);
+
+            // stranded is the same object lastRun points at, and RecordOutcomeAsync just wrote
+            // this completion to the store. It is mutated here so the elapsedSinceLastCourier
+            // read below sees it too, rather than the stale CompletedAt: null this local copy
+            // was fetched with before the adoption above; the streak it just wrote is reloaded
+            // above for the same reason. Left stale, the gate reads a null
+            // elapsedSinceLastCourier as "no courier has ended yet", so the early attempt a
+            // streak grants an urgent item could spawn in this same tick without waiting out
+            // the base wait that attempt needs (independent pre-PR review, adversarial lens).
+            stranded.CompletedAt = now;
+            stranded.Delivered = false;
         }
 
         OrchestratorFeedDrainLease? lease =
@@ -274,6 +282,9 @@ public sealed class CourierEngine(
         {
             return CourierTickOutcome.NotThisTick;
         }
+
+        streak = await ApplyStreakHousekeepingAsync(
+            session, project.Id, presence, lastRun, streak, now, waits, cancellationToken);
 
         DateOnly today = DateOnly.FromDateTime(now.UtcDateTime);
         CourierDaySpawnCounter? dayCounter =
@@ -332,6 +343,7 @@ public sealed class CourierEngine(
             orchestratorLive,
             courierAlreadyRunning,
             manualDrainLeaseHeld,
+            elevationBlocked,
             newestUrgentSequence: deliverableItems.Where(item => item.IsUrgent).Select(item => (long?)item.Sequence).Max(),
             streak,
             now,
@@ -382,6 +394,107 @@ public sealed class CourierEngine(
 
         return await SpawnAsync(
             session, project, presence, adapter, deliverableRead, now, today, dayCounter, waits, cancellationToken);
+    }
+
+    /// <summary>
+    /// The streak's two per-tick rewrites: the registration reset, then the restart pull-in. Runs
+    /// only on a tick that got past every refusal ahead of it, the elevation block included.
+    /// </summary>
+    private async Task<CourierFailureStreak?> ApplyStreakHousekeepingAsync(
+        IDocumentSession session,
+        Guid projectId,
+        OrchestratorPresenceDetails presence,
+        CourierRunDetails? lastRun,
+        CourierFailureStreak? streak,
+        DateTimeOffset now,
+        CourierBackoffWaits waits,
+        CancellationToken cancellationToken)
+    {
+        if (streak is not null && CourierFailureStreak.WasResetByRegistration(streak, presence.LaunchedAt))
+        {
+            // A window that registered after the one the last failed courier addressed has a
+            // delivery address the failed couriers never tried: the streak says nothing about it.
+            // An unchanged same-pid register appends no launch at all, so it never lands here. A
+            // courier the daemon ended after that failure still keeps its own hold, since the
+            // window may have registered only after that ending was written.
+            streak = CourierFailureStreak.AfterRegistrationReset(streak, lastRun?.CompletedAt, waits);
+            if (streak is null)
+            {
+                session.Delete<CourierFailureStreak>(projectId);
+            }
+            else
+            {
+                session.Store(streak);
+            }
+
+            await session.SaveChangesAsync(cancellationToken);
+        }
+
+        // After the stranded-run adoption on purpose: a crash loop adopts its stranded courier on
+        // every restart, which rewrites the next attempt to a full step, and this is what brings it
+        // back to one base wait so each restart gets exactly one courier.
+        // The project is marked on its first housekept tick whether or not a streak exists yet: a
+        // streak this very daemon run builds up later must keep the backoff it earned, not be pulled in.
+        if (_pulledInAfterStart.TryAdd(projectId, 0) && streak is not null)
+        {
+            CourierFailureStreak pulledIn = CourierFailureStreak.PulledIn(streak, now, waits);
+            if (!ReferenceEquals(pulledIn, streak))
+            {
+                session.Store(pulledIn);
+                await session.SaveChangesAsync(cancellationToken);
+                streak = pulledIn;
+            }
+        }
+
+        return streak;
+    }
+
+    /// <summary>
+    /// Whether this project's live window is elevated while this daemon is not
+    /// (<see cref="CourierGate.ElevationBlocks"/>), logging the block once per window process.
+    /// </summary>
+    private bool ElevationBlocked(ProjectDetails project, OrchestratorPresenceDetails presence)
+    {
+        WindowProcess window = new(presence.ProcessId, presence.ProcessStartedAt);
+        bool blocked = _daemonElevation == ProcessElevation.NotElevated
+            && CourierGate.ElevationBlocks(_daemonElevation, WindowElevationOf(project.Id, window));
+        if (!blocked)
+        {
+            _reportedElevationBlock.TryRemove(project.Id, out _);
+            return false;
+        }
+
+        if (!_reportedElevationBlock.TryGetValue(project.Id, out WindowProcess? reported) || reported != window)
+        {
+            _reportedElevationBlock[project.Id] = window;
+            logger.LogWarning(
+                "Project {ProjectName}: the orchestrator window '{SessionName}' (pid {ProcessId}) is elevated "
+                + "and this daemon is not, so a courier could not open the window's pipe and none is spawned; "
+                + "{Fix}",
+                project.Name, presence.SessionName, presence.ProcessId, CourierElevationFix.For(autostartRegistered: null));
+        }
+
+        return true;
+    }
+
+    private ProcessElevation WindowElevationOf(Guid projectId, WindowProcess window)
+    {
+        if (_windowElevations.TryGetValue(projectId, out WindowElevation? cached) && cached.Process == window)
+        {
+            return cached.Elevation;
+        }
+
+        ProcessElevation elevation = elevationReader.Read(window.ProcessId);
+        if (elevation == ProcessElevation.Unknown)
+        {
+            _windowElevations.TryRemove(projectId, out _);
+        }
+        else
+        {
+            _windowElevations[projectId] = new WindowElevation(window, elevation);
+        }
+
+        return elevation;
     }
 
     private async Task<CourierTickOutcome> SpawnAsync(
