@@ -1,0 +1,20 @@
+hall9k-task-record: 1
+task-id: 01a1bd78-9304-77e3-857c-c2534dd275cb
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#859
+objective: Closeout recognizes GitHub's current Copilot quota-refusal wording, so an out-of-quota review is accepted instead of re-requested in a loop
+criteria:
+  - A Copilot-authored latest review whose body is the 2026-11-08 refusal text verbatim parses through GitHubPullRequestInspector.ParseReviews to an ErroredReview with IsQuotaRefusal true and a CopilotReviewState of Unavailable, proven by a new test in GitHubPullRequestInspectorTests
+  - The new wording is recognized by the phrase 'insufficient remaining quota', case-insensitively like the existing marker, and by no broader word such as 'quota' alone
+  - The existing September-wording quota test and the existing non-quota errored-review test in GitHubPullRequestInspectorTests pass unchanged
+  - The comment above the marker names both observed wordings and the dates they were seen
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/4dd275cb-closeout-recognizes-github-s-c
+published: 2026-11-09 14:38:01Z
+context: |-
+  Reported 2026-11-08 by another project's orchestrator on this node, at Brian's direction, verified by this window. GitHubPullRequestInspector.QuotaLimitBodyMarker (src/Hall9k.Daemon/Closeout/GitHubPullRequestInspector.cs:54) matches only 'reached their quota limit', the September wording from PRs 401 to 405. GitHub now posts: 'Copilot was unable to review this pull request because the user who requested the review has insufficient remaining quota. Try requesting a review at a lower effort level.' (observed seven times, three minutes apart, on another project's PR on 2026-11-08 between 16:56 and 17:27 EST). IsQuotaRefusalBody returns false, so the review falls into the ordinary errored path and closeout re-requests it every lap until its automatic budget parks the task. Affects every project on the node whose repo still has Copilot code review on, for as long as the quota is out. Confirmed at refinement: latestReviews is unfiltered by state and both detection paths (ReadCopilotReviewState, FindErroredCopilotReview) already reach IsQuotaRefusalBody for the new body; only the marker misses. Fix in the matcher only; leave the doc comments and skill line that quote the September wording as origin history.
