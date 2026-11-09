@@ -986,6 +986,48 @@ public sealed class GitHubPullRequestInspectorTests
             "a quota refusal is a settled fact, not the generic unclassified Unknown an ordinary errored review reads as");
     }
 
+    /// <summary>
+    /// GitHub's second quota-refusal wording, observed seven times on one PR on 2026-11-08. Before
+    /// the matcher knew it, the review read as an ordinary error and closeout re-requested it every
+    /// lap until the automatic budget parked the task. The body is the observed text verbatim.
+    /// </summary>
+    [Fact]
+    public void A_Copilot_review_refused_for_insufficient_remaining_quota_is_marked_as_a_quota_refusal()
+    {
+        const string body =
+            "Copilot was unable to review this pull request because the user who requested the "
+            + "review has insufficient remaining quota. Try requesting a review at a lower effort level.";
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", body: body));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.ErroredReview.Should().NotBeNull();
+        observation.ErroredReview!.IsQuotaRefusal.Should().BeTrue();
+        observation.ErroredReview.Body.Should().Be(body);
+        observation.CopilotReviewState.Should().Be(ExternalReviewState.Unavailable);
+    }
+
+    /// <summary>
+    /// The quota markers are whole phrases: an errored review that only mentions quota in passing
+    /// is still an ordinary error, re-requested like any other.
+    /// </summary>
+    [Fact]
+    public void An_errored_Copilot_review_that_mentions_quota_without_a_refusal_phrase_is_not_a_quota_refusal()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1",
+                "Copilot encountered an error and was unable to review this pull request. Quota was not affected."));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.ErroredReview.Should().NotBeNull();
+        observation.ErroredReview!.IsQuotaRefusal.Should().BeFalse();
+        observation.CopilotReviewState.Should().Be(ExternalReviewState.Unknown);
+    }
+
     /// <summary>An ordinary errored review, with no quota wording, must not be misread as a refusal.</summary>
     [Fact]
     public void A_non_quota_errored_Copilot_review_is_not_marked_as_a_quota_refusal()

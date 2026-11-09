@@ -45,19 +45,28 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
     // opinion as an outage.
     private const string ErroredReviewBodyMarker = "unable to review";
 
-    // The narrower marker inside an errored review's own body that names a quota refusal
+    // The narrower markers inside an errored review's own body that name a quota refusal
     // specifically (Brian's ruling, 2026-09-16 morning), rather than a transient or generic
-    // failure: "Copilot was unable to review this pull request because the user who requested
-    // the review has reached their quota limit." Observed on five PRs (#401, #402, #404, #405,
-    // #407) parked overnight 2026-09-16 02:16-08:55, each after six automatic re-requests that
-    // could never have succeeded — the quota does not refill on a re-request.
-    private const string QuotaLimitBodyMarker = "reached their quota limit";
+    // failure. GitHub has used two wordings. The first, "Copilot was unable to review this pull
+    // request because the user who requested the review has reached their quota limit.", was
+    // observed on five PRs (#401, #402, #404, #405, #407) parked overnight 2026-09-16
+    // 02:16-08:55, each after six automatic re-requests that could never have succeeded; the
+    // quota does not refill on a re-request. The second, "... because the user who requested
+    // the review has insufficient remaining quota. Try requesting a review at a lower effort
+    // level.", was observed seven times on one PR on 2026-11-08 16:56-17:27 EST. Each marker is
+    // the whole phrase, never "quota" alone, so an ordinary error that mentions quota in passing
+    // is still re-requested.
+    private static readonly string[] QuotaRefusalBodyMarkers =
+    [
+        "reached their quota limit",
+        "insufficient remaining quota",
+    ];
 
     /// <summary>What GitHub itself shows for an account that no longer exists.</summary>
     private const string DeletedAccountLogin = "ghost";
 
     private static bool IsQuotaRefusalBody(string body) =>
-        body.Contains(QuotaLimitBodyMarker, StringComparison.OrdinalIgnoreCase);
+        QuotaRefusalBodyMarkers.Any(marker => body.Contains(marker, StringComparison.OrdinalIgnoreCase));
 
     // first: 100 is a deliberate cap, not missing pagination: threads past it read as
     // quiet, so a monster PR simply waits for a human instead of dispatching follow-ups
