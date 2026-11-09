@@ -18,7 +18,3 @@ origin-branch: task/4dd275cb-closeout-recognizes-github-s-c
 published: 2026-11-09 14:38:01Z
 context: |-
   Reported 2026-11-08 by another project's orchestrator on this node, at Brian's direction, verified by this window. GitHubPullRequestInspector.QuotaLimitBodyMarker (src/Hall9k.Daemon/Closeout/GitHubPullRequestInspector.cs:54) matches only 'reached their quota limit', the September wording from PRs 401 to 405. GitHub now posts: 'Copilot was unable to review this pull request because the user who requested the review has insufficient remaining quota. Try requesting a review at a lower effort level.' (observed seven times, three minutes apart, on another project's PR on 2026-11-08 between 16:56 and 17:27 EST). IsQuotaRefusalBody returns false, so the review falls into the ordinary errored path and closeout re-requests it every lap until its automatic budget parks the task. Affects every project on the node whose repo still has Copilot code review on, for as long as the quota is out. Confirmed at refinement: latestReviews is unfiltered by state and both detection paths (ReadCopilotReviewState, FindErroredCopilotReview) already reach IsQuotaRefusalBody for the new body; only the marker misses. Fix in the matcher only; leave the doc comments and skill line that quote the September wording as origin history.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-11-09 14:38:09Z
