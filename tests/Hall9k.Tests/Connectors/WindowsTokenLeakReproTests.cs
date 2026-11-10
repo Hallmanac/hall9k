@@ -67,14 +67,14 @@ public sealed class WindowsTokenLeakReproTests(ITestOutputHelper output)
     public const string OptInVariable = "HALL9K_TOKEN_LEAK_REPRO";
 
     private const int ChildrenPerBatch = 200;
-    private const int Rounds = 4;
+    private const int Rounds = 6;
     private const int WarmUpChildren = 20;
     private const int FailureThreshold = 100;
 
-    // Long enough for 200 launches (about 10 s for the redirector) and for the tokens of the
+    // Long enough for 200 launches (about 7.5 s for the redirector) and for the tokens of the
     // children that just exited to be freed (observed up to about 5 s), and the same for both
     // arms so the background growth is equal on both sides.
-    private static readonly TimeSpan BatchWindow = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan BatchWindow = TimeSpan.FromSeconds(15);
 
     [WindowsTokenLeakReproFact]
     public async Task Launching_a_program_that_starts_and_outlives_its_own_child_leaks_a_token_the_real_git_does_not()
