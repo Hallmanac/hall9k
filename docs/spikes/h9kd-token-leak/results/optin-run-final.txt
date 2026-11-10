@@ -1,0 +1,87 @@
+Test run for C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-b0844e14-be5aa20d\tests\Hall9k.Tests\bin\Debug\net10.0\Hall9k.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-b0844e14-be5aa20d\tests\Hall9k.Tests\bin\Debug\net10.0\Hall9k.Tests.dll
+[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v3.1.4+50e68bbb8b (64-bit .NET 10.0.14)
+[xUnit.net 00:00:00.31]   Discovering: Hall9k.Tests
+[xUnit.net 00:00:10.85]   Discovered:  Hall9k.Tests
+[xUnit.net 00:00:10.90]   Starting:    Hall9k.Tests
+     Warning:
+     The component "Fluent Assertions" is governed by the rules defined in the Xceed License Agreement and
+     the Xceed Fluent Assertions Community License. You may use Fluent Assertions free of charge for
+     non-commercial use only. An active subscription is required to use Fluent Assertions for commercial use.
+     Please contact Xceed Sales mailto:sales@xceed.com to acquire a subscription at a very low cost.
+     A paid commercial license supports the development and continued increasing support of
+     Fluent Assertions users under both commercial and community licenses. Help us
+     keep Fluent Assertions at the forefront of unit testing.
+     For more information, visit https://xceed.com/products/unit-testing/fluent-assertions/
+[xUnit.net 00:03:41.17]     Hall9k.Tests.Connectors.WindowsTokenLeakReproTests.Launching_a_program_that_starts_and_outlives_its_own_child_leaks_a_token_the_real_git_does_not [FAIL]
+[xUnit.net 00:03:41.17]       Expected difference to be less than 100L because the redirector arm (C:\Program Files\Git\cmd\git.exe) left 2119 more live Toke tokens than the real git arm (C:\Program Files\Git\ucrt64\bin\git.exe) across 1200 launches each: a launched program that starts a child and is still running when it exits keeps its own kernel token alive for good, but found 2119L (difference of 2019).
+[xUnit.net 00:03:41.17]       Stack Trace:
+[xUnit.net 00:03:41.17]            at FluentAssertions.Execution.LateBoundTestFramework.Throw(String message)
+[xUnit.net 00:03:41.17]            at FluentAssertions.Execution.DefaultAssertionStrategy.HandleFailure(String message)
+[xUnit.net 00:03:41.17]            at FluentAssertions.Execution.AssertionChain.FailWith(Func`1 getFailureReason)
+[xUnit.net 00:03:41.17]            at FluentAssertions.Numeric.NumericAssertionsBase`3.BeLessThan(T expected, String because, Object[] becauseArgs)
+[xUnit.net 00:03:41.17]         C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-b0844e14-be5aa20d\tests\Hall9k.Tests\Connectors\WindowsTokenLeakReproTests.cs(124,0): at Hall9k.Tests.Connectors.WindowsTokenLeakReproTests.Launching_a_program_that_starts_and_outlives_its_own_child_leaks_a_token_the_real_git_does_not()
+[xUnit.net 00:03:41.17]         --- End of stack trace from previous location ---
+[xUnit.net 00:03:41.17]       Output:
+[xUnit.net 00:03:41.17]         warm-up (not counted): 20 launches in 0.7 s, window 15.0 s, live Toke before 293130, after 293166, delta 36
+[xUnit.net 00:03:41.17]         warm-up (not counted): 20 launches in 0.4 s, window 15.0 s, live Toke before 293166, after 293340, delta 174
+[xUnit.net 00:03:41.17]         round 1 condition (redirector): 200 launches in 8.0 s, window 15.0 s, live Toke before 293340, after 293959, delta 619
+[xUnit.net 00:03:41.17]         round 1 control (real git): 200 launches in 5.4 s, window 15.0 s, live Toke before 293959, after 294006, delta 47
+[xUnit.net 00:03:41.17]         round 1: condition +619, control +47, difference 572 (2.86 per launch)
+[xUnit.net 00:03:41.17]         round 2 control (real git): 200 launches in 5.2 s, window 15.0 s, live Toke before 294006, after 294305, delta 299
+[xUnit.net 00:03:41.17]         round 2 condition (redirector): 200 launches in 8.0 s, window 15.0 s, live Toke before 294305, after 294832, delta 527
+[xUnit.net 00:03:41.18]         round 2: condition +527, control +299, difference 228 (1.14 per launch)
+[xUnit.net 00:03:41.18]         round 3 condition (redirector): 200 launches in 7.6 s, window 15.0 s, live Toke before 294832, after 295530, delta 698
+[xUnit.net 00:03:41.18]         round 3 control (real git): 200 launches in 5.3 s, window 15.0 s, live Toke before 295530, after 295701, delta 171
+[xUnit.net 00:03:41.18]         round 3: condition +698, control +171, difference 527 (2.63 per launch)
+[xUnit.net 00:03:41.18]         round 4 control (real git): 200 launches in 4.5 s, window 15.0 s, live Toke before 295701, after 295669, delta -32
+[xUnit.net 00:03:41.18]         round 4 condition (redirector): 200 launches in 6.6 s, window 15.0 s, live Toke before 295669, after 295995, delta 326
+[xUnit.net 00:03:41.18]         round 4: condition +326, control +-32, difference 358 (1.79 per launch)
+[xUnit.net 00:03:41.18]         round 5 condition (redirector): 200 launches in 7.3 s, window 15.0 s, live Toke before 295995, after 296501, delta 506
+[xUnit.net 00:03:41.18]         round 5 control (real git): 200 launches in 5.2 s, window 15.0 s, live Toke before 296503, after 296727, delta 224
+[xUnit.net 00:03:41.18]         round 5: condition +506, control +224, difference 282 (1.41 per launch)
+[xUnit.net 00:03:41.18]         round 6 control (real git): 200 launches in 5.3 s, window 15.0 s, live Toke before 296727, after 297014, delta 287
+[xUnit.net 00:03:41.18]         round 6 condition (redirector): 200 launches in 7.6 s, window 15.0 s, live Toke before 297014, after 297453, delta 439
+[xUnit.net 00:03:41.18]         round 6: condition +439, control +287, difference 152 (0.76 per launch)
+[xUnit.net 00:03:41.18]         TOTAL over 1200 launches per arm: condition +3115, control +996, difference 2119 (1.77 per launch)
+[xUnit.net 00:03:41.20]   Finished:    Hall9k.Tests
+  Failed Hall9k.Tests.Connectors.WindowsTokenLeakReproTests.Launching_a_program_that_starts_and_outlives_its_own_child_leaks_a_token_the_real_git_does_not [3 m 30 s]
+  Error Message:
+   Expected difference to be less than 100L because the redirector arm (C:\Program Files\Git\cmd\git.exe) left 2119 more live Toke tokens than the real git arm (C:\Program Files\Git\ucrt64\bin\git.exe) across 1200 launches each: a launched program that starts a child and is still running when it exits keeps its own kernel token alive for good, but found 2119L (difference of 2019).
+  Stack Trace:
+     at FluentAssertions.Execution.LateBoundTestFramework.Throw(String message)
+   at FluentAssertions.Execution.DefaultAssertionStrategy.HandleFailure(String message)
+   at FluentAssertions.Execution.AssertionChain.FailWith(Func`1 getFailureReason)
+   at FluentAssertions.Numeric.NumericAssertionsBase`3.BeLessThan(T expected, String because, Object[] becauseArgs)
+   at Hall9k.Tests.Connectors.WindowsTokenLeakReproTests.Launching_a_program_that_starts_and_outlives_its_own_child_leaks_a_token_the_real_git_does_not() in C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-b0844e14-be5aa20d\tests\Hall9k.Tests\Connectors\WindowsTokenLeakReproTests.cs:line 124
+--- End of stack trace from previous location ---
+  Standard Output Messages:
+ warm-up (not counted): 20 launches in 0.7 s, window 15.0 s, live Toke before 293130, after 293166, delta 36
+ warm-up (not counted): 20 launches in 0.4 s, window 15.0 s, live Toke before 293166, after 293340, delta 174
+ round 1 condition (redirector): 200 launches in 8.0 s, window 15.0 s, live Toke before 293340, after 293959, delta 619
+ round 1 control (real git): 200 launches in 5.4 s, window 15.0 s, live Toke before 293959, after 294006, delta 47
+ round 1: condition +619, control +47, difference 572 (2.86 per launch)
+ round 2 control (real git): 200 launches in 5.2 s, window 15.0 s, live Toke before 294006, after 294305, delta 299
+ round 2 condition (redirector): 200 launches in 8.0 s, window 15.0 s, live Toke before 294305, after 294832, delta 527
+ round 2: condition +527, control +299, difference 228 (1.14 per launch)
+ round 3 condition (redirector): 200 launches in 7.6 s, window 15.0 s, live Toke before 294832, after 295530, delta 698
+ round 3 control (real git): 200 launches in 5.3 s, window 15.0 s, live Toke before 295530, after 295701, delta 171
+ round 3: condition +698, control +171, difference 527 (2.63 per launch)
+ round 4 control (real git): 200 launches in 4.5 s, window 15.0 s, live Toke before 295701, after 295669, delta -32
+ round 4 condition (redirector): 200 launches in 6.6 s, window 15.0 s, live Toke before 295669, after 295995, delta 326
+ round 4: condition +326, control +-32, difference 358 (1.79 per launch)
+ round 5 condition (redirector): 200 launches in 7.3 s, window 15.0 s, live Toke before 295995, after 296501, delta 506
+ round 5 control (real git): 200 launches in 5.2 s, window 15.0 s, live Toke before 296503, after 296727, delta 224
+ round 5: condition +506, control +224, difference 282 (1.41 per launch)
+ round 6 control (real git): 200 launches in 5.3 s, window 15.0 s, live Toke before 296727, after 297014, delta 287
+ round 6 condition (redirector): 200 launches in 7.6 s, window 15.0 s, live Toke before 297014, after 297453, delta 439
+ round 6: condition +439, control +287, difference 152 (0.76 per launch)
+ TOTAL over 1200 launches per arm: condition +3115, control +996, difference 2119 (1.77 per launch)
+
+
+
+Test Run Failed.
+Total tests: 1
+     Failed: 1
+ Total time: 3.6960 Minutes

@@ -1,0 +1,26 @@
+bench pid 49664 parent-chain-start 14:33:52; cond = C:\Program Files\Git\cmd\git.exe --version; control = C:\Program Files\Git\ucrt64\bin\git.exe --version
+pair 1 condition: 200 launches in 7.0 s, window 20.0 s, live Toke before 273508, after 274297, delta 789
+pair 1 control  : 200 launches in 5.5 s, window 20.0 s, live Toke before 274297, after 274601, delta 304
+pair 1: condition +789, control +304, condition minus control 485 = 2.42 per launch
+pair 2 condition: 200 launches in 8.2 s, window 20.0 s, live Toke before 274602, after 275155, delta 553
+pair 2 control  : 200 launches in 5.0 s, window 20.0 s, live Toke before 275155, after 275457, delta 302
+pair 2: condition +553, control +302, condition minus control 251 = 1.25 per launch
+pair 3 condition: 200 launches in 7.8 s, window 20.0 s, live Toke before 275457, after 275855, delta 398
+pair 3 control  : 200 launches in 5.0 s, window 20.0 s, live Toke before 275853, after 275876, delta 23
+pair 3: condition +398, control +23, condition minus control 375 = 1.88 per launch
+pair 4 condition: 200 launches in 6.8 s, window 20.0 s, live Toke before 275877, after 276421, delta 544
+pair 4 control  : 200 launches in 5.4 s, window 20.0 s, live Toke before 276421, after 276756, delta 335
+pair 4: condition +544, control +335, condition minus control 209 = 1.04 per launch
+pair 5 condition: 200 launches in 7.4 s, window 20.0 s, live Toke before 276756, after 277486, delta 730
+pair 5 control  : 200 launches in 5.0 s, window 20.0 s, live Toke before 277486, after 277820, delta 334
+pair 5: condition +730, control +334, condition minus control 396 = 1.98 per launch
+pair 6 condition: 200 launches in 7.8 s, window 20.0 s, live Toke before 277821, after 278380, delta 559
+pair 6 control  : 200 launches in 5.2 s, window 20.0 s, live Toke before 278380, after 278482, delta 102
+pair 6: condition +559, control +102, condition minus control 457 = 2.29 per launch
+pair 7 condition: 200 launches in 7.1 s, window 20.0 s, live Toke before 278482, after 279039, delta 557
+pair 7 control  : 200 launches in 6.3 s, window 20.3 s, live Toke before 279040, after 279309, delta 269
+pair 7: condition +557, control +269, condition minus control 288 = 1.44 per launch
+pair 8 condition: 200 launches in 11.2 s, window 20.7 s, live Toke before 279311, after 279570, delta 259
+pair 8 control  : 200 launches in 11.4 s, window 20.0 s, live Toke before 279576, after 279653, delta 77
+pair 8: condition +259, control +77, condition minus control 182 = 0.91 per launch
+TOTAL 1600 launches per arm: condition +4389, control +1746, difference 2643 = 1.65 per launch; per-pair: 2.42, 1.25, 1.88, 1.04, 1.98, 2.29, 1.44, 0.91

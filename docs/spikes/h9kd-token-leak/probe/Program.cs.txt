@@ -1,0 +1,103 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+
+// Spike probe for the h9kd token-leak hunt. One executable, several behaviours chosen by arguments:
+//   chain <k>   start a copy of this program with "chain <k-1>" and wait for it; chain 0 starts nothing
+//   detach <k>  same, but exit without waiting for the child
+//   native <inherit 0|1> <creationFlagsHex> <mode> [exe]   CreateProcessW on hostname.exe (mode 0 exit at once,
+//               1 wait, 2 suspended then terminate, 3 sleep 300 ms, 4 suspended, resume, wait, 5 close handle, sleep)
+//   bench       alternating-batch measurement of live Toke tokens, configured by env H9K_BENCH_SPEC
+//               (out|pairs|children-per-batch|window-seconds|condExe|condArgs|ctlExe|ctlArgs)
+static class P {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct SI { public int cb; public string? r, d, t; public int x,y,xs,ys,xc,yc,fill,flags; public short show, res2; public IntPtr res2p, hin, hout, herr; }
+  [StructLayout(LayoutKind.Sequential)] struct PI { public IntPtr hp, ht; public int pid, tid; }
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessW(string? app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inh, uint flags, IntPtr env, string? cwd, ref SI si, out PI pi);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr h, uint c);
+  [DllImport("kernel32.dll")] static extern uint ResumeThread(IntPtr h);
+  [DllImport("ntdll.dll")] static extern int NtQuerySystemInformation(int c, IntPtr b, int l, out int r);
+
+  static long LiveToke() {
+    int len = 4 * 1024 * 1024;
+    while (true) {
+      IntPtr buf = Marshal.AllocHGlobal(len);
+      try {
+        int st = NtQuerySystemInformation(22, buf, len, out int needed);
+        if ((uint)st == 0xC0000004) { len = Math.Max(needed, len * 2); continue; }
+        if (st != 0) throw new InvalidOperationException("NtQuerySystemInformation 0x" + ((uint)st).ToString("X8"));
+        int n = Marshal.ReadInt32(buf, 0);
+        for (int i = 0; i < n; i++) { int o = 8 + i * 40; if (Marshal.ReadInt32(buf, o) == 0x656B6F54) return Marshal.ReadInt32(buf, o + 4) - Marshal.ReadInt32(buf, o + 8); }
+        throw new InvalidOperationException("no Toke entry");
+      } finally { Marshal.FreeHGlobal(buf); }
+    }
+  }
+
+  static void RunOne(string exe, string args) {
+    var psi = new ProcessStartInfo(exe, args) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+    using var p = Process.Start(psi)!;
+    p.StandardOutput.ReadToEnd(); p.StandardError.ReadToEnd(); p.WaitForExit();
+  }
+
+  static long Batch(StringBuilder log, string label, string exe, string args, int n, TimeSpan window) {
+    var sw = Stopwatch.StartNew();
+    long before = LiveToke();
+    for (int i = 0; i < n; i++) RunOne(exe, args);
+    double launching = sw.Elapsed.TotalSeconds;
+    if (sw.Elapsed < window) System.Threading.Thread.Sleep(window - sw.Elapsed);
+    long after = LiveToke();
+    log.AppendLine($"{label}: {n} launches in {launching:F1} s, window {sw.Elapsed.TotalSeconds:F1} s, live Toke before {before}, after {after}, delta {after - before}");
+    return after - before;
+  }
+
+  static int Bench() {
+    var f = (Environment.GetEnvironmentVariable("H9K_BENCH_SPEC") ?? throw new InvalidOperationException("H9K_BENCH_SPEC")).Split('|');
+    string outFile = f[0]; int pairs = int.Parse(f[1]); int n = int.Parse(f[2]); var window = TimeSpan.FromSeconds(double.Parse(f[3], CultureInfo.InvariantCulture));
+    string condExe = f[4], condArgs = f[5], ctlExe = f[6], ctlArgs = f[7]; bool swap = f.Length > 8 && f[8] == "swap"; int warm = f.Length > 9 ? int.Parse(f[9]) : 0;
+    var log = new StringBuilder();
+    log.AppendLine($"bench pid {Environment.ProcessId} parent-chain-start {DateTime.Now:HH:mm:ss}; cond = {condExe} {condArgs}; control = {ctlExe} {ctlArgs}");
+    if (warm > 0) { Batch(log, "warm-up condition (not counted)", condExe, condArgs, warm, window); Batch(log, "warm-up control (not counted)", ctlExe, ctlArgs, warm, window); }
+    long condTotal = 0, ctlTotal = 0; var perPair = new List<double>();
+    for (int r = 1; r <= pairs; r++) {
+      long c, k;
+      if (!swap) { c = Batch(log, $"pair {r} condition", condExe, condArgs, n, window); k = Batch(log, $"pair {r} control  ", ctlExe, ctlArgs, n, window); }
+      else { k = Batch(log, $"pair {r} control  ", ctlExe, ctlArgs, n, window); c = Batch(log, $"pair {r} condition", condExe, condArgs, n, window); }
+      condTotal += c; ctlTotal += k; perPair.Add((c - k) / (double)n);
+      log.AppendLine($"pair {r}: condition +{c}, control +{k}, condition minus control {c - k} = {(c - k) / (double)n:F2} per launch");
+    }
+    log.AppendLine($"TOTAL {pairs * n} launches per arm: condition +{condTotal}, control +{ctlTotal}, difference {condTotal - ctlTotal} = {(condTotal - ctlTotal) / (double)(pairs * n):F2} per launch; per-pair: {string.Join(", ", perPair.ConvertAll(x => x.ToString("F2", CultureInfo.InvariantCulture)))}");
+    File.WriteAllText(outFile, log.ToString());
+    return 0;
+  }
+
+  static int Main(string[] a) {
+    if ((a.Length >= 1 && a[0] == "bench") || (a.Length == 0 && Environment.GetEnvironmentVariable("H9K_BENCH_SPEC") is not null)) return Bench();
+    if (a.Length >= 1 && a[0] == "native") {
+      bool inh = a[1] == "1"; uint flags = Convert.ToUInt32(a[2], 16); string mode = a[3];
+      string exe = a.Length > 4 ? a[4] : @"C:\Windows\System32\hostname.exe";
+      var si = new SI { cb = Marshal.SizeOf<SI>() };
+      if (mode == "2" || mode == "4") flags |= 0x4;
+      if (!CreateProcessW(null, new StringBuilder("\"" + exe + "\""), IntPtr.Zero, IntPtr.Zero, inh, flags, IntPtr.Zero, null, ref si, out PI pi)) return 2;
+      if (mode == "1") WaitForSingleObject(pi.hp, 10000);
+      if (mode == "2") TerminateProcess(pi.hp, 0);
+      if (mode == "3") System.Threading.Thread.Sleep(300);
+      if (mode == "4") { ResumeThread(pi.ht); WaitForSingleObject(pi.hp, 10000); }
+      if (mode == "5") { CloseHandle(pi.hp); pi.hp = IntPtr.Zero; System.Threading.Thread.Sleep(300); }
+      CloseHandle(pi.ht); if (pi.hp != IntPtr.Zero) CloseHandle(pi.hp);
+      return 0;
+    }
+    if (a.Length >= 2 && (a[0] == "chain" || a[0] == "detach") && int.TryParse(a[1], out int k) && k > 0) {
+      var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+      psi.ArgumentList.Add(a[0]); psi.ArgumentList.Add((k - 1).ToString());
+      using var c = Process.Start(psi)!;
+      if (a[0] == "chain") c.WaitForExit();
+    }
+    return 0;
+  }
+}
+

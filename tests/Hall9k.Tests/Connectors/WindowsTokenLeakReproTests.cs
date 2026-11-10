@@ -35,7 +35,7 @@ public sealed class WindowsTokenLeakReproFactAttribute : FactAttribute
         else if (Environment.GetEnvironmentVariable(WindowsTokenLeakReproTests.OptInVariable) != "1")
         {
             Skip = $"Opt-in: set {WindowsTokenLeakReproTests.OptInVariable}=1 and run elevated "
-                + "(about two minutes; it starts 1,200 child processes one at a time).";
+                + "(about four minutes; it starts 2,400 child processes one at a time).";
         }
     }
 }
@@ -57,7 +57,7 @@ public sealed class WindowsTokenLeakReproFactAttribute : FactAttribute
 /// <para>
 /// It FAILS when the condition arm leaves at least 100 more live <c>Toke</c> tokens than the
 /// control arm, which is what the spike's recorded run shows. A fix that stops the leak makes it
-/// pass. Reading the count needs an elevated process.
+/// pass. The recorded runs were elevated; the pool-tag read may need that on other machines.
 /// </para>
 /// </summary>
 [Collection(TokenLeakReproCollection.Name)]
@@ -185,8 +185,8 @@ public sealed class WindowsTokenLeakReproTests(ITestOutputHelper output)
 
     /// <summary>
     /// <c>NtQuerySystemInformation(SystemPoolTagInformation)</c>: the same counters
-    /// <c>poolmon</c> shows. It needs an elevated process; the live count of a tag is its
-    /// allocations minus its frees.
+    /// <c>poolmon</c> shows. The live count of a tag is its allocations minus its frees. The
+    /// recorded runs were elevated.
     /// </summary>
     private static class PoolTags
     {
@@ -219,7 +219,7 @@ public sealed class WindowsTokenLeakReproTests(ITestOutputHelper output)
                         throw new InvalidOperationException(
                             "NtQuerySystemInformation(SystemPoolTagInformation) failed with status 0x"
                             + ((uint)status).ToString("X8", CultureInfo.InvariantCulture)
-                            + "; the pool-tag counters need an elevated process.");
+                            + "; the pool-tag counters may need an elevated process.");
                     }
 
                     int count = Marshal.ReadInt32(buffer, 0);

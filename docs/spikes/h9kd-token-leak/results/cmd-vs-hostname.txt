@@ -1,0 +1,11 @@
+bench pid 39132 parent-chain-start 14:28:54; cond = C:\Windows\System32\cmd.exe /c hostname; control = C:\Windows\System32\hostname.exe 
+pair 1 condition: 200 launches in 5.9 s, window 20.0 s, live Toke before 269208, after 269890, delta 682
+pair 1 control  : 200 launches in 2.3 s, window 20.0 s, live Toke before 269890, after 269880, delta -10
+pair 1: condition +682, control +-10, condition minus control 692 = 3.46 per launch
+pair 2 condition: 200 launches in 5.3 s, window 20.0 s, live Toke before 269880, after 270261, delta 381
+pair 2 control  : 200 launches in 2.4 s, window 20.0 s, live Toke before 270257, after 270577, delta 320
+pair 2: condition +381, control +320, condition minus control 61 = 0.30 per launch
+pair 3 condition: 200 launches in 5.7 s, window 20.0 s, live Toke before 270577, after 271107, delta 530
+pair 3 control  : 200 launches in 2.7 s, window 20.0 s, live Toke before 271107, after 271369, delta 262
+pair 3: condition +530, control +262, condition minus control 268 = 1.34 per launch
+TOTAL 600 launches per arm: condition +1593, control +572, difference 1021 = 1.70 per launch; per-pair: 3.46, 0.30, 1.34

@@ -1,0 +1,11 @@
+bench pid 46896 parent-chain-start 14:26:54; cond = C:\Users\Hallm\.hall9k\scratch\probe\bin\Release\net10.0\probe.exe detach 1; control = C:\Users\Hallm\.hall9k\scratch\probe\bin\Release\net10.0\probe.exe chain 0
+pair 1 condition: 100 launches in 9.2 s, window 20.0 s, live Toke before 267304, after 267563, delta 259
+pair 1 control  : 100 launches in 4.5 s, window 20.0 s, live Toke before 267563, after 267791, delta 228
+pair 1: condition +259, control +228, condition minus control 31 = 0.31 per launch
+pair 2 condition: 100 launches in 8.4 s, window 20.0 s, live Toke before 267791, after 268157, delta 366
+pair 2 control  : 100 launches in 5.0 s, window 20.0 s, live Toke before 268157, after 268551, delta 394
+pair 2: condition +366, control +394, condition minus control -28 = -0.28 per launch
+pair 3 condition: 100 launches in 9.9 s, window 20.0 s, live Toke before 268551, after 268915, delta 364
+pair 3 control  : 100 launches in 4.9 s, window 20.0 s, live Toke before 268915, after 269209, delta 294
+pair 3: condition +364, control +294, condition minus control 70 = 0.70 per launch
+TOTAL 300 launches per arm: condition +989, control +916, difference 73 = 0.24 per launch; per-pair: 0.31, -0.28, 0.70

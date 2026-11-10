@@ -1,0 +1,14 @@
+bench pid 40052 parent-chain-start 14:31:12; cond = C:\Program Files\Git\ucrt64\bin\git.exe --version; control = C:\Program Files\Git\ucrt64\bin\git.exe --version
+pair 1 condition: 200 launches in 6.2 s, window 20.0 s, live Toke before 271626, after 272024, delta 398
+pair 1 control  : 200 launches in 5.2 s, window 20.0 s, live Toke before 272024, after 272171, delta 147
+pair 1: condition +398, control +147, condition minus control 251 = 1.25 per launch
+pair 2 condition: 200 launches in 5.3 s, window 20.0 s, live Toke before 272171, after 272550, delta 379
+pair 2 control  : 200 launches in 5.2 s, window 20.0 s, live Toke before 272550, after 272863, delta 313
+pair 2: condition +379, control +313, condition minus control 66 = 0.33 per launch
+pair 3 condition: 200 launches in 5.1 s, window 20.0 s, live Toke before 272863, after 273160, delta 297
+pair 3 control  : 200 launches in 5.1 s, window 20.0 s, live Toke before 273161, after 273431, delta 270
+pair 3: condition +297, control +270, condition minus control 27 = 0.14 per launch
+pair 4 condition: 200 launches in 5.3 s, window 20.0 s, live Toke before 273431, after 273534, delta 103
+pair 4 control  : 200 launches in 4.6 s, window 20.0 s, live Toke before 273534, after 273525, delta -9
+pair 4: condition +103, control +-9, condition minus control 112 = 0.56 per launch
+TOTAL 800 launches per arm: condition +1177, control +721, difference 456 = 0.57 per launch; per-pair: 1.25, 0.33, 0.14, 0.56
