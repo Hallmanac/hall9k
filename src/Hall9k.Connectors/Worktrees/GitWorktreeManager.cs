@@ -4,6 +4,7 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Verification;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Infrastructure.Processes;
 using Hall9k.Domain.Shared.ValueObjects;
 using Microsoft.Extensions.Logging;
 
@@ -1296,6 +1297,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             UseShellExecute = false,
         };
         NonInteractiveGit.Apply(process.StartInfo);
+        GitForWindowsLauncher.Shared.Apply(process.StartInfo);
         process.Start();
 
         Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);

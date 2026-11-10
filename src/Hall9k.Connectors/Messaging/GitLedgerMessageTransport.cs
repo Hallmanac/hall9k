@@ -5,6 +5,7 @@ using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Trust;
+using Hall9k.Domain.Infrastructure.Processes;
 using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Connectors.Messaging;
@@ -816,6 +817,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
             }
         }
 
+        GitForWindowsLauncher.Shared.Apply(process.StartInfo);
         process.Start();
         if (standardInput is not null)
         {

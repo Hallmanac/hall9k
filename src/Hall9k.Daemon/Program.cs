@@ -32,6 +32,7 @@ using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Infrastructure.Processes;
 using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx;
 using JasperFx.CodeGeneration;
@@ -101,6 +102,13 @@ if (OperatingSystem.IsWindows()
     // change — would see the marker and wrongly take over its console output too.
     Environment.SetEnvironmentVariable(DaemonRuntime.AppendOnlyLogEnvironmentVariable, null);
 }
+
+// On Windows, when the first git on PATH is Git for Windows' launcher, every process this one
+// starts (agent sessions, gate shells, gh) gets the real git's directory on its PATH just before
+// the launcher's. The launcher leaves one kernel access token allocated until reboot for every
+// git call it makes; the real git does not. Done here, at run time, rather than in the PATH
+// captured at autostart enable time, so a daemon started by `h9k daemon start` is covered too.
+GitForWindowsLauncher.Shared.ApplyToCurrentProcess();
 
 HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
 builder.AddServiceDefaults();

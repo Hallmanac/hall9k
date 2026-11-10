@@ -18,6 +18,7 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Processes;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
@@ -1905,6 +1906,7 @@ public sealed partial class VerificationRunner(
             process.StartInfo.ArgumentList.Add(argument);
         }
 
+        GitForWindowsLauncher.Shared.Apply(process.StartInfo);
         try
         {
             process.Start();
