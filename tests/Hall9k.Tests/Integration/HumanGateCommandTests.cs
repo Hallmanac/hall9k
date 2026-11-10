@@ -107,7 +107,7 @@ public sealed class HumanGateCommandTests : IClassFixture<PostgresFixture>, IDis
 
         if (!worktreeExists)
         {
-            Directory.Delete(worktree, recursive: true);
+            TemporaryTree.Delete(worktree);
         }
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
