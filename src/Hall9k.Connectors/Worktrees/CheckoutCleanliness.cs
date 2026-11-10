@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using Hall9k.Connectors.Processes;
+using Hall9k.Domain.Infrastructure.Processes;
 
 namespace Hall9k.Connectors.Worktrees;
 
@@ -101,6 +102,7 @@ public static class CheckoutCleanliness
             process.StartInfo.ArgumentList.Add(argument);
         }
 
+        GitForWindowsLauncher.Shared.Apply(process.StartInfo);
         try
         {
             process.Start();

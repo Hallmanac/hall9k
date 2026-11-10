@@ -30,6 +30,7 @@ using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Processes;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
@@ -8359,6 +8360,7 @@ public sealed class ReviewEngine(
             process.StartInfo.ArgumentList.Add("--is-ancestor");
             process.StartInfo.ArgumentList.Add(sha);
             process.StartInfo.ArgumentList.Add("HEAD");
+            GitForWindowsLauncher.Shared.Apply(process.StartInfo);
             process.Start();
             // Both streams started before the wait (GetWorktreeHeadShaAsync's own pattern):
             // stderr is never read below, but leaving it undrained lets git block on a full pipe
@@ -8413,6 +8415,7 @@ public sealed class ReviewEngine(
             };
             process.StartInfo.ArgumentList.Add("rev-parse");
             process.StartInfo.ArgumentList.Add("HEAD");
+            GitForWindowsLauncher.Shared.Apply(process.StartInfo);
             process.Start();
             // Both streams started before the wait (GitWorktreeManager.TryRunGitAsync's own
             // pattern): stderr is never read below, but leaving it undrained lets git block on a

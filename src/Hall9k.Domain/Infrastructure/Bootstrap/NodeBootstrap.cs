@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Processes;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -236,6 +237,7 @@ public static class NodeBootstrap
             };
             process.ErrorDataReceived += (_, _) => { };
 
+            GitForWindowsLauncher.Shared.Apply(process.StartInfo);
             process.Start();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();

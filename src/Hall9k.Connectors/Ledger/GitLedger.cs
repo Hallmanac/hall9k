@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using Hall9k.Connectors.Processes;
+using Hall9k.Domain.Infrastructure.Processes;
 using Hall9k.Domain.Shared.Exceptions;
 using Microsoft.Extensions.Logging;
 
@@ -778,6 +779,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
             }
         }
 
+        GitForWindowsLauncher.Shared.Apply(process.StartInfo);
         process.Start();
         if (standardInput is not null)
         {

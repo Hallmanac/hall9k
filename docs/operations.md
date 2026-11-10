@@ -888,7 +888,7 @@ None of them is set by default, and none is needed on an ordinary install:
 
 | Variable | Effect |
 |---|---|
-| `PATH`, `PATHEXT` | `PATH` is how `claude`, `gh`, and `git` are found (`HALL9K_CLAUDE_PATH` pins only the first). On Windows, `PATHEXT` supplies the extensions to try when resolving them. |
+| `PATH`, `PATHEXT` | `PATH` is how `claude`, `gh`, and `git` are found (`HALL9K_CLAUDE_PATH` pins only the first). On Windows, `PATHEXT` supplies the extensions to try when resolving them. On Windows, when the first `git.exe` on the daemon's `PATH` is Git for Windows' launcher (the one in the install's `cmd` or `bin` directory), the daemon starts the real `git.exe` that launcher runs (under `ucrt64\bin`, `mingw64\bin` or `clangarm64\bin`) and puts that directory on the `PATH` of every process it starts, just before the launcher's: the launcher leaves one kernel access token allocated until reboot for every git call. |
 | `GH_TOKEN`, `GITHUB_TOKEN` | Read in that order, the way `gh` itself reads them. When either is set, Hall9k uses it as the token for the GitHub calls it makes on a project's behalf, in place of asking `gh` for a token for that project's own login. |
 | `ConnectionStrings__hall9k` | Injected into the daemon by the Aspire AppHost in the `dotnet run --project src/Hall9k.AppHost` dev loop, where it outranks `HALL9K_CONNECTION_STRING`. You do not set it on an installed machine. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | When set, the daemon exports its OpenTelemetry data to that OTLP endpoint (the Aspire dashboard's, in the dev loop). Unset, nothing is exported. |

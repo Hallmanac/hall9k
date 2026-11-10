@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using Hall9k.Domain.Infrastructure.Processes;
 
 namespace Hall9k.Connectors.Processes;
 
@@ -154,6 +155,11 @@ public static class ExternalProcess
                 startInfo.Environment[key] = value;
             }
         }
+
+        // Last, so the PATH it adjusts is the one the child will really get. On Windows, a plain
+        // "git" becomes the real git.exe behind Git for Windows' launcher; elsewhere, or when the
+        // first git on PATH is not that launcher, this changes nothing.
+        GitForWindowsLauncher.Shared.Apply(startInfo);
 
         return startInfo;
     }

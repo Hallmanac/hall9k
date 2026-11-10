@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
+using Hall9k.Domain.Infrastructure.Processes;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -317,6 +318,7 @@ public static partial class TestScopeResolver
             process.StartInfo.ArgumentList.Add(argument);
         }
 
+        GitForWindowsLauncher.Shared.Apply(process.StartInfo);
         try
         {
             process.Start();

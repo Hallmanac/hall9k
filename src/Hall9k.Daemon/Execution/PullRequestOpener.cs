@@ -1,3 +1,4 @@
+using Hall9k.Domain.Infrastructure.Processes;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using System.Diagnostics;
@@ -1156,6 +1157,7 @@ public sealed class PullRequestOpener(
             process.StartInfo.ArgumentList.Add(argument);
         }
 
+        GitForWindowsLauncher.Shared.Apply(process.StartInfo);
         process.Start();
         Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
         Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
