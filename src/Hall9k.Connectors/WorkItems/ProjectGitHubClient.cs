@@ -60,6 +60,9 @@ public sealed class ProjectGitHubClient(
     /// </summary>
     private static readonly TimeSpan TokenCacheTtl = TimeSpan.FromMinutes(2);
 
+    /// <summary>The one host a keyring token is read for: the host every token this client hands out is used against.</summary>
+    private const string GitHubHost = "github.com";
+
     private readonly EnvironmentProcessRunner runner = runner ?? ExternalProcess.RunnerWithEnvironment;
     private readonly ProcessRunner tokenRunner = tokenRunner ?? ExternalProcess.Runner;
     private readonly Func<string, string?> environmentVariable = environmentVariable ?? Environment.GetEnvironmentVariable;
@@ -280,15 +283,19 @@ public sealed class ProjectGitHubClient(
             }
         }
 
+        // The host is named because the header the token goes into is always scoped to github.com,
+        // and a GH_HOST in this process's environment would otherwise pick another host's token.
+        string[] arguments = ["auth", "token", "--user", login, "--hostname", GitHubHost];
+        string command = $"gh {string.Join(' ', arguments)}";
         ProcessResult result;
         try
         {
-            result = await tokenRunner("gh", ["auth", "token", "--user", login], workingDirectory, cancellationToken);
+            result = await tokenRunner("gh", arguments, workingDirectory, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             throw new DomainValidationException(
-                $"gh could not be run to produce a token for '{login}' (gh auth token --user {login}): "
+                $"gh could not be run to produce a token for '{login}' ({command}): "
                 + $"{exception.Message}");
         }
 
@@ -296,7 +303,7 @@ public sealed class ProjectGitHubClient(
         if (result.ExitCode != 0 || token.IsBlank())
         {
             throw new DomainValidationException(
-                $"gh could not produce a token for '{login}' (gh auth token --user {login}): "
+                $"gh could not produce a token for '{login}' ({command}): "
                 + $"{result.StandardError.Trim()}. Check 'gh auth status' names this account as logged in "
                 + "on this machine.");
         }
