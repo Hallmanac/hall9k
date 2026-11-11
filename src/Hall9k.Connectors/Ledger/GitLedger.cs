@@ -744,11 +744,24 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         }
     }
 
-    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> RunGitAsync(
+    private static Task<(int ExitCode, string StandardOutput, string StandardError)> RunGitAsync(
         string repositoryPath,
         IReadOnlyList<string> arguments,
         IReadOnlyDictionary<string, string>? environment,
         string? standardInput,
+        CancellationToken cancellationToken) =>
+        GitRemoteAuthentication.RunAsync(
+            "git", arguments, repositoryPath,
+            remote => RunGitOnceAsync(repositoryPath, arguments, environment, standardInput, remote, cancellationToken),
+            result => (result.ExitCode, result.StandardError),
+            cancellationToken);
+
+    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> RunGitOnceAsync(
+        string repositoryPath,
+        IReadOnlyList<string> arguments,
+        IReadOnlyDictionary<string, string>? environment,
+        string? standardInput,
+        GitRemoteAuthorization? remote,
         CancellationToken cancellationToken)
     {
         using Process process = new();
@@ -777,6 +790,11 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
             {
                 process.StartInfo.Environment[key] = value;
             }
+        }
+
+        if (remote is not null)
+        {
+            GitRemoteAuthentication.Apply(process.StartInfo, remote);
         }
 
         GitForWindowsLauncher.Shared.Apply(process.StartInfo);

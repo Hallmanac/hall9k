@@ -782,11 +782,24 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
     /// <see cref="ProcessRunner"/> delegate — used by connectors that need neither — just for this
     /// one caller.
     /// </summary>
-    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> RunGitRawAsync(
+    private static Task<(int ExitCode, string StandardOutput, string StandardError)> RunGitRawAsync(
         string repositoryPath,
         IReadOnlyList<string> arguments,
         IReadOnlyDictionary<string, string>? environment,
         string? standardInput,
+        CancellationToken cancellationToken) =>
+        GitRemoteAuthentication.RunAsync(
+            "git", arguments, repositoryPath,
+            remote => RunGitRawOnceAsync(repositoryPath, arguments, environment, standardInput, remote, cancellationToken),
+            result => (result.ExitCode, result.StandardError),
+            cancellationToken);
+
+    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> RunGitRawOnceAsync(
+        string repositoryPath,
+        IReadOnlyList<string> arguments,
+        IReadOnlyDictionary<string, string>? environment,
+        string? standardInput,
+        GitRemoteAuthorization? remote,
         CancellationToken cancellationToken)
     {
         using Process process = new();
@@ -815,6 +828,11 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
             {
                 process.StartInfo.Environment[key] = value;
             }
+        }
+
+        if (remote is not null)
+        {
+            GitRemoteAuthentication.Apply(process.StartInfo, remote);
         }
 
         GitForWindowsLauncher.Shared.Apply(process.StartInfo);
