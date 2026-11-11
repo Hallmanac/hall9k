@@ -1,0 +1,75 @@
+RUN program=claude mode=today n=4 launcherPid=24080 launcherConsoleHost=41432 consoleWindow=0
+CHAIN claude/nowindow#0 pid=25960 ppid=12800 console=NEW console (host pid 12800) :: KillerIntelligenceCenter.exe :: "C:\Program Files\WindowsApps\RivetNetworks.KillerControlCenter_3.1423.712.0_x64__rh07ty8m5nkag\KillerControlCenter_v2\KillerIntelligenceCenter.exe" -
+CHAIN claude/nowindow#0 pid=34044 ppid=24080 console=NEW console (host pid 18616) :: cmd.exe :: "C:\Windows\System32\cmd.exe" /c ""claude" -p --output-format stream-json --verbose --model claude-haiku-5-5 --max-turns 4 --dangerously-skip-permissi
+CHAIN claude/nowindow#0 pid=18616 ppid=34044 console=NEW console (host pid 34044) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=27556 ppid=34044 console=NEW console (host pid 18616) :: claude.exe :: "claude"  -p --output-format stream-json --verbose --model claude-haiku-5-5 --max-turns 4 --dangerously-skip-permissions --strict-mcp-config 
+CHAIN claude/nowindow#0 pid=22892 ppid=27556 console=NEW console (host pid 27556) :: reg.exe :: C:\Windows\System32\reg.exe query HKLM\SOFTWARE\Policies\ClaudeCode /v Settings
+CHAIN claude/nowindow#0 pid=2668 ppid=22892 console=NEW console (host pid 22892) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=11844 ppid=27556 console=NEW console (host pid 27556) :: reg.exe :: C:\Windows\System32\reg.exe query HKCU\SOFTWARE\Policies\ClaudeCode /v Settings
+CHAIN claude/nowindow#0 pid=49740 ppid=11844 console=NEW console (host pid 11844) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=40004 ppid=27556 console=NEW console (host pid 42516) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.hooksPath=/dev/null -c core.fsmonitor= -C C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-66
+CHAIN claude/nowindow#0 pid=42516 ppid=40004 console=NEW console (host pid 40004) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=31536 ppid=27556 console=NEW console (host pid 31132) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude/nowindow#0 pid=31132 ppid=31536 console=NEW console (host pid 31536) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=7364 ppid=27556 console=NEW console (host pid 24548) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude/nowindow#0 pid=24548 ppid=7364 console=NEW console (host pid 7364) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=47520 ppid=27556 console=NEW console (host pid 18360) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude/nowindow#0 pid=18360 ppid=47520 console=NEW console (host pid 47520) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=33768 ppid=27556 console=NEW console (host pid 42352) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude/nowindow#0 pid=42352 ppid=33768 console=NEW console (host pid 33768) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=46816 ppid=27556 console=NEW console (host pid 24708) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude/nowindow#0 pid=24708 ppid=46816 console=NEW console (host pid 46816) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=45208 ppid=27556 console=NEW console (host pid 8812) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude/nowindow#0 pid=8812 ppid=45208 console=NEW console (host pid 45208) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=12828 ppid=27556 console=NEW console (host pid 37620) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude/nowindow#0 pid=37620 ppid=12828 console=NEW console (host pid 12828) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=44964 ppid=27556 console=NEW console (host pid 45480) :: claude.exe :: rg --no-config --files --hidden C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-666e4d42
+CHAIN claude/nowindow#0 pid=45480 ppid=44964 console=NEW console (host pid 44964) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=11216 ppid=27556 console=NEW console (host pid 34732) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.hooksPath=/dev/null -c core.fsmonitor= -C C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-66
+CHAIN claude/nowindow#0 pid=34732 ppid=11216 console=NEW console (host pid 11216) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=25160 ppid=27556 console=NEW console (host pid 9716) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\Hallm\.claude\hooks\herdr-agent-state.ps1\" ses
+CHAIN claude/nowindow#0 pid=9716 ppid=25160 console=NEW console (host pid 25160) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=49720 ppid=25160 console=NEW console (host pid 9716) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\Hallm\.claude\hooks\herdr-agent-stat
+CHAIN claude/nowindow#0 pid=20108 ppid=49720 console=NEW console (host pid 9716) :: powershell.exe :: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\Hallm\.claude\hooks\herdr-agent-state.ps1 
+CHAIN claude/nowindow#0 pid=4628 ppid=27556 console=NEW console (host pid 45336) :: claude.exe :: rg --version
+CHAIN claude/nowindow#0 pid=45336 ppid=4628 console=NEW console (host pid 4628) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=46068 ppid=27556 console=NEW console (host pid 27140) :: claude.exe :: rg --no-config --files --hidden --no-ignore --max-depth 4 --glob .orphaned_at C:\Users\Hallm\.claude\plugins\cache
+CHAIN claude/nowindow#0 pid=27140 ppid=46068 console=NEW console (host pid 46068) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=44264 ppid=27556 console=NEW console (host pid 14776) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude\
+CHAIN claude/nowindow#0 pid=14776 ppid=44264 console=NEW console (host pid 44264) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=47528 ppid=44264 console=NEW console (host pid 14776) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.
+CHAIN claude/nowindow#0 pid=49360 ppid=27556 console=NEW console (host pid 3260) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c env
+CHAIN claude/nowindow#0 pid=3260 ppid=49360 console=NEW console (host pid 49360) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=6396 ppid=27556 console=NEW console (host pid 18368) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -lc "echo \"$PATH\""
+CHAIN claude/nowindow#0 pid=18368 ppid=6396 console=NEW console (host pid 6396) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=29368 ppid=49360 console=NEW console (host pid 3260) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c env
+CHAIN claude/nowindow#0 pid=34408 ppid=6396 console=NEW console (host pid 18368) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""
+CHAIN claude/nowindow#0 pid=45432 ppid=34408 console=NEW console (host pid 18368) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""
+CHAIN claude/nowindow#0 pid=30052 ppid=45432 console=NEW console (host pid 18368) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""
+CHAIN claude/nowindow#0 pid=4344 ppid=30052 console=NEW console (host pid 18368) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" --exec-path
+CHAIN claude/nowindow#0 pid=43888 ppid=34408 console=NEW console (host pid 18368) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""
+CHAIN claude/nowindow#0 pid=29284 ppid=43888 console=NEW console (host pid 18368) :: locale.exe :: "C:\Program Files\Git\usr\bin\locale.exe" -uU
+CHAIN claude/nowindow#0 pid=41452 ppid=27556 console=NEW console (host pid 39888) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408210554-ccv67u.sh'
+      # No use
+CHAIN claude/nowindow#0 pid=39888 ppid=41452 console=NEW console (host pid 41452) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=12800 ppid=41452 console=NEW console (host pid 39888) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408210554-ccv67u.sh'
+   
+CHAIN claude/nowindow#0 pid=7156 ppid=12800 console=NEW console (host pid 39888) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408210554-ccv67u.sh'
+   
+CHAIN claude/nowindow#0 pid=45740 ppid=12800 console=NEW console (host pid 39888) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408210554-ccv67u.sh'
+   
+CHAIN claude/nowindow#0 pid=49896 ppid=45740 console=NEW console (host pid 39888) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408210554-ccv67u.sh'
+   
+CHAIN claude/nowindow#0 pid=45920 ppid=49896 console=NEW console (host pid 39888) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" --exec-path
+CHAIN claude/nowindow#0 pid=39152 ppid=12800 console=NEW console (host pid 39888) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408210554-ccv67u.sh'
+   
+CHAIN claude/nowindow#0 pid=45388 ppid=12800 console=NEW console (host pid 39888) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408210554-ccv67u.sh'
+   
+CHAIN claude/nowindow#0 pid=42652 ppid=45388 console=NEW console (host pid 39888) ::  :: 
+CHAIN claude/nowindow#0 pid=38524 ppid=27556 console=NONE :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408210554-ccv67u.sh 2>/dev/null || true && exp
+CHAIN claude/nowindow#0 pid=48672 ppid=38524 console=NEW console (host pid 19428) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408210554-ccv67u.sh 2>/dev/null || 
+CHAIN claude/nowindow#0 pid=19428 ppid=48672 console=NEW console (host pid 48672) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude/nowindow#0 pid=34592 ppid=48672 console=NEW console (host pid 19428) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408210554-ccv67u.sh 2>/dev/null || 
+CHAIN claude/nowindow#0 pid=36004 ppid=34592 console=NEW console (host pid 34592) :: hostname.exe :: "C:\Program Files\Git\usr\bin\hostname.exe"
+DONE program=claude mode=today launches=4 exits=[0x4] avgMs=5939 totalS=23.8
+WINDOWS new visible top-level windows during the run: 0

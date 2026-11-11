@@ -1,0 +1,16 @@
+### arm 0 [claude:today:4:hidden:nowindow:1] root pid 24080: child creations 293, tokens kept (never freed) 92, pending 0; 4 launches -> kept per launch 23.00
+    bin\bash.exe > usr\bash.exe                                    created   24 freed    0 kept   24
+    claude.exe > bin\bash.exe                                      created   24 freed    0 kept   24
+    cmd.exe > claude.exe                                           created    4 freed    0 kept    4
+    probe.exe > cmd.exe                                            created    4 freed    0 kept    4
+    usr\bash.exe > usr\bash.exe                                    created   60 freed   24 kept   36
+### arm 1 [claude:detached:4:hidden:nowindow:1] root pid 10812: child creations 141, tokens kept (never freed) 0, pending 0; 4 launches -> kept per launch 0.00
+### arm 2 [claude:today:4:hidden:detached:1] root pid 3260: child creations 292, tokens kept (never freed) 92, pending 0; 4 launches -> kept per launch 23.00
+    bin\bash.exe > usr\bash.exe                                    created   24 freed    0 kept   24
+    claude.exe > bin\bash.exe                                      created   24 freed    0 kept   24
+    cmd.exe > claude.exe                                           created    4 freed    0 kept    4
+    probe.exe > cmd.exe                                            created    4 freed    0 kept    4
+    usr\bash.exe > usr\bash.exe                                    created   60 freed   24 kept   36
+### arm 3 [claude-null:today:8:hidden:nowindow:1] root pid 48664: child creations 25, tokens kept (never freed) 8, pending 0; 8 launches -> kept per launch 1.00
+    probe.exe > cmd.exe                                            created    8 freed    0 kept    8
+### arm 4 [claude-null:detached:8:hidden:nowindow:1] root pid 28868: child creations 25, tokens kept (never freed) 0, pending 0; 8 launches -> kept per launch 0.00

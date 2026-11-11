@@ -1,0 +1,111 @@
+=== git-today-vs-null (10:11:02)
+pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits
+1,first,A,git:today,100,1722410,1724250,1840,91.22,115.0,0
+1,second,B,git-null:today,100,1724250,1725474,1224,3.23,115.0,0
+pair 1: A +1840, B +1224, per launch (A-B)/n = 6.16
+2,second,A,git:today,100,1726742,1728303,1561,85.84,115.0,0
+2,first,B,git-null:today,100,1725474,1726742,1268,4.72,115.0,0
+pair 2: A +1561, B +1268, per launch (A-B)/n = 2.93
+3,first,A,git:today,100,1728303,1730060,1757,89.09,115.0,0
+3,second,B,git-null:today,100,1730060,1731224,1164,4.35,115.0,0
+pair 3: A +1757, B +1164, per launch (A-B)/n = 5.93
+4,second,A,git:today,100,1732373,1734116,1743,90.18,115.0,0
+4,first,B,git-null:today,100,1731224,1732373,1149,2.64,115.0,0
+pair 4: A +1743, B +1149, per launch (A-B)/n = 5.94
+TOTAL 400 launches per arm: A +6901, B +4805, per launch 5.24
+=== git-detached-vs-null (10:26:23)
+pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits
+1,second,A,git:detached,100,1735303,1736869,1566,96.77,115.0,0
+1,first,B,git-null:today,100,1734131,1735303,1172,3.39,115.0,0
+pair 1: A +1566, B +1172, per launch (A-B)/n = 3.94
+2,first,A,git:detached,100,1736869,1738638,1769,101.69,115.0,0
+2,second,B,git-null:today,100,1738638,1739631,993,4.99,115.0,0
+pair 2: A +1769, B +993, per launch (A-B)/n = 7.76
+3,second,A,git:detached,100,1740869,1742478,1609,101.40,115.0,0
+3,first,B,git-null:today,100,1739631,1740869,1238,4.39,115.0,0
+pair 3: A +1609, B +1238, per launch (A-B)/n = 3.71
+4,first,A,git:detached,100,1742480,1744172,1692,100.71,115.0,0
+4,second,B,git-null:today,100,1744172,1745274,1102,4.23,115.0,0
+pair 4: A +1692, B +1102, per launch (A-B)/n = 5.90
+TOTAL 400 launches per arm: A +6636, B +4505, per launch 5.33
+=== bash-today-vs-null (10:41:44)
+pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits
+1,first,A,bash:today,200,1745209,1746634,1425,41.59,65.0,0
+1,second,B,bashusr-null:today,200,1746635,1747281,646,5.55,65.0,0
+pair 1: A +1425, B +646, per launch (A-B)/n = 3.90
+2,second,A,bash:today,200,1747971,1749120,1149,38.93,65.0,0
+2,first,B,bashusr-null:today,200,1747281,1747971,690,5.65,65.0,0
+pair 2: A +1149, B +690, per launch (A-B)/n = 2.29
+3,first,A,bash:today,200,1749120,1750605,1485,45.36,65.0,0
+3,second,B,bashusr-null:today,200,1750605,1751238,633,5.84,65.0,0
+pair 3: A +1485, B +633, per launch (A-B)/n = 4.26
+=== bash-detached-vs-null (10:50:31)
+pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits
+1,second,A,bash:detached,200,1753785,1755098,1313,43.90,65.0,0
+1,first,B,bashusr-null:today,200,1753148,1753785,637,4.75,65.0,0
+pair 1: A +1313, B +637, per launch (A-B)/n = 3.38
+2,first,A,bash:detached,200,1755099,1756528,1429,54.60,65.0,0
+2,second,B,bashusr-null:today,200,1756528,1757183,655,4.60,65.0,0
+pair 2: A +1429, B +655, per launch (A-B)/n = 3.87
+3,second,A,bash:detached,200,1757997,1759103,1106,40.03,65.0,0
+3,first,B,bashusr-null:today,200,1757183,1757997,814,5.76,65.0,0
+pair 3: A +1106, B +814, per launch (A-B)/n = 1.46
+4,first,A,bash:detached,200,1759103,1760455,1352,45.97,65.0,0
+4,second,B,bashusr-null:today,200,1760455,1761080,625,6.21,65.0,0
+pair 4: A +1352, B +625, per launch (A-B)/n = 3.63
+TOTAL 800 launches per arm: A +5200, B +2731, per launch 3.09
+=== sh-today-vs-null (10:59:12)
+pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits
+1,first,A,sh:today,200,1761067,1762338,1271,34.25,80.0,0
+1,second,B,sh-null:today,200,1762338,1763057,719,6.24,80.0,0
+pair 1: A +1271, B +719, per launch (A-B)/n = 2.76
+2,second,A,sh:today,200,1763643,1764949,1306,32.29,80.0,0
+2,first,B,sh-null:today,200,1763054,1763643,589,7.32,80.0,0
+pair 2: A +1306, B +589, per launch (A-B)/n = 3.58
+3,first,A,sh:today,200,1764949,1766175,1226,51.04,80.0,0
+3,second,B,sh-null:today,200,1766137,1766715,578,5.72,80.0,0
+pair 3: A +1226, B +578, per launch (A-B)/n = 3.24
+4,second,A,sh:today,200,1767479,1768926,1447,30.82,80.0,0
+4,first,B,sh-null:today,200,1766715,1767480,765,4.86,80.0,0
+pair 4: A +1447, B +765, per launch (A-B)/n = 3.41
+TOTAL 800 launches per arm: A +5250, B +2651, per launch 3.25
+=== sh-detached-vs-null (11:09:53)
+pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits
+1,second,A,sh:detached,200,1769753,1770993,1240,55.08,80.0,0
+1,first,B,sh-null:today,200,1768819,1769753,934,5.88,80.0,0
+pair 1: A +1240, B +934, per launch (A-B)/n = 1.53
+2,first,A,sh:detached,200,1770994,1772221,1227,59.23,80.0,0
+2,second,B,sh-null:today,200,1772221,1773070,849,6.07,80.0,0
+pair 2: A +1227, B +849, per launch (A-B)/n = 1.89
+3,second,A,sh:detached,200,1773945,1775097,1152,64.43,80.0,0
+3,first,B,sh-null:today,200,1773070,1773945,875,5.04,80.0,0
+pair 3: A +1152, B +875, per launch (A-B)/n = 1.39
+4,first,A,sh:detached,200,1775097,1776287,1190,57.42,80.0,0
+4,second,B,sh-null:today,200,1776287,1777173,886,5.66,80.0,0
+pair 4: A +1190, B +886, per launch (A-B)/n = 1.52
+TOTAL 800 launches per arm: A +4809, B +3544, per launch 1.58
+=== gh-today-vs-null (11:20:33)
+pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits
+1,first,A,gh:today,200,1777160,1778445,1285,105.24,130.0,0
+1,second,B,hostname:today,200,1778445,1779738,1293,6.51,130.0,0
+pair 1: A +1285, B +1293, per launch (A-B)/n = -0.04
+2,second,A,gh:today,200,1781066,1782357,1291,102.51,130.0,0
+2,first,B,hostname:today,200,1779738,1781066,1328,4.86,130.0,0
+pair 2: A +1291, B +1328, per launch (A-B)/n = -0.18
+3,first,A,gh:today,200,1782357,1783760,1403,119.26,130.0,0
+3,second,B,hostname:today,200,1783760,1785005,1245,5.03,130.0,0
+pair 3: A +1403, B +1245, per launch (A-B)/n = 0.79
+TOTAL 600 launches per arm: A +3979, B +3866, per launch 0.19
+=== gh-detached-vs-null (11:33:34)
+pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits
+1,second,A,gh:detached,200,1786448,1787657,1209,119.22,130.0,0
+1,first,B,hostname:today,200,1784886,1786448,1562,3.03,130.0,0
+pair 1: A +1209, B +1562, per launch (A-B)/n = -1.76
+2,first,A,gh:detached,200,1787654,1788980,1326,115.94,130.0,0
+2,second,B,hostname:today,200,1788980,1790459,1479,5.29,130.0,0
+pair 2: A +1326, B +1479, per launch (A-B)/n = -0.77
+3,second,A,gh:detached,200,1791645,1792878,1233,121.72,130.0,0
+3,first,B,hostname:today,200,1790460,1791645,1185,5.70,130.0,0
+pair 3: A +1233, B +1185, per launch (A-B)/n = 0.24
+TOTAL 600 launches per arm: A +3768, B +4226, per launch -0.76
+=== done 11:46:35

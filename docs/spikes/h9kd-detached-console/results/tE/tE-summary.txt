@@ -1,0 +1,19 @@
+### arm 0 [claude-direct:nowindow:4:hidden:nowindow:1] root pid 46268: child creations 289, tokens kept (never freed) 88, pending 0; 4 launches -> kept per launch 22.00
+    bin\bash.exe > usr\bash.exe                                    created   24 freed    0 kept   24
+    claude.exe > bin\bash.exe                                      created   24 freed    0 kept   24
+    probe.exe > claude.exe                                         created    4 freed    0 kept    4
+    usr\bash.exe > usr\bash.exe                                    created   60 freed   24 kept   36
+### arm 1 [claude-direct:detached:4:hidden:nowindow:1] root pid 34408: child creations 285, tokens kept (never freed) 84, pending 0; 4 launches -> kept per launch 21.00
+    bin\bash.exe > usr\bash.exe                                    created   24 freed    0 kept   24
+    claude.exe > bin\bash.exe                                      created   24 freed    0 kept   24
+    usr\bash.exe > usr\bash.exe                                    created   60 freed   24 kept   36
+### arm 2 [claude-direct:nowindow:4:hidden:detached:1] root pid 30852: child creations 288, tokens kept (never freed) 88, pending 0; 4 launches -> kept per launch 22.00
+    bin\bash.exe > usr\bash.exe                                    created   24 freed    0 kept   24
+    claude.exe > bin\bash.exe                                      created   24 freed    0 kept   24
+    probe.exe > claude.exe                                         created    4 freed    0 kept    4
+    usr\bash.exe > usr\bash.exe                                    created   60 freed   24 kept   36
+### arm 3 [claude-direct-null:nowindow:8:hidden:nowindow:1] root pid 24048: child creations 17, tokens kept (never freed) 0, pending 0; 8 launches -> kept per launch 0.00
+### arm 4 [claude-direct-null:detached:8:hidden:nowindow:1] root pid 12604: child creations 9, tokens kept (never freed) 0, pending 0; 8 launches -> kept per launch 0.00
+### arm 5 [hostname:nowindow:40:hidden:nowindow:0] root pid 268: child creations 81, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 6 [hostname:detached:40:hidden:nowindow:0] root pid 10280: child creations 41, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 7 [hostname:today:40:hidden:nowindow:0] root pid 43080: child creations 41, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00

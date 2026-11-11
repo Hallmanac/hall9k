@@ -1,0 +1,15 @@
+RUN program=git mode=nowindow n=30 launcherPid=25412 launcherConsoleHost=0 consoleWindow=0
+CHAIN git/nowindow#0 pid=14040 ppid=25412 console=NEW console (host pid 25004) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+CHAIN git/nowindow#0 pid=25004 ppid=14040 console=NEW console (host pid 14040) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN git/nowindow#0 pid=53460 ppid=14040 console=NEW console (host pid 25004) :: git.exe :: git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/nowindow#0 pid=1976 ppid=53460 console=NEW console (host pid 25004) :: git-remote-https.exe :: git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/nowindow#0 pid=41132 ppid=1976 console=NEW console (host pid 25004) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' au
+CHAIN git/nowindow#0 pid=50232 ppid=41132 console=NEW console (host pid 25004) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+CHAIN git/nowindow#0 pid=52904 ppid=1976 console=NEW console (host pid 25004) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' 
+CHAIN git/nowindow#0 pid=37180 ppid=52904 console=NEW console (host pid 25004) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+CHAIN git/nowindow#0 pid=40528 ppid=37180 console=NEW console (host pid 25004) :: tzutil.exe :: tzutil /g
+  launch 0: exit=0 699 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+  launch 1: exit=0 697 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+  launch 2: exit=0 728 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+DONE program=git mode=nowindow launches=30 exits=[0x30] avgMs=958 totalS=28.8
+WINDOWS new visible top-level windows during the run: 0

@@ -1,0 +1,6 @@
+"Index","Arm","Pid","Log"
+"0","claude:today:4:hidden:nowindow:1","24080","C:\temp\h9kdetach\tD\tD-arm0-claude-today.log"
+"1","claude:detached:4:hidden:nowindow:1","10812","C:\temp\h9kdetach\tD\tD-arm1-claude-detached.log"
+"2","claude:today:4:hidden:detached:1","3260","C:\temp\h9kdetach\tD\tD-arm2-claude-today.log"
+"3","claude-null:today:8:hidden:nowindow:1","48664","C:\temp\h9kdetach\tD\tD-arm3-claude-null-today.log"
+"4","claude-null:detached:8:hidden:nowindow:1","28868","C:\temp\h9kdetach\tD\tD-arm4-claude-null-detached.log"

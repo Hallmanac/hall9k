@@ -1,0 +1,15 @@
+RUN program=git-null mode=today n=30 launcherPid=44196 launcherConsoleHost=0 consoleWindow=0
+CHAIN git-null/inherit#0 pid=1204 ppid=44196 console=NEW console (host pid 48344) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" --version
+CHAIN git-null/inherit#0 pid=48344 ppid=1204 console=NEW console (host pid 1204) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+DONE program=git-null mode=today launches=30 exits=[0x30] avgMs=76 totalS=2.3
+WINDOWS new visible top-level windows during the run: 30
+  WIN class=ConsoleWindowClass pid=1204 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=43072 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=4084 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=42632 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=20308 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=48932 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=5196 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=42468 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=18248 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=3448 title='C:\Program Files\Git\ucrt64\bin\git.exe'

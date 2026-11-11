@@ -1,0 +1,226 @@
+trace: 105.1 s, Toke allocations 68547, frees 67157 (67105 of allocations seen in this trace), still allocated at the end 1442, other-tag pool events skipped 0
+process creations seen: 3668, child token claimed for 3668, no allocation found for 0
+
+================ ROOT 18460 ================
+processes in the tree of pid 18460: 110
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+                                                                  12       0           12        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+                                                                  12       0           12        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+                                                                  12       0           12        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+                                                                  12       0           12        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+                                                                  12       0           12        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+                                                                  12       0           12        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+                                                                  12       0           12        0
+C:\Program Files\GitHub CLI\gh.exe > C:\Windows\System32\tzutil.exe  <=  tzutil /g
+                                                                  24      24            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                            109      25           84        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      84
+  started no child                                                                 freed      25  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD   never freed 12 of 12
+       12  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git   never freed 12 of 12
+       12  C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git   never freed 12 of 12
+       12  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+       12  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre   never freed 12 of 12
+       12  C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get   never freed 12 of 12
+       12  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c   never freed 12 of 12
+       12  C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store   never freed 12 of 12
+       12  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+
+================ ROOT 45324 ================
+processes in the tree of pid 45324: 110
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+                                                                  12       0           12        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+                                                                  12       0           12        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+                                                                  12       0           12        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+                                                                  12       0           12        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+                                                                  12       0           12        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+                                                                  12       0           12        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+                                                                  12       0           12        0
+C:\Program Files\GitHub CLI\gh.exe > C:\Windows\System32\tzutil.exe  <=  tzutil /g
+                                                                  24      24            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                            109      25           84        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      84
+  started no child                                                                 freed      25  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD   never freed 12 of 12
+       12  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git   never freed 12 of 12
+       12  C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git   never freed 12 of 12
+       12  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+       12  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre   never freed 12 of 12
+       12  C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get   never freed 12 of 12
+       12  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c   never freed 12 of 12
+       12  C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store   never freed 12 of 12
+       12  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+
+================ ROOT 9880 ================
+processes in the tree of pid 9880: 158
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+                                                                  12       0           12        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+                                                                  12       0           12        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+                                                                  12       0           12        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+                                                                  12       0           12        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+                                                                  12       0           12        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+                                                                  12       0           12        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+                                                                  12       0           12        0
+C:\Program Files\Git\usr\bin\cygwin-console-helper.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  24      24            0        0
+C:\Program Files\GitHub CLI\gh.exe > C:\Windows\System32\tzutil.exe  <=  tzutil /g
+                                                                  24      24            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x284 0x280
+                                                                   8       8            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x27C 0x278
+                                                                   5       5            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x26C 0x268
+                                                                   2       2            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x274 0x270
+                                                                   2       2            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x280 0x27C
+                                                                   2       2            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x28C 0x288
+                                                                   2       2            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x278 0x274
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x288 0x284
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x250 0x284
+                                                                   1       1            0        0
+TOTAL                                                            157      73           84        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      84
+  started a child, but the process ended first (or the child never ended)          freed      24  never freed       0
+  started no child                                                                 freed      49  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD   never freed 12 of 12
+       12  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git   never freed 12 of 12
+       12  C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git   never freed 12 of 12
+       12  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+       12  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre   never freed 12 of 12
+       12  C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+        6  C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x284 0x280
+        2  C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x27C 0x278
+        2  C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x28C 0x288
+        1  C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x288 0x284
+        1  C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x250 0x284
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get   never freed 12 of 12
+       12  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c   never freed 12 of 12
+       12  C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+        3  C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x27C 0x278
+        2  C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x26C 0x268
+        2  C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x274 0x270
+        2  C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x280 0x27C
+        2  C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x284 0x280
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store   never freed 12 of 12
+       12  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x284 0x280   never freed 0 of 8
+        8  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x26C 0x268   never freed 0 of 2
+        2  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x27C 0x278   never freed 0 of 5
+        5  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x274 0x270   never freed 0 of 2
+        2  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x280 0x27C   never freed 0 of 2
+        2  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x28C 0x288   never freed 0 of 2
+        2  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x278 0x274   never freed 0 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x288 0x284   never freed 0 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\cygwin-console-helper.exe  <=  "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x250 0x284   never freed 0 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 37156 ================
+processes in the tree of pid 37156: 14
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" --version
+                                                                  12      12            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                             13      13            0        0
+
+rule check (processes whose token state is settled):
+  started no child                                                                 freed      13  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+
+================ ROOT 37548 ================
+processes in the tree of pid 37548: 14
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" --version
+                                                                  12      12            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                             13      13            0        0
+
+rule check (processes whose token state is settled):
+  started no child                                                                 freed      13  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):

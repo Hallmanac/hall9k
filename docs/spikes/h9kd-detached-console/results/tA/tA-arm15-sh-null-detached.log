@@ -1,0 +1,3 @@
+RUN program=sh-null mode=detached n=40 launcherPid=48832 launcherConsoleHost=49340 consoleWindow=0
+DONE program=sh-null mode=detached launches=40 exits=[0x40] avgMs=22 totalS=1.0
+WINDOWS new visible top-level windows during the run: 0

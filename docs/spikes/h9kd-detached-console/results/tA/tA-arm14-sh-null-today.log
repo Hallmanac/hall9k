@@ -1,0 +1,4 @@
+RUN program=sh-null mode=today n=40 launcherPid=40172 launcherConsoleHost=9908 consoleWindow=0
+CHAIN sh-null/inherit#0 pid=16028 ppid=40172 console=inherited (launcher's console host 9908) ::  :: 
+DONE program=sh-null mode=today launches=40 exits=[0x40] avgMs=26 totalS=1.1
+WINDOWS new visible top-level windows during the run: 0

@@ -1,0 +1,5 @@
+RUN program=bash-null mode=today n=40 launcherPid=37920 launcherConsoleHost=25368 consoleWindow=0
+CHAIN bash-null/inherit#0 pid=40372 ppid=37920 console=inherited (launcher's console host 25368) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c "echo hi"
+CHAIN bash-null/inherit#0 pid=9372 ppid=40372 console=inherited (launcher's console host 25368) ::  :: 
+DONE program=bash-null mode=today launches=40 exits=[0x40] avgMs=93 totalS=3.8
+WINDOWS new visible top-level windows during the run: 0

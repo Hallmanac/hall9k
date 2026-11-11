@@ -1,0 +1,48 @@
+### arm 0 [spawnprog-inherit:inherit:20:hidden:hiddenconsole:0] root pid 42772: child creations 41, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 1 [spawnprog-nowindow:inherit:20:hidden:hiddenconsole:0] root pid 28456: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 2 [spawnprog-detached:inherit:20:hidden:hiddenconsole:0] root pid 4832: child creations 41, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 3 [spawnprog-hiddenconsole-native:inherit:20:hidden:hiddenconsole:0] root pid 46232: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 4 [spawnprog-inherit:nowindow:20:hidden:hiddenconsole:0] root pid 16428: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 5 [spawnprog-nowindow:nowindow:20:hidden:hiddenconsole:0] root pid 15000: child creations 81, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 6 [spawnprog-detached:nowindow:20:hidden:hiddenconsole:0] root pid 11840: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 7 [spawnprog-hiddenconsole-native:nowindow:20:hidden:hiddenconsole:0] root pid 16072: child creations 81, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 8 [spawnprog-inherit:detached:20:hidden:hiddenconsole:0] root pid 47520: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 9 [spawnprog-nowindow:detached:20:hidden:hiddenconsole:0] root pid 43808: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 10 [spawnprog-detached:detached:20:hidden:hiddenconsole:0] root pid 15548: child creations 41, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 11 [spawnprog-hiddenconsole-native:detached:20:hidden:hiddenconsole:0] root pid 44068: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 12 [spawnprog-inherit:hiddenconsole-native:20:hidden:hiddenconsole:0] root pid 40236: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 13 [spawnprog-nowindow:hiddenconsole-native:20:hidden:hiddenconsole:0] root pid 39152: child creations 81, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 14 [spawnprog-detached:hiddenconsole-native:20:hidden:hiddenconsole:0] root pid 29016: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 15 [spawnprog-hiddenconsole-native:hiddenconsole-native:20:hidden:hiddenconsole:0] root pid 12872: child creations 81, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 16 [spawnprog-inherit:hiddenconsole-native:20:hidden:nowindow:0] root pid 49004: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 17 [spawnprog-nowindow:hiddenconsole-native:20:hidden:nowindow:0] root pid 43612: child creations 81, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 18 [spawnprog-detached:hiddenconsole-native:20:hidden:nowindow:0] root pid 22572: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 19 [spawnprog-hiddenconsole-native:hiddenconsole-native:20:hidden:nowindow:0] root pid 7692: child creations 81, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 20 [spawnprog-inherit:hiddenconsole-native:20:hidden:detached:0] root pid 49032: child creations 60, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 21 [spawnprog-nowindow:hiddenconsole-native:20:hidden:detached:0] root pid 45284: child creations 80, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 22 [spawnprog-detached:hiddenconsole-native:20:hidden:detached:0] root pid 14892: child creations 60, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+### arm 23 [spawnprog-hiddenconsole-native:hiddenconsole-native:20:hidden:detached:0] root pid 24440: child creations 80, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20

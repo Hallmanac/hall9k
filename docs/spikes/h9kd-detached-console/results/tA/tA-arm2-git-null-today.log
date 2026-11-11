@@ -1,0 +1,4 @@
+RUN program=git-null mode=today n=30 launcherPid=45380 launcherConsoleHost=42948 consoleWindow=0
+CHAIN git-null/inherit#0 pid=39688 ppid=45380 console=inherited (launcher's console host 42948) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" --version
+DONE program=git-null mode=today launches=30 exits=[0x30] avgMs=27 totalS=0.9
+WINDOWS new visible top-level windows during the run: 0

@@ -1,0 +1,587 @@
+trace: 169.5 s, Toke allocations 98018, frees 96036 (95919 of allocations seen in this trace), still allocated at the end 2099, other-tag pool events skipped 0
+process creations seen: 6212, child token claimed for 6212, no allocation found for 0
+
+================ ROOT 42772 ================
+processes in the tree of pid 42772: 42
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn inherit
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+                                                                  20      20            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                             41      21           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started no child                                                                 freed      21  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn inherit   never freed 20 of 20
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+
+================ ROOT 28456 ================
+processes in the tree of pid 28456: 62
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn nowindow
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  21      21            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+                                                                  20      20            0        0
+TOTAL                                                             61      41           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      21  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn nowindow   never freed 20 of 20
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 4832 ================
+processes in the tree of pid 4832: 42
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn detached
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+                                                                  20      20            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                             41      21           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started no child                                                                 freed      21  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn detached   never freed 20 of 20
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+
+================ ROOT 46232 ================
+processes in the tree of pid 46232: 62
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn hiddenconsole-native
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  21      21            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+                                                                  20      20            0        0
+TOTAL                                                             61      41           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      21  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn hiddenconsole-native   never freed 20 of 20
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 16428 ================
+processes in the tree of pid 16428: 62
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn inherit
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  21      21            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+                                                                  20      20            0        0
+TOTAL                                                             61      41           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn inherit   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+
+================ ROOT 15000 ================
+processes in the tree of pid 15000: 82
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn nowindow
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  41      41            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+                                                                  20      20            0        0
+TOTAL                                                             81      61           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn nowindow   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 11840 ================
+processes in the tree of pid 11840: 62
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn detached
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  21      21            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+                                                                  20      20            0        0
+TOTAL                                                             61      41           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn detached   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+
+================ ROOT 16072 ================
+processes in the tree of pid 16072: 82
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn hiddenconsole-native
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  41      41            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+                                                                  20      20            0        0
+TOTAL                                                             81      61           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" spawn hiddenconsole-native   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 47520 ================
+processes in the tree of pid 47520: 62
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn inherit
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  21      21            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+                                                                  20      20            0        0
+TOTAL                                                             61      41           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      21  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn inherit   never freed 20 of 20
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 43808 ================
+processes in the tree of pid 43808: 62
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn nowindow
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  21      21            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+                                                                  20      20            0        0
+TOTAL                                                             61      41           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      21  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn nowindow   never freed 20 of 20
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 15548 ================
+processes in the tree of pid 15548: 42
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn detached
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+                                                                  20      20            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                             41      21           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started no child                                                                 freed      21  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn detached   never freed 20 of 20
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+
+================ ROOT 44068 ================
+processes in the tree of pid 44068: 62
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn hiddenconsole-native
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  21      21            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+                                                                  20      20            0        0
+TOTAL                                                             61      41           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      21  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn hiddenconsole-native   never freed 20 of 20
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 40236 ================
+processes in the tree of pid 40236: 62
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn inherit
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  21      21            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+                                                                  20      20            0        0
+TOTAL                                                             61      41           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn inherit   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+
+================ ROOT 39152 ================
+processes in the tree of pid 39152: 82
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn nowindow
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  41      41            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+                                                                  20      20            0        0
+TOTAL                                                             81      61           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn nowindow   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 29016 ================
+processes in the tree of pid 29016: 62
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn detached
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  21      21            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+                                                                  20      20            0        0
+TOTAL                                                             61      41           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 4
+       4  C:\Windows\System32\conhost.exe
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn detached   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+
+================ ROOT 12872 ================
+processes in the tree of pid 12872: 82
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn hiddenconsole-native
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  41      41            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+                                                                  20      20            0        0
+TOTAL                                                             81      61           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn hiddenconsole-native   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 49004 ================
+processes in the tree of pid 49004: 62
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn inherit
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  21      21            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+                                                                  20      20            0        0
+TOTAL                                                             61      41           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn inherit   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+
+================ ROOT 43612 ================
+processes in the tree of pid 43612: 82
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn nowindow
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  41      41            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+                                                                  20      20            0        0
+TOTAL                                                             81      61           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn nowindow   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 22572 ================
+processes in the tree of pid 22572: 62
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn detached
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  21      21            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+                                                                  20      20            0        0
+TOTAL                                                             61      41           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 4
+       4  C:\Temp\h9kdetach\bin\probe.exe
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn detached   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+
+================ ROOT 7692 ================
+processes in the tree of pid 7692: 82
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn hiddenconsole-native
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  41      41            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+                                                                  20      20            0        0
+TOTAL                                                             81      61           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn hiddenconsole-native   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 49032 ================
+processes in the tree of pid 49032: 61
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn inherit
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  20      20            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+                                                                  20      20            0        0
+TOTAL                                                             60      40           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started no child                                                                 freed      40  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn inherit   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+
+================ ROOT 45284 ================
+processes in the tree of pid 45284: 81
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn nowindow
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  40      40            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+                                                                  20      20            0        0
+TOTAL                                                             80      60           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      40  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn nowindow   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  "C:\temp\h9kdetach\bin\probe.exe" nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 14892 ================
+processes in the tree of pid 14892: 61
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn detached
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  20      20            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+                                                                  20      20            0        0
+TOTAL                                                             60      40           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started no child                                                                 freed      40  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn detached   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+
+================ ROOT 24440 ================
+processes in the tree of pid 24440: 81
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn hiddenconsole-native
+                                                                  20       0           20        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  40      40            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+                                                                  20      20            0        0
+TOTAL                                                             80      60           20        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      20
+  started a child, but the process ended first (or the child never ended)          freed      20  never freed       0
+  started no child                                                                 freed      40  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe spawn hiddenconsole-native   never freed 20 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       20  C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop
+C:\Temp\h9kdetach\bin\probe.exe > C:\Temp\h9kdetach\bin\probe.exe  <=  C:\temp\h9kdetach\bin\probe.exe nop   never freed 0 of 20
+       20  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1

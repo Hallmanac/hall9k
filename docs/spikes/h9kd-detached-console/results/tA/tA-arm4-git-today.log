@@ -1,0 +1,30 @@
+RUN program=git mode=today n=30 launcherPid=43376 launcherConsoleHost=0 consoleWindow=0
+CHAIN git/inherit#0 pid=29376 ppid=43376 console=NEW console (host pid 33052) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+CHAIN git/inherit#0 pid=33052 ppid=29376 console=NEW console (host pid 29376) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN git/inherit#0 pid=40316 ppid=29376 console=NEW console (host pid 33052) :: git.exe :: git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/inherit#0 pid=42936 ppid=40316 console=NEW console (host pid 33052) :: git-remote-https.exe :: git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/inherit#0 pid=43420 ppid=42936 console=NEW console (host pid 33052) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' au
+CHAIN git/inherit#0 pid=45660 ppid=43420 console=NEW console (host pid 33052) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+CHAIN git/inherit#0 pid=47520 ppid=42936 console=NEW console (host pid 33052) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' 
+CHAIN git/inherit#0 pid=43928 ppid=47520 console=NEW console (host pid 33052) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+CHAIN git/inherit#0 pid=46076 ppid=43928 console=NEW console (host pid 43928) :: tzutil.exe :: tzutil /g
+CHAIN git/inherit#1 pid=38524 ppid=43376 console=NEW console (host pid 28868) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+CHAIN git/inherit#1 pid=28868 ppid=38524 console=NEW console (host pid 38524) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN git/inherit#1 pid=27576 ppid=38524 console=NEW console (host pid 28868) :: git.exe :: git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/inherit#1 pid=23676 ppid=27576 console=NEW console (host pid 28868) :: git-remote-https.exe :: git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/inherit#1 pid=46828 ppid=23676 console=NEW console (host pid 28868) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' au
+CHAIN git/inherit#1 pid=41556 ppid=46828 console=NEW console (host pid 28868) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+CHAIN git/inherit#1 pid=35612 ppid=23676 console=NEW console (host pid 28868) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' 
+CHAIN git/inherit#1 pid=46216 ppid=35612 console=NEW console (host pid 28868) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+DONE program=git mode=today launches=30 exits=[0x30] avgMs=1036 totalS=31.2
+WINDOWS new visible top-level windows during the run: 30
+  WIN class=ConsoleWindowClass pid=29376 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=38524 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=38260 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=13532 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=12716 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=24432 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=21932 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=25536 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=49388 title='C:\Program Files\Git\ucrt64\bin\git.exe'
+  WIN class=ConsoleWindowClass pid=16432 title='C:\Program Files\Git\ucrt64\bin\git.exe'

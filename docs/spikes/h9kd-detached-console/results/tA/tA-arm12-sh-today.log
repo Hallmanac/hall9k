@@ -1,0 +1,14 @@
+RUN program=sh mode=today n=40 launcherPid=17616 launcherConsoleHost=45332 consoleWindow=0
+CHAIN sh/inherit#0 pid=13440 ppid=17616 console=inherited (launcher's console host 45332) :: sh.exe :: "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN sh/inherit#0 pid=3500 ppid=13440 console=inherited (launcher's console host 45332) :: sh.exe :: "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN sh/inherit#0 pid=32860 ppid=3500 console=inherited (launcher's console host 45332) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+CHAIN sh/inherit#0 pid=40400 ppid=13440 console=inherited (launcher's console host 45332) :: sh.exe :: "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN sh/inherit#0 pid=23380 ppid=40400 console=inherited (launcher's console host 45332) :: uname.exe :: "C:\Program Files\Git\usr\bin\uname.exe" -s
+CHAIN sh/inherit#0 pid=8216 ppid=13440 console=inherited (launcher's console host 45332) ::  :: 
+CHAIN sh/inherit#1 pid=32816 ppid=17616 console=inherited (launcher's console host 45332) :: sh.exe :: "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN sh/inherit#1 pid=41784 ppid=32816 console=inherited (launcher's console host 45332) :: sh.exe :: "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN sh/inherit#1 pid=42428 ppid=41784 console=inherited (launcher's console host 45332) ::  :: 
+CHAIN sh/inherit#1 pid=42144 ppid=32816 console=inherited (launcher's console host 45332) :: sh.exe :: "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN sh/inherit#1 pid=48756 ppid=32816 console=inherited (launcher's console host 45332) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+DONE program=sh mode=today launches=40 exits=[0x40] avgMs=183 totalS=7.5
+WINDOWS new visible top-level windows during the run: 0

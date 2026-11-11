@@ -1,0 +1,6 @@
+RUN program=gh mode=today n=40 launcherPid=46180 launcherConsoleHost=37612 consoleWindow=51578342
+  launch 0: exit=0 489 ms out=10 err=0 outHead='Hallmanac ' errHead=''
+  launch 1: exit=0 453 ms out=10 err=0 outHead='Hallmanac ' errHead=''
+  launch 2: exit=0 478 ms out=10 err=0 outHead='Hallmanac ' errHead=''
+DONE program=gh mode=today launches=40 exits=[0x40] avgMs=478 totalS=19.1
+WINDOWS new visible top-level windows during the run: 0

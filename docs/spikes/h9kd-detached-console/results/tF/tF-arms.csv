@@ -1,0 +1,8 @@
+"Index","Arm","Pid","Log"
+"0","gitcmd:today:40:hidden:nowindow:2","3940","C:\temp\h9kdetach\tF\tF-arm0-gitcmd-today.log"
+"1","gitcmd:detached:40:hidden:nowindow:2","9568","C:\temp\h9kdetach\tF\tF-arm1-gitcmd-detached.log"
+"2","git:today:30:hidden:newconsole:1","32244","C:\temp\h9kdetach\tF\tF-arm2-git-today.log"
+"3","gh:today:40:hidden:newconsole:0","46180","C:\temp\h9kdetach\tF\tF-arm3-gh-today.log"
+"4","sh:today:40:hidden:newconsole:0","42336","C:\temp\h9kdetach\tF\tF-arm4-sh-today.log"
+"5","bash:today:40:hidden:newconsole:0","34136","C:\temp\h9kdetach\tF\tF-arm5-bash-today.log"
+"6","claude-direct:nowindow:3:hidden:newconsole:0","46144","C:\temp\h9kdetach\tF\tF-arm6-claude-direct-nowindow.log"

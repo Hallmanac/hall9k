@@ -1,0 +1,6 @@
+RUN program=gh mode=today n=40 launcherPid=39496 launcherConsoleHost=15088 consoleWindow=0
+CHAIN gh/inherit#0 pid=632 ppid=39496 console=inherited (launcher's console host 15088) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" api user -q .login
+CHAIN gh/inherit#0 pid=2916 ppid=632 console=inherited (launcher's console host 15088) :: tzutil.exe :: tzutil /g
+CHAIN gh/inherit#1 pid=44848 ppid=39496 console=inherited (launcher's console host 15088) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" api user -q .login
+DONE program=gh mode=today launches=40 exits=[0x40] avgMs=576 totalS=23.2
+WINDOWS new visible top-level windows during the run: 0

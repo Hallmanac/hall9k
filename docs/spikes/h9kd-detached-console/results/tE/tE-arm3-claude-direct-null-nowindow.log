@@ -1,0 +1,8 @@
+RUN program=claude-direct-null mode=nowindow n=8 launcherPid=24048 launcherConsoleHost=49984 consoleWindow=0
+CHAIN claude-direct-null/nowindow#0 pid=4920 ppid=24048 console=NEW console (host pid 3476) :: claude.exe :: "C:\Users\Hallm\.local\bin\claude.exe" --version
+CHAIN claude-direct-null/nowindow#0 pid=3476 ppid=4920 console=NEW console (host pid 4920) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+  launch 0: exit=0 46 ms out=22 err=0 outHead='2.1.322 (Claude Code) ' errHead=''
+  launch 1: exit=0 39 ms out=22 err=0 outHead='2.1.322 (Claude Code) ' errHead=''
+  launch 2: exit=0 39 ms out=22 err=0 outHead='2.1.322 (Claude Code) ' errHead=''
+DONE program=claude-direct-null mode=nowindow launches=8 exits=[0x8] avgMs=39 totalS=0.4
+WINDOWS new visible top-level windows during the run: 0

@@ -1,0 +1,6 @@
+RUN program=claude-direct mode=nowindow n=3 launcherPid=46144 launcherConsoleHost=44680 consoleWindow=5506508
+  launch 0: exit=0 5841 ms out=11906 err=0 outHead='{"type":"system","subtype":"hook_started","hook_id":"54dca4fc-48c8-4c7b-98e5-a6fd36746a43"' errHead=''
+  launch 1: exit=0 6646 ms out=11905 err=0 outHead='{"type":"system","subtype":"hook_started","hook_id":"c3e24f41-276c-40d2-970d-8316a4436075"' errHead=''
+  launch 2: exit=0 5310 ms out=11905 err=0 outHead='{"type":"system","subtype":"hook_started","hook_id":"314fe3f7-5c4e-487d-9def-f13c45f844fe"' errHead=''
+DONE program=claude-direct mode=nowindow launches=3 exits=[0x3] avgMs=5932 totalS=17.8
+WINDOWS new visible top-level windows during the run: 0

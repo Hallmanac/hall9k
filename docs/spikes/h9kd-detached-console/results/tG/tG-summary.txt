@@ -1,0 +1,23 @@
+### arm 0 [bashusr-null:today:40:hidden:nowindow:1] root pid 49132: child creations 41, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 1 [bashusr-null:detached:40:hidden:nowindow:1] root pid 53548: child creations 41, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 2 [git:nowindow:30:hidden:detached:1] root pid 25412: child creations 300, tokens kept (never freed) 210, pending 0; 30 launches -> kept per launch 7.00
+    git-core\git-remote-https.exe > usr\sh.exe                     created   60 freed    0 kept   60
+    git-core\git.exe > git-core\git-remote-https.exe               created   30 freed    0 kept   30
+    probe.exe > ucrt64\git.exe                                     created   30 freed    0 kept   30
+    ucrt64\git.exe > git-core\git.exe                              created   30 freed    0 kept   30
+    usr\sh.exe > gh.exe                                            created   60 freed    0 kept   60
+### arm 3 [gh:nowindow:40:hidden:detached:1] root pid 53668: child creations 160, tokens kept (never freed) 40, pending 0; 40 launches -> kept per launch 1.00
+    probe.exe > gh.exe                                             created   40 freed    0 kept   40
+### arm 4 [sh:nowindow:40:hidden:detached:1] root pid 13040: child creations 280, tokens kept (never freed) 120, pending 0; 40 launches -> kept per launch 3.00
+    probe.exe > usr\sh.exe                                         created   40 freed    0 kept   40
+    usr\sh.exe > usr\sh.exe                                        created   80 freed    0 kept   80
+### arm 5 [bash:nowindow:40:hidden:detached:1] root pid 51260: child creations 320, tokens kept (never freed) 160, pending 0; 40 launches -> kept per launch 4.00
+    bin\bash.exe > usr\bash.exe                                    created   40 freed    0 kept   40
+    probe.exe > bin\bash.exe                                       created   40 freed    0 kept   40
+    usr\bash.exe > usr\bash.exe                                    created   80 freed    0 kept   80
+### arm 6 [git:nowindow:30:hidden:nowindow:1] root pid 1852: child creations 301, tokens kept (never freed) 210, pending 0; 30 launches -> kept per launch 7.00
+    git-core\git-remote-https.exe > usr\sh.exe                     created   60 freed    0 kept   60
+    git-core\git.exe > git-core\git-remote-https.exe               created   30 freed    0 kept   30
+    probe.exe > ucrt64\git.exe                                     created   30 freed    0 kept   30
+    ucrt64\git.exe > git-core\git.exe                              created   30 freed    0 kept   30
+    usr\sh.exe > gh.exe                                            created   60 freed    0 kept   60

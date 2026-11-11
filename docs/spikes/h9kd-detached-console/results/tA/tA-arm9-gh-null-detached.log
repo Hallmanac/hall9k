@@ -1,0 +1,14 @@
+RUN program=gh-null mode=detached n=40 launcherPid=33296 launcherConsoleHost=18760 consoleWindow=0
+CHAIN gh-null/detached#0 pid=4532 ppid=33296 console=NONE :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" --version
+CHAIN gh-null/detached#0 pid=6896 ppid=4532 console=NEW console (host pid 40316) :: tzutil.exe :: tzutil /g
+CHAIN gh-null/detached#0 pid=40316 ppid=6896 console=NEW console (host pid 6896) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+DONE program=gh-null mode=detached launches=40 exits=[0x40] avgMs=141 totalS=5.7
+WINDOWS new visible top-level windows during the run: 8
+  WIN class=ConsoleWindowClass pid=6896 title='C:\Windows\system32\tzutil.exe'
+  WIN class=ConsoleWindowClass pid=8312 title='C:\Windows\system32\tzutil.exe'
+  WIN class=ConsoleWindowClass pid=3372 title='C:\Windows\system32\tzutil.exe'
+  WIN class=ConsoleWindowClass pid=34036 title='C:\Windows\system32\tzutil.exe'
+  WIN class=ConsoleWindowClass pid=49292 title='C:\Windows\system32\tzutil.exe'
+  WIN class=ConsoleWindowClass pid=49904 title='C:\Windows\system32\tzutil.exe'
+  WIN class=ConsoleWindowClass pid=40300 title='C:\Windows\system32\tzutil.exe'
+  WIN class=ConsoleWindowClass pid=41276 title='C:\Windows\system32\tzutil.exe'

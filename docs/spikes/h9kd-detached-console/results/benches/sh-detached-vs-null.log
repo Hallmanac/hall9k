@@ -1,0 +1,14 @@
+pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits
+1,second,A,sh:detached,200,1769753,1770993,1240,55.08,80.0,0
+1,first,B,sh-null:today,200,1768819,1769753,934,5.88,80.0,0
+pair 1: A +1240, B +934, per launch (A-B)/n = 1.53
+2,first,A,sh:detached,200,1770994,1772221,1227,59.23,80.0,0
+2,second,B,sh-null:today,200,1772221,1773070,849,6.07,80.0,0
+pair 2: A +1227, B +849, per launch (A-B)/n = 1.89
+3,second,A,sh:detached,200,1773945,1775097,1152,64.43,80.0,0
+3,first,B,sh-null:today,200,1773070,1773945,875,5.04,80.0,0
+pair 3: A +1152, B +875, per launch (A-B)/n = 1.39
+4,first,A,sh:detached,200,1775097,1776287,1190,57.42,80.0,0
+4,second,B,sh-null:today,200,1776287,1777173,886,5.66,80.0,0
+pair 4: A +1190, B +886, per launch (A-B)/n = 1.52
+TOTAL 800 launches per arm: A +4809, B +3544, per launch 1.58

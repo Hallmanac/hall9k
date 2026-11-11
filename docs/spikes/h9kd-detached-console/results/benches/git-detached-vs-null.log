@@ -1,0 +1,11 @@
+pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits
+1,second,A,git:detached,50,1717713,1718829,1116,48.70,70.0,0
+1,first,B,git-null:detached,50,1717171,1717713,542,1.53,70.0,0
+pair 1: A +1116, B +542, per launch (A-B)/n = 11.48
+2,first,A,git:detached,50,1718829,1719717,888,46.35,70.0,0
+2,second,B,git-null:detached,50,1719717,1720555,838,1.96,70.0,0
+pair 2: A +888, B +838, per launch (A-B)/n = 1.00
+3,second,A,git:detached,50,1721155,1722167,1012,51.20,70.0,0
+3,first,B,git-null:detached,50,1720555,1721156,601,1.31,70.0,0
+pair 3: A +1012, B +601, per launch (A-B)/n = 8.22
+TOTAL 150 launches per arm: A +3016, B +1981, per launch 6.90

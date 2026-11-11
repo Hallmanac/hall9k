@@ -1,0 +1,22 @@
+RUN program=bashusr mode=detached n=40 launcherPid=38136 launcherConsoleHost=13936 consoleWindow=0
+CHAIN bashusr/detached#0 pid=24048 ppid=38136 console=inherited (launcher's console host 13936) :: bash.exe :: "C:\Program Files\Git\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bashusr/detached#0 pid=7688 ppid=24048 console=NEW console (host pid 46456) :: bash.exe :: "C:\Program Files\Git\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bashusr/detached#0 pid=30516 ppid=7688 console=NEW console (host pid 7688) :: cygwin-console-helper.exe :: "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x22C 0x230
+CHAIN bashusr/detached#0 pid=46456 ppid=30516 console=NEW console (host pid 30516) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN bashusr/detached#0 pid=45332 ppid=7688 console=NEW console (host pid 46456) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+CHAIN bashusr/detached#0 pid=41128 ppid=24048 console=NEW console (host pid 46188) :: bash.exe :: "C:\Program Files\Git\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bashusr/detached#0 pid=15692 ppid=41128 console=NEW console (host pid 41128) :: cygwin-console-helper.exe :: "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x220 0x228
+CHAIN bashusr/detached#0 pid=46188 ppid=15692 console=NEW console (host pid 15692) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN bashusr/detached#0 pid=45100 ppid=24048 console=inherited (launcher's console host 13936) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+CHAIN bashusr/detached#1 pid=33204 ppid=38136 console=inherited (launcher's console host 13936) :: bash.exe :: "C:\Program Files\Git\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bashusr/detached#1 pid=40152 ppid=33204 console=NEW console (host pid 7180) :: bash.exe :: "C:\Program Files\Git\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bashusr/detached#1 pid=48104 ppid=40152 console=NEW console (host pid 7180) :: cygwin-console-helper.exe :: "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x220 0x21C
+CHAIN bashusr/detached#1 pid=7180 ppid=48104 console=NEW console (host pid 48104) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN bashusr/detached#1 pid=21404 ppid=40152 console=NEW console (host pid 7180) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+CHAIN bashusr/detached#1 pid=48580 ppid=33204 console=NEW console (host pid 41828) :: bash.exe :: "C:\Program Files\Git\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bashusr/detached#1 pid=49644 ppid=48580 console=NEW console (host pid 48580) :: cygwin-console-helper.exe :: "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x224 0x22C
+CHAIN bashusr/detached#1 pid=41828 ppid=49644 console=NEW console (host pid 49644) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN bashusr/detached#1 pid=12436 ppid=48580 console=NEW console (host pid 41828) :: uname.exe :: "C:\Program Files\Git\usr\bin\uname.exe" -s
+CHAIN bashusr/detached#1 pid=32860 ppid=33204 console=inherited (launcher's console host 13936) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+DONE program=bashusr mode=detached launches=40 exits=[0x40] avgMs=288 totalS=11.7
+WINDOWS new visible top-level windows during the run: 0

@@ -1,0 +1,13 @@
+RUN program=claude-null mode=detached n=8 launcherPid=28868 launcherConsoleHost=37788 consoleWindow=0
+CHAIN claude-null/detached#0 pid=45856 ppid=28868 console=NONE :: cmd.exe :: C:\Windows\System32\cmd.exe /c ""claude" --version > "C:\temp\h9kdetach\scratch\claude-claude-null-28868-0.out" 2> "C:\temp\h9kdetach\scratch\claude-c
+CHAIN claude-null/detached#0 pid=31952 ppid=45856 console=NEW console (host pid 31252) :: claude.exe :: "claude"  --version 
+CHAIN claude-null/detached#0 pid=31252 ppid=31952 console=NEW console (host pid 31952) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+DONE program=claude-null mode=detached launches=8 exits=[0x8] avgMs=102 totalS=0.9
+WINDOWS new visible top-level windows during the run: 7
+  WIN class=ConsoleWindowClass pid=48736 title='"claude"  --version '
+  WIN class=ConsoleWindowClass pid=33024 title='"claude"  --version '
+  WIN class=ConsoleWindowClass pid=18128 title='"claude"  --version '
+  WIN class=ConsoleWindowClass pid=24804 title='"claude"  --version '
+  WIN class=ConsoleWindowClass pid=30984 title='"claude"  --version '
+  WIN class= pid=0 title=''
+  WIN class=ConsoleWindowClass pid=38472 title='"claude"  --version '

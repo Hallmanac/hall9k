@@ -1,0 +1,9 @@
+RUN program=gh mode=nowindow n=40 launcherPid=53668 launcherConsoleHost=0 consoleWindow=0
+CHAIN gh/nowindow#0 pid=14428 ppid=53668 console=NEW console (host pid 3016) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" api user -q .login
+CHAIN gh/nowindow#0 pid=3016 ppid=14428 console=NEW console (host pid 14428) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN gh/nowindow#0 pid=54168 ppid=14428 console=NEW console (host pid 3016) :: tzutil.exe :: tzutil /g
+  launch 0: exit=0 457 ms out=10 err=0 outHead='Hallmanac ' errHead=''
+  launch 1: exit=0 427 ms out=10 err=0 outHead='Hallmanac ' errHead=''
+  launch 2: exit=0 411 ms out=10 err=0 outHead='Hallmanac ' errHead=''
+DONE program=gh mode=nowindow launches=40 exits=[0x40] avgMs=531 totalS=21.3
+WINDOWS new visible top-level windows during the run: 0

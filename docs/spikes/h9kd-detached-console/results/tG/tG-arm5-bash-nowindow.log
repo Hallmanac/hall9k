@@ -1,0 +1,14 @@
+RUN program=bash mode=nowindow n=40 launcherPid=51260 launcherConsoleHost=0 consoleWindow=0
+CHAIN bash/nowindow#0 pid=24812 ppid=51260 console=NEW console (host pid 9844) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bash/nowindow#0 pid=9844 ppid=24812 console=NEW console (host pid 24812) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN bash/nowindow#0 pid=39180 ppid=24812 console=NEW console (host pid 9844) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bash/nowindow#0 pid=52168 ppid=39180 console=NEW console (host pid 9844) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bash/nowindow#0 pid=39360 ppid=52168 console=NEW console (host pid 9844) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+CHAIN bash/nowindow#0 pid=53848 ppid=39180 console=NEW console (host pid 9844) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bash/nowindow#0 pid=4072 ppid=53848 console=NEW console (host pid 9844) ::  :: 
+CHAIN bash/nowindow#0 pid=47700 ppid=39180 console=NEW console (host pid 9844) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+  launch 0: exit=0 100 ms out=54 err=0 outHead='Hall-AgelessRx  MINGW64_NT-10.0-26300 Hall-AgelessRx  ' errHead=''
+  launch 1: exit=0 116 ms out=54 err=0 outHead='Hall-AgelessRx  MINGW64_NT-10.0-26300 Hall-AgelessRx  ' errHead=''
+  launch 2: exit=0 108 ms out=54 err=0 outHead='Hall-AgelessRx  MINGW64_NT-10.0-26300 Hall-AgelessRx  ' errHead=''
+DONE program=bash mode=nowindow launches=40 exits=[0x40] avgMs=201 totalS=8.1
+WINDOWS new visible top-level windows during the run: 0

@@ -1,0 +1,62 @@
+### arm 0 [git:today:30:hidden:nowindow:2] root pid 48704: child creations 271, tokens kept (never freed) 210, pending 0; 30 launches -> kept per launch 7.00
+    git-core\git-remote-https.exe > usr\sh.exe                     created   60 freed    0 kept   60
+    git-core\git.exe > git-core\git-remote-https.exe               created   30 freed    0 kept   30
+    probe.exe > ucrt64\git.exe                                     created   30 freed    0 kept   30
+    ucrt64\git.exe > git-core\git.exe                              created   30 freed    0 kept   30
+    usr\sh.exe > gh.exe                                            created   60 freed    0 kept   60
+### arm 1 [git:detached:30:hidden:nowindow:2] root pid 21468: child creations 391, tokens kept (never freed) 210, pending 0; 30 launches -> kept per launch 7.00
+    git-core\git-remote-https.exe > usr\sh.exe                     created   60 freed    0 kept   60
+    git-core\git.exe > git-core\git-remote-https.exe               created   30 freed    0 kept   30
+    probe.exe > ucrt64\git.exe                                     created   30 freed    0 kept   30
+    ucrt64\git.exe > git-core\git.exe                              created   30 freed    0 kept   30
+    usr\sh.exe > gh.exe                                            created   60 freed    0 kept   60
+### arm 2 [git-null:today:30:hidden:nowindow:1] root pid 45380: child creations 31, tokens kept (never freed) 0, pending 0; 30 launches -> kept per launch 0.00
+### arm 3 [git-null:detached:30:hidden:nowindow:1] root pid 42880: child creations 31, tokens kept (never freed) 0, pending 0; 30 launches -> kept per launch 0.00
+### arm 4 [git:today:30:hidden:detached:2] root pid 43376: child creations 300, tokens kept (never freed) 0, pending 0; 30 launches -> kept per launch 0.00
+### arm 5 [git-null:today:30:hidden:detached:1] root pid 44196: child creations 60, tokens kept (never freed) 0, pending 0; 30 launches -> kept per launch 0.00
+### arm 6 [gh:today:40:hidden:nowindow:2] root pid 39496: child creations 121, tokens kept (never freed) 40, pending 0; 40 launches -> kept per launch 1.00
+    probe.exe > gh.exe                                             created   40 freed    0 kept   40
+### arm 7 [gh:detached:40:hidden:nowindow:2] root pid 41228: child creations 201, tokens kept (never freed) 40, pending 0; 40 launches -> kept per launch 1.00
+    probe.exe > gh.exe                                             created   40 freed    0 kept   40
+### arm 8 [gh-null:today:40:hidden:nowindow:1] root pid 43300: child creations 81, tokens kept (never freed) 40, pending 0; 40 launches -> kept per launch 1.00
+    probe.exe > gh.exe                                             created   40 freed    0 kept   40
+### arm 9 [gh-null:detached:40:hidden:nowindow:1] root pid 33296: child creations 121, tokens kept (never freed) 40, pending 0; 40 launches -> kept per launch 1.00
+    probe.exe > gh.exe                                             created   40 freed    0 kept   40
+### arm 10 [gh:today:40:hidden:detached:2] root pid 18644: child creations 160, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 11 [gh-null:today:40:hidden:detached:1] root pid 42868: child creations 120, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 12 [sh:today:40:hidden:nowindow:2] root pid 17616: child creations 241, tokens kept (never freed) 120, pending 0; 40 launches -> kept per launch 3.00
+    probe.exe > usr\sh.exe                                         created   40 freed    0 kept   40
+    usr\sh.exe > usr\sh.exe                                        created   80 freed    0 kept   80
+### arm 13 [sh:detached:40:hidden:nowindow:2] root pid 34372: child creations 401, tokens kept (never freed) 120, pending 0; 40 launches -> kept per launch 3.00
+    probe.exe > usr\sh.exe                                         created   40 freed    0 kept   40
+    usr\sh.exe > usr\sh.exe                                        created   80 freed    0 kept   80
+### arm 14 [sh-null:today:40:hidden:nowindow:1] root pid 40172: child creations 41, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 15 [sh-null:detached:40:hidden:nowindow:1] root pid 48832: child creations 41, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 16 [sh:today:40:hidden:detached:2] root pid 17736: child creations 280, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 17 [bash:today:40:hidden:nowindow:2] root pid 41344: child creations 281, tokens kept (never freed) 160, pending 0; 40 launches -> kept per launch 4.00
+    bin\bash.exe > usr\bash.exe                                    created   40 freed    0 kept   40
+    probe.exe > bin\bash.exe                                       created   40 freed    0 kept   40
+    usr\bash.exe > usr\bash.exe                                    created   80 freed    0 kept   80
+### arm 18 [bash:detached:40:hidden:nowindow:2] root pid 49860: child creations 321, tokens kept (never freed) 160, pending 0; 40 launches -> kept per launch 4.00
+    bin\bash.exe > usr\bash.exe                                    created   40 freed    0 kept   40
+    probe.exe > bin\bash.exe                                       created   40 freed    0 kept   40
+    usr\bash.exe > usr\bash.exe                                    created   80 freed    0 kept   80
+### arm 19 [bash-null:today:40:hidden:nowindow:1] root pid 37920: child creations 81, tokens kept (never freed) 40, pending 0; 40 launches -> kept per launch 1.00
+    probe.exe > bin\bash.exe                                       created   40 freed    0 kept   40
+### arm 20 [bash-null:detached:40:hidden:nowindow:1] root pid 19428: child creations 121, tokens kept (never freed) 40, pending 0; 40 launches -> kept per launch 1.00
+    probe.exe > bin\bash.exe                                       created   40 freed    0 kept   40
+### arm 21 [bash:today:40:hidden:detached:2] root pid 40308: child creations 320, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 22 [bashusr:today:40:hidden:nowindow:2] root pid 41092: child creations 241, tokens kept (never freed) 120, pending 0; 40 launches -> kept per launch 3.00
+    probe.exe > usr\bash.exe                                       created   40 freed    0 kept   40
+    usr\bash.exe > usr\bash.exe                                    created   80 freed    0 kept   80
+### arm 23 [bashusr:detached:40:hidden:nowindow:2] root pid 38136: child creations 401, tokens kept (never freed) 120, pending 0; 40 launches -> kept per launch 3.00
+    probe.exe > usr\bash.exe                                       created   40 freed    0 kept   40
+    usr\bash.exe > usr\bash.exe                                    created   80 freed    0 kept   80
+### arm 24 [nop:detached:40:hidden:nowindow:1] root pid 50096: child creations 41, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 25 [spawnprog-detached:detached:40:hidden:nowindow:2] root pid 33036: child creations 81, tokens kept (never freed) 40, pending 0; 40 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   80 freed   40 kept   40
+### arm 26 [spawnprog-inherit:today:40:hidden:nowindow:2] root pid 7644: child creations 81, tokens kept (never freed) 40, pending 0; 40 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   80 freed   40 kept   40
+### arm 27 [spawnprog-detached:today:40:hidden:nowindow:2] root pid 4400: child creations 81, tokens kept (never freed) 40, pending 0; 40 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   80 freed   40 kept   40
+### arm 28 [spawnprog-inherit:today:40:hidden:detached:2] root pid 9460: child creations 120, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00

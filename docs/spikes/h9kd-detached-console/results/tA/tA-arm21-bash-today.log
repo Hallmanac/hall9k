@@ -1,0 +1,28 @@
+RUN program=bash mode=today n=40 launcherPid=40308 launcherConsoleHost=0 consoleWindow=0
+CHAIN bash/inherit#0 pid=16600 ppid=40308 console=NEW console (host pid 2256) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bash/inherit#0 pid=2256 ppid=16600 console=NEW console (host pid 16600) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN bash/inherit#0 pid=45728 ppid=16600 console=NEW console (host pid 2256) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bash/inherit#0 pid=34500 ppid=45728 console=NEW console (host pid 2256) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bash/inherit#0 pid=47132 ppid=34500 console=NEW console (host pid 2256) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+CHAIN bash/inherit#0 pid=46404 ppid=45728 console=NEW console (host pid 2256) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bash/inherit#0 pid=41764 ppid=45728 console=NEW console (host pid 2256) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+CHAIN bash/inherit#1 pid=6216 ppid=40308 console=NEW console (host pid 46220) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bash/inherit#1 pid=46220 ppid=6216 console=NEW console (host pid 6216) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN bash/inherit#1 pid=16752 ppid=6216 console=NEW console (host pid 46220) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bash/inherit#1 pid=42984 ppid=16752 console=NEW console (host pid 46220) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bash/inherit#1 pid=43612 ppid=42984 console=NEW console (host pid 46220) ::  :: 
+CHAIN bash/inherit#1 pid=28988 ppid=16752 console=NEW console (host pid 46220) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bash/inherit#1 pid=16532 ppid=28988 console=NEW console (host pid 46220) ::  :: 
+CHAIN bash/inherit#1 pid=33072 ppid=16752 console=NEW console (host pid 46220) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+DONE program=bash mode=today launches=40 exits=[0x40] avgMs=283 totalS=11.4
+WINDOWS new visible top-level windows during the run: 40
+  WIN class=ConsoleWindowClass pid=16600 title='C:\Program Files\Git\bin\bash.exe'
+  WIN class=ConsoleWindowClass pid=6216 title='C:\Program Files\Git\bin\bash.exe'
+  WIN class=ConsoleWindowClass pid=42892 title='C:\Program Files\Git\bin\bash.exe'
+  WIN class=ConsoleWindowClass pid=24204 title='C:\Program Files\Git\bin\bash.exe'
+  WIN class=ConsoleWindowClass pid=9928 title='C:\Program Files\Git\bin\bash.exe'
+  WIN class=ConsoleWindowClass pid=24048 title='C:\Program Files\Git\bin\bash.exe'
+  WIN class=ConsoleWindowClass pid=34248 title='C:\Program Files\Git\bin\bash.exe'
+  WIN class=ConsoleWindowClass pid=46832 title='C:\Program Files\Git\bin\bash.exe'
+  WIN class=ConsoleWindowClass pid=47556 title='C:\Program Files\Git\bin\bash.exe'
+  WIN class=ConsoleWindowClass pid=41716 title='C:\Program Files\Git\bin\bash.exe'

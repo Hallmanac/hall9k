@@ -1,0 +1,11 @@
+pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits
+1,first,A,bash:today,200,1745209,1746634,1425,41.59,65.0,0
+1,second,B,bashusr-null:today,200,1746635,1747281,646,5.55,65.0,0
+pair 1: A +1425, B +646, per launch (A-B)/n = 3.90
+2,second,A,bash:today,200,1747971,1749120,1149,38.93,65.0,0
+2,first,B,bashusr-null:today,200,1747281,1747971,690,5.65,65.0,0
+pair 2: A +1149, B +690, per launch (A-B)/n = 2.29
+3,first,A,bash:today,200,1749120,1750605,1485,45.36,65.0,0
+3,second,B,bashusr-null:today,200,1750605,1751238,633,5.84,65.0,0
+pair 3: A +1485, B +633, per launch (A-B)/n = 4.26
+launches took 71.4s of a 65s window; raise the window

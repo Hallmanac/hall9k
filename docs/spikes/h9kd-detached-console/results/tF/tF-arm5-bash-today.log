@@ -1,0 +1,6 @@
+RUN program=bash mode=today n=40 launcherPid=34136 launcherConsoleHost=38412 consoleWindow=5440972
+  launch 0: exit=0 132 ms out=54 err=0 outHead='Hall-AgelessRx  MINGW64_NT-10.0-26300 Hall-AgelessRx  ' errHead=''
+  launch 1: exit=0 121 ms out=54 err=0 outHead='Hall-AgelessRx  MINGW64_NT-10.0-26300 Hall-AgelessRx  ' errHead=''
+  launch 2: exit=0 108 ms out=54 err=0 outHead='Hall-AgelessRx  MINGW64_NT-10.0-26300 Hall-AgelessRx  ' errHead=''
+DONE program=bash mode=today launches=40 exits=[0x40] avgMs=163 totalS=6.6
+WINDOWS new visible top-level windows during the run: 0

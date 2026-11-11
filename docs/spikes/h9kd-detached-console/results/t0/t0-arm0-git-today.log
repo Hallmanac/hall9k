@@ -1,0 +1,18 @@
+RUN program=git mode=today n=12 launcherPid=18460 launcherConsoleHost=15252 consoleWindow=0
+CHAIN git/inherit#0 pid=48748 ppid=18460 console=inherited (launcher's console host 15252) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+CHAIN git/inherit#0 pid=32348 ppid=48748 console=inherited (launcher's console host 15252) :: git.exe :: git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/inherit#0 pid=41784 ppid=32348 console=inherited (launcher's console host 15252) :: git-remote-https.exe :: git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/inherit#0 pid=7460 ppid=41784 console=inherited (launcher's console host 15252) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' au
+CHAIN git/inherit#0 pid=35396 ppid=7460 console=inherited (launcher's console host 15252) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+CHAIN git/inherit#0 pid=49692 ppid=35396 console=NEW console (host pid 35396) :: tzutil.exe :: tzutil /g
+CHAIN git/inherit#0 pid=41508 ppid=41784 console=inherited (launcher's console host 15252) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' 
+CHAIN git/inherit#0 pid=13564 ppid=41508 console=inherited (launcher's console host 15252) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+CHAIN git/inherit#1 pid=25512 ppid=18460 console=inherited (launcher's console host 15252) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+CHAIN git/inherit#1 pid=40372 ppid=25512 console=inherited (launcher's console host 15252) :: git.exe :: git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/inherit#1 pid=33004 ppid=40372 console=inherited (launcher's console host 15252) :: git-remote-https.exe :: git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/inherit#1 pid=31660 ppid=33004 console=inherited (launcher's console host 15252) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' au
+CHAIN git/inherit#1 pid=37452 ppid=31660 console=inherited (launcher's console host 15252) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+CHAIN git/inherit#1 pid=23520 ppid=33004 console=inherited (launcher's console host 15252) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' 
+CHAIN git/inherit#1 pid=50168 ppid=23520 console=inherited (launcher's console host 15252) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+DONE program=git mode=today launches=12 exits=[0x12] avgMs=909 totalS=11.0
+WINDOWS new visible top-level windows during the run: 0

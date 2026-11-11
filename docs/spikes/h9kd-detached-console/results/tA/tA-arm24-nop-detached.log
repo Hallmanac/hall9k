@@ -1,0 +1,4 @@
+RUN program=nop mode=detached n=40 launcherPid=50096 launcherConsoleHost=42824 consoleWindow=0
+CHAIN nop/detached#0 pid=40536 ppid=50096 console=NONE :: probe.exe :: C:\temp\h9kdetach\bin\probe.exe nop
+DONE program=nop mode=detached launches=40 exits=[0x40] avgMs=62 totalS=2.6
+WINDOWS new visible top-level windows during the run: 0

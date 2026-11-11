@@ -1,0 +1,493 @@
+// probe: starts the programs h9kd starts in "today" and "detached" shapes, measures the live Toke count in
+// alternating batches, and reports which console every process in a chain had.
+//
+//   probe toke
+//   probe console <pid>                       console host of a pid and its descendants (read-only)
+//   probe run   --program P --mode M --n N [--snap K] [--windows] [--quiet]
+//   probe bench --a P:M --b P:M --launches N --window S --pairs K [--first B]
+//   probe standin --flags nowindow|detached|none --log FILE -- exe args...     (WindowsDaemonLaunch.Create shape)
+//   probe pids    prints pid and exits    probe hold <seconds>   sleeps    probe self   prints this process's console
+using System.Diagnostics;
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+internal sealed record Spec(string File, string[] ArgList, string? Raw, string Cwd, Dictionary<string, string> Env, string TodayMode);
+internal sealed record Result(int Exit, int OutBytes, int ErrBytes, double Ms, string OutHead, string ErrHead, int Pid);
+
+internal static class Program
+{
+    const string Worktree = @"C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-666e4d42";
+    const string GitRoot = @"C:\Program Files\Git";
+    static readonly string Scratch = Environment.GetEnvironmentVariable("PROBE_SCRATCH") ?? @"C:\temp\h9kdetach\scratch";
+    static readonly char[] QuoteTriggers = [' ', '\t', '"'];
+    static volatile int CurrentPid;
+
+    static int Main(string[] args)
+    {
+        try
+        {
+            switch (args.Length > 0 ? args[0] : "")
+            {
+                case "toke": Console.WriteLine(Toke()); return 0;
+                case "pids": Console.WriteLine(Environment.ProcessId); return 0;
+                case "hold": Thread.Sleep(int.Parse(args[1]) * 1000); return 0;
+                case "console": return ConsoleCmd(int.Parse(args[1]));
+                case "run": return Run(args[1..]);
+                case "bench": return Bench(args[1..]);
+                case "standin": return StandIn(args[1..]);
+                case "self": return Self();
+                case "nop": return 0;
+                case "spawn": return Launch(Preset("spawn-" + args[1], 0), args[1]).Exit;
+                default: Console.Error.WriteLine("see header"); return 64;
+            }
+        }
+        catch (Exception e) { Console.Error.WriteLine(e); return 70; }
+    }
+
+    // ---------- pool tag ----------
+    static long Toke()
+    {
+        int cap = 4 << 20;
+        IntPtr buf = Marshal.AllocHGlobal(cap);
+        try
+        {
+            while (true)
+            {
+                int st = Native.NtQuerySystemInformation(22, buf, cap, out int ret);
+                if (st == unchecked((int)0xC0000004)) { Marshal.FreeHGlobal(buf); cap = Math.Max(ret, cap) + (1 << 20); buf = Marshal.AllocHGlobal(cap); continue; }
+                if (st != 0) throw new InvalidOperationException($"NtQuerySystemInformation 0x{st:X8} (run elevated)");
+                break;
+            }
+            int count = Marshal.ReadInt32(buf);
+            for (int i = 0; i < count; i++)
+            {
+                IntPtr e = buf + 8 + i * 40;
+                if ((uint)Marshal.ReadInt32(e) == 0x656B6F54)
+                    return (int)((uint)Marshal.ReadInt32(e + 4) - (uint)Marshal.ReadInt32(e + 8));
+            }
+            return -1;
+        }
+        finally { Marshal.FreeHGlobal(buf); }
+    }
+
+    // ---------- program presets: the shapes h9kd uses ----------
+    static Dictionary<string, string> BaseEnv(bool stripClaude)
+    {
+        var env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (System.Collections.DictionaryEntry de in Environment.GetEnvironmentVariables())
+        {
+            string k = (string)de.Key;
+            if (stripClaude && (k.StartsWith("CLAUDE", StringComparison.OrdinalIgnoreCase) || k.StartsWith("AI_AGENT", StringComparison.OrdinalIgnoreCase))) continue;
+            env[k] = (string?)de.Value ?? "";
+        }
+        // GitForWindowsLauncher: the real git's directory goes ahead of the launcher on PATH
+        env["PATH"] = $@"{GitRoot}\ucrt64\bin;" + (env.TryGetValue("PATH", out string? p) ? p : "");
+        return env;
+    }
+
+    static void NonInteractiveGit(Dictionary<string, string> env)
+    {
+        env["GIT_EDITOR"] = "true"; env["GIT_SEQUENCE_EDITOR"] = ":"; env["GIT_TERMINAL_PROMPT"] = "0";
+        env["GIT_CONFIG_KEY_0"] = "commit.gpgsign"; env["GIT_CONFIG_VALUE_0"] = "false"; env["GIT_CONFIG_COUNT"] = "1";
+    }
+
+    static Spec Preset(string name, int index)
+    {
+        Directory.CreateDirectory(Scratch);
+        string realGit = $@"{GitRoot}\ucrt64\bin\git.exe";
+        string gh = @"C:\Program Files\GitHub CLI\gh.exe";
+        string sh = $@"{GitRoot}\usr\bin\sh.exe";
+        string chain = "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe";
+        if (name.StartsWith("spawnprog-")) return new(Environment.ProcessPath!, ["spawn", name[10..]], null, Worktree, BaseEnv(false), "inherit");
+        if (name.StartsWith("spawn-")) return new(Environment.ProcessPath!, ["nop"], null, Worktree, BaseEnv(false), name[6..]);
+        switch (name)
+        {
+            case "git": { var e = BaseEnv(false); NonInteractiveGit(e); return new(realGit, ["ls-remote", "https://github.com/Hallmanac/hall9k-smoke.git", "HEAD"], null, Worktree, e, "inherit"); }
+            case "git-null": { var e = BaseEnv(false); NonInteractiveGit(e); return new(realGit, ["--version"], null, Worktree, e, "inherit"); }
+            case "git-bad": { var e = BaseEnv(false); NonInteractiveGit(e); return new(realGit, ["ls-remote", "https://github.com/Hallmanac/no-such-repo-h9kspike.git"], null, Worktree, e, "inherit"); }
+            case "gh": return new(gh, ["api", "user", "-q", ".login"], null, Worktree, BaseEnv(false), "inherit");
+            case "gh-null": return new(gh, ["--version"], null, Worktree, BaseEnv(false), "inherit");
+            case "sh": return new(sh, ["-c", chain], null, Worktree, BaseEnv(false), "inherit");
+            case "sh-null": return new(sh, ["-c", "echo hi"], null, Worktree, BaseEnv(false), "inherit");
+            case "bash": return new($@"{GitRoot}\bin\bash.exe", ["-c", chain], null, Worktree, BaseEnv(false), "inherit");
+            case "bash-null": return new($@"{GitRoot}\bin\bash.exe", ["-c", "echo hi"], null, Worktree, BaseEnv(false), "inherit");
+            case "bashusr": return new($@"{GitRoot}\usr\bin\bash.exe", ["-c", chain], null, Worktree, BaseEnv(false), "inherit");
+            case "nop": return new(Environment.ProcessPath!, ["nop"], null, Worktree, BaseEnv(false), "inherit");
+            case "bashusr-null": return new($@"{GitRoot}\usr\bin\bash.exe", ["-c", "echo hi"], null, Worktree, BaseEnv(false), "inherit");
+            case "gitcmd": return new($@"{GitRoot}\cmd\git.exe", ["--version"], null, Worktree, BaseEnv(false), "inherit");   // Git for Windows' launcher: starts the real git and waits
+            case "hostname": return new(@"C:\Windows\System32\hostname.exe", [], null, Worktree, BaseEnv(false), "inherit");
+            case "claude-direct-null": return new(@"C:\Users\Hallm\.local\bin\claude.exe", ["--version"], null, Worktree, BaseEnv(true), "nowindow");
+            case "claude-direct":
+            {
+                var e = BaseEnv(true);
+                e["CLAUDE_CODE_GIT_BASH_PATH"] = $@"{GitRoot}\bin\bash.exe";
+                return new(@"C:\Users\Hallm\.local\bin\claude.exe",
+                    ["-p", "Use the Bash tool to run the single command: hostname. Then reply with the single word done.", "--output-format", "stream-json", "--verbose",
+                     "--model", "claude-haiku-5-5", "--max-turns", "4", "--dangerously-skip-permissions", "--strict-mcp-config"], null, Worktree, e, "nowindow");
+            }
+            case "cmd-hostname":
+            {
+                string outFile = Path.Combine(Scratch, $"cmdhost-{Environment.ProcessId}-{index}.out");
+                return new(@"C:\Windows\System32\cmd.exe", [], $"/c \"hostname > \"{outFile}\"\"", Worktree, BaseEnv(false), "nowindow");
+            }
+            case "claude":
+            case "claude-null":
+            {
+                // WindowsProcessManager.Spawn: cmd.exe /c ""claude" <args> < in > out 2> err"
+                var e = BaseEnv(true);
+                e["CLAUDE_CODE_GIT_BASH_PATH"] = $@"{GitRoot}\bin\bash.exe";
+                string stem = Path.Combine(Scratch, $"claude-{name}-{Environment.ProcessId}-{index}");
+                string input = stem + ".in";
+                File.WriteAllText(input, "Use the Bash tool to run the single command: hostname\nThen reply with the single word done.");
+                string flags = name == "claude"
+                    ? "-p --output-format stream-json --verbose --model claude-haiku-5-5 --max-turns 4 --dangerously-skip-permissions --strict-mcp-config"
+                    : "--version";
+                string inner = name == "claude"
+                    ? $"\"claude\" {flags} < \"{input}\" > \"{stem}.out\" 2> \"{stem}.err\""
+                    : $"\"claude\" {flags} > \"{stem}.out\" 2> \"{stem}.err\"";
+                return new(@"C:\Windows\System32\cmd.exe", [], $"/c \"{inner}\"", Worktree, e, "nowindow");
+            }
+            default: throw new ArgumentException("unknown program " + name);
+        }
+    }
+
+    // ---------- launching ----------
+    static string Quote(string a)
+    {
+        if (a.Length > 0 && a.IndexOfAny(QuoteTriggers) < 0) return a;
+        var sb = new StringBuilder("\"");
+        int bs = 0;
+        foreach (char c in a)
+        {
+            if (c == '\\') { bs++; continue; }
+            if (c == '"') { sb.Append('\\', bs * 2 + 1).Append('"'); bs = 0; continue; }
+            sb.Append('\\', bs).Append(c); bs = 0;
+        }
+        sb.Append('\\', bs * 2).Append('"');
+        return sb.ToString();
+    }
+
+    static Result LaunchNet(Spec s, bool noWindow)
+    {
+        var sw = Stopwatch.StartNew();
+        var psi = new ProcessStartInfo(s.File)
+        {
+            WorkingDirectory = s.Cwd, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, CreateNoWindow = noWindow,
+        };
+        if (s.Raw is not null) psi.Arguments = s.Raw; else foreach (string a in s.ArgList) psi.ArgumentList.Add(a);
+        psi.Environment.Clear();
+        foreach (var kv in s.Env) psi.Environment[kv.Key] = kv.Value;
+        using var p = Process.Start(psi) ?? throw new InvalidOperationException("no process");
+        CurrentPid = p.Id;
+        Task<string> o = p.StandardOutput.ReadToEndAsync(), e = p.StandardError.ReadToEndAsync();
+        p.WaitForExit(180_000);
+        Task.WaitAll([o, e], 5000);
+        string os = o.IsCompletedSuccessfully ? o.Result : "", es = e.IsCompletedSuccessfully ? e.Result : "";
+        return new(p.HasExited ? p.ExitCode : -999, os.Length, es.Length, sw.Elapsed.TotalMilliseconds, Head(os), Head(es), p.Id);
+    }
+
+    static string Head(string s) => (s.Length > 90 ? s[..90] : s).Replace('\n', ' ').Replace('\r', ' ');
+
+    static Result LaunchNative(Spec s, uint flags, bool hide = false)
+    {
+        var sw = Stopwatch.StartNew();
+        var sa = new Native.SecurityAttributes { Length = Marshal.SizeOf<Native.SecurityAttributes>(), Inherit = 1 };
+        Native.CreatePipe(out SafeFileHandle outR, out SafeFileHandle outW, ref sa, 0);
+        Native.CreatePipe(out SafeFileHandle errR, out SafeFileHandle errW, ref sa, 0);
+        Native.SetHandleInformation(outR, 1, 0); Native.SetHandleInformation(errR, 1, 0);
+        SafeFileHandle nul = Native.CreateFileW("NUL", 0x80000000, 3, ref sa, 3, 0x80, IntPtr.Zero);
+        var si = new Native.StartupInfo
+        {
+            Size = Marshal.SizeOf<Native.StartupInfo>(), Flags = Native.UseStdHandles | (hide ? 1 : 0), ShowWindow = 0,
+            StdIn = nul.DangerousGetHandle(), StdOut = outW.DangerousGetHandle(), StdErr = errW.DangerousGetHandle(),
+        };
+        string cmd = s.Raw is not null ? $"{Quote(s.File)} {s.Raw}" : $"{Quote(s.File)} {string.Join(' ', s.ArgList.Select(Quote))}".TrimEnd();
+        char[] env = (string.Join('\0', s.Env.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase).Select(k => $"{k.Key}={k.Value}")) + "\0\0").ToCharArray();
+        var pin = GCHandle.Alloc(env, GCHandleType.Pinned);
+        try
+        {
+            if (!Native.CreateProcessW(null, new StringBuilder(cmd), IntPtr.Zero, IntPtr.Zero, true, flags | Native.CreateUnicodeEnvironment,
+                    pin.AddrOfPinnedObject(), s.Cwd, ref si, out var pi))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "CreateProcess " + cmd);
+            Native.CloseHandle(pi.Thread);
+            outW.Dispose(); errW.Dispose(); nul.Dispose();
+            CurrentPid = pi.ProcessId;
+            var o = Task.Run(() => ReadAll(outR)); var e = Task.Run(() => ReadAll(errR));
+            bool done = Native.WaitForSingleObject(pi.Process, 180_000) == 0;
+            Task.WaitAll([o, e], 5000);
+            Native.GetExitCodeProcess(pi.Process, out uint code);
+            Native.CloseHandle(pi.Process);
+            string os = o.IsCompletedSuccessfully ? o.Result : "", es = e.IsCompletedSuccessfully ? e.Result : "";
+            return new(done ? (int)code : -999, os.Length, es.Length, sw.Elapsed.TotalMilliseconds, Head(os), Head(es), pi.ProcessId);
+        }
+        finally { pin.Free(); outR.Dispose(); errR.Dispose(); }
+    }
+
+    static string ReadAll(SafeFileHandle h)
+    {
+        using var fs = new FileStream(h, FileAccess.Read, 4096, false);
+        using var sr = new StreamReader(fs, Encoding.UTF8);
+        return sr.ReadToEnd();
+    }
+
+    static Result Launch(Spec s, string mode) => mode switch
+    {
+        "inherit" => LaunchNet(s, false),            // ExternalProcess.StartInfoFor: redirected, no CreateNoWindow
+        "nowindow" => LaunchNet(s, true),            // WindowsProcessManager.Spawn: CreateNoWindow = true
+        "detached" => LaunchNative(s, Native.DetachedProcess),
+        "inherit-native" => LaunchNative(s, 0),
+        "nowindow-native" => LaunchNative(s, Native.CreateNoWindow),
+        "newconsole-native" => LaunchNative(s, Native.CreateNewConsole),
+        "hiddenconsole-native" => LaunchNative(s, Native.CreateNewConsole, true),   // CREATE_NEW_CONSOLE + STARTF_USESHOWWINDOW + SW_HIDE: a console that has a window, hidden
+        _ => throw new ArgumentException("unknown mode " + mode),
+    };
+
+    static string Resolve(string mode, Spec s) => mode == "today" ? s.TodayMode : mode;
+
+    static string Opt(string[] a, string name, string? def = null)
+    {
+        int i = Array.IndexOf(a, name);
+        return i >= 0 && i + 1 < a.Length ? a[i + 1] : def ?? throw new ArgumentException("missing " + name);
+    }
+
+    // ---------- console evidence ----------
+    static long ConsoleHost(IntPtr h)
+    {
+        int st = Native.NtQueryInformationProcess(h, 49, out IntPtr info, IntPtr.Size, out _);
+        return st == 0 ? (info.ToInt64() & ~3L) : -1;
+    }
+
+    static string CmdLine(IntPtr h)
+    {
+        Native.NtQueryInformationProcess(h, 60, IntPtr.Zero, 0, out int need);
+        if (need <= 0) return "";
+        IntPtr b = Marshal.AllocHGlobal(need);
+        try
+        {
+            if (Native.NtQueryInformationProcess(h, 60, b, need, out _) != 0) return "";
+            short len = Marshal.ReadInt16(b); IntPtr ptr = Marshal.ReadIntPtr(b, 8);
+            return Marshal.PtrToStringUni(ptr, len / 2) ?? "";
+        }
+        finally { Marshal.FreeHGlobal(b); }
+    }
+
+    sealed class Seen { public int Pid, Ppid; public string Image = "", Cmd = ""; public long Host = -2; public long HostParent = -1; public string HostImage = ""; public long Created; }
+
+    static List<Native.ProcessEntry> Processes()
+    {
+        var list = new List<Native.ProcessEntry>();
+        IntPtr snap = Native.CreateToolhelp32Snapshot(2, 0);
+        var e = new Native.ProcessEntry { Size = Marshal.SizeOf<Native.ProcessEntry>() };
+        if (Native.Process32FirstW(snap, ref e)) do list.Add(e); while (Native.Process32NextW(snap, ref e));
+        Native.CloseHandle(snap);
+        return list;
+    }
+
+    static void Sample(int root, Dictionary<long, Seen> seen)
+    {
+        var all = Processes();
+        var kids = all.ToLookup(p => p.ParentProcessId);
+        var queue = new Queue<int>(); queue.Enqueue(root);
+        var visited = new HashSet<int>();
+        while (queue.Count > 0)
+        {
+            int pid = queue.Dequeue();
+            if (!visited.Add(pid)) continue;
+            foreach (var k in kids[pid]) queue.Enqueue(k.ProcessId);
+            var entry = all.FirstOrDefault(p => p.ProcessId == pid);
+            if (entry.ProcessId == 0) continue;
+            IntPtr h = Native.OpenProcess(0x1000 | 0x0400 | 0x0010, false, pid);
+            if (h == IntPtr.Zero) continue;
+            Native.GetProcessTimes(h, out long created, out _, out _, out _);
+            long key = ((long)pid << 40) ^ created;
+            if (!seen.TryGetValue(key, out Seen? s))
+            {
+                var sb = new StringBuilder(1024); int n = 1024; Native.QueryFullProcessImageNameW(h, 0, sb, ref n);
+                seen[key] = s = new Seen { Pid = pid, Ppid = entry.ParentProcessId, Image = sb.ToString(), Cmd = CmdLine(h), Created = created };
+            }
+            long host = ConsoleHost(h);
+            if (host >= 0) s.Host = host;
+            if (host > 0 && s.HostImage == "")
+            {
+                var hp = all.FirstOrDefault(p => p.ProcessId == host);
+                if (hp.ProcessId != 0) { s.HostParent = hp.ParentProcessId; s.HostImage = hp.ExeFile; }
+            }
+            Native.CloseHandle(h);
+        }
+    }
+
+    static void PrintSeen(Dictionary<long, Seen> seen, long launcherHost, string label)
+    {
+        foreach (Seen s in seen.Values.OrderBy(x => x.Created))
+        {
+            string con = s.Host switch
+            {
+                -2 => "unknown (exited before it could be read)",
+                0 => "NONE",
+                var h when h == launcherHost => $"inherited (launcher's console host {h})",
+                var h => $"NEW console (host pid {h})",
+            };
+            string cmd = s.Cmd.Length > 150 ? s.Cmd[..150] : s.Cmd;
+            Console.WriteLine($"CHAIN {label} pid={s.Pid} ppid={s.Ppid} console={con} :: {Path.GetFileName(s.Image)} :: {cmd}");
+        }
+    }
+
+    static int ConsoleCmd(int pid)
+    {
+        var seen = new Dictionary<long, Seen>();
+        Sample(pid, seen);
+        PrintSeen(seen, -1, "console");
+        return 0;
+    }
+
+    static int Self()
+    {
+        long host = ConsoleHost(Native.OpenProcess(0x1000, false, Environment.ProcessId));
+        uint[] l = new uint[16]; uint n = Native.GetConsoleProcessList(l, 16);
+        Console.WriteLine($"pid={Environment.ProcessId} consoleHost={host} consoleWindow={Native.GetConsoleWindow()} processesOnConsole={n}");
+        return 0;
+    }
+
+    // ---------- windows watcher ----------
+    sealed class WindowWatch
+    {
+        readonly Dictionary<IntPtr, string> _seen = []; readonly HashSet<IntPtr> _initial = [];
+        volatile bool _stop; Thread? _t; readonly object _lk = new();
+        public void Start()
+        {
+            Scan(true);
+            _t = new Thread(() => { while (!_stop) { Scan(false); Thread.Sleep(10); } }) { IsBackground = true };
+            _t.Start();
+        }
+        void Scan(bool initial)
+        {
+            Native.EnumWindowsProc cb = (h, _) =>
+            {
+                if (initial) { _initial.Add(h); return true; }
+                if (_initial.Contains(h) || !Native.IsWindowVisible(h)) return true;
+                lock (_lk)
+                {
+                    if (_seen.ContainsKey(h)) return true;
+                    var c = new StringBuilder(256); Native.GetClassNameW(h, c, 256);
+                    var t = new StringBuilder(256); Native.GetWindowTextW(h, t, 256);
+                    Native.GetWindowThreadProcessId(h, out int pid);
+                    _seen[h] = $"class={c} pid={pid} title='{t}'";
+                }
+                return true;
+            };
+            Native.EnumWindows(cb, IntPtr.Zero);
+            GC.KeepAlive(cb);
+        }
+        public IReadOnlyCollection<string> Stop() { _stop = true; _t?.Join(); lock (_lk) return _seen.Values.ToList(); }
+    }
+
+    // ---------- run ----------
+    sealed class Flag { public volatile bool Stop; }
+
+    static int Run(string[] a)
+    {
+        string program = Opt(a, "--program"); string modeArg = Opt(a, "--mode"); int n = int.Parse(Opt(a, "--n"));
+        int snapK = int.Parse(Opt(a, "--snap", "0")); bool windows = a.Contains("--windows"); bool quiet = a.Contains("--quiet");
+        long myHost = ConsoleHost(Native.OpenProcess(0x1000, false, Environment.ProcessId));
+        Console.WriteLine($"RUN program={program} mode={modeArg} n={n} launcherPid={Environment.ProcessId} launcherConsoleHost={myHost} consoleWindow={Native.GetConsoleWindow()}");
+        var watch = windows ? new WindowWatch() : null; watch?.Start();
+        var exits = new SortedDictionary<int, int>(); double ms = 0;
+        long t0 = Stopwatch.GetTimestamp();
+        for (int i = 0; i < n; i++)
+        {
+            Spec s = Preset(program, i); string mode = Resolve(modeArg, s);
+            Dictionary<long, Seen>? seen = null; Thread? th = null; Flag stop = new();
+            CurrentPid = 0;
+            if (i < snapK)
+            {
+                seen = [];
+                th = new Thread(() =>
+                {
+                    while (!stop.Stop) { int p = CurrentPid; if (p != 0) Sample(p, seen); Thread.SpinWait(2000); }
+                }) { IsBackground = true };
+                th.Start();
+            }
+            Result r = Launch(s, mode);
+            if (th is not null) { Thread.Sleep(30); stop.Stop = true; th.Join(); PrintSeen(seen!, myHost, $"{program}/{mode}#{i}"); }
+            exits[r.Exit] = exits.GetValueOrDefault(r.Exit) + 1; ms += r.Ms;
+            if (!quiet && i < 3) Console.WriteLine($"  launch {i}: exit={r.Exit} {r.Ms:F0} ms out={r.OutBytes} err={r.ErrBytes} outHead='{r.OutHead}' errHead='{r.ErrHead}'");
+        }
+        var wins = watch?.Stop();
+        Console.WriteLine($"DONE program={program} mode={modeArg} launches={n} exits=[{string.Join(", ", exits.Select(k => $"{k.Key}x{k.Value}"))}] avgMs={ms / n:F0} totalS={(Stopwatch.GetTimestamp() - t0) / (double)Stopwatch.Frequency:F1}");
+        if (wins is not null)
+        {
+            Console.WriteLine($"WINDOWS new visible top-level windows during the run: {wins.Count}");
+            foreach (string w in wins.Take(10)) Console.WriteLine("  WIN " + w);
+        }
+        return exits.Keys.All(k => k == 0) ? 0 : 1;
+    }
+
+    // ---------- bench ----------
+    static int Bench(string[] a)
+    {
+        string[] A = Opt(a, "--a").Split(':'), B = Opt(a, "--b").Split(':');
+        int launches = int.Parse(Opt(a, "--launches")); double window = double.Parse(Opt(a, "--window"), CultureInfo.InvariantCulture);
+        int pairs = int.Parse(Opt(a, "--pairs")); bool bFirst = Opt(a, "--first", "A") == "B";
+        Console.WriteLine("pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits");
+        long sumA = 0, sumB = 0;
+        for (int p = 1; p <= pairs; p++)
+        {
+            bool swap = bFirst ? p % 2 == 1 : p % 2 == 0;
+            var ra = new BatchResult(); var rb = new BatchResult();
+            if (swap) { Batch(rb, B, launches, window); Batch(ra, A, launches, window); } else { Batch(ra, A, launches, window); Batch(rb, B, launches, window); }
+            Console.WriteLine($"{p},{(swap ? "second" : "first")},A,{string.Join(':', A)},{launches},{ra.Before},{ra.After},{ra.After - ra.Before},{ra.LaunchS:F2},{window:F1},{ra.Bad}");
+            Console.WriteLine($"{p},{(swap ? "first" : "second")},B,{string.Join(':', B)},{launches},{rb.Before},{rb.After},{rb.After - rb.Before},{rb.LaunchS:F2},{window:F1},{rb.Bad}");
+            Console.Out.Flush();
+            sumA += ra.After - ra.Before; sumB += rb.After - rb.Before;
+            Console.Error.WriteLine($"pair {p}: A {ra.After - ra.Before:+#;-#;0}, B {rb.After - rb.Before:+#;-#;0}, per launch (A-B)/n = {(double)((ra.After - ra.Before) - (rb.After - rb.Before)) / launches:F2}");
+        }
+        Console.Error.WriteLine($"TOTAL {launches * pairs} launches per arm: A {sumA:+#;-#;0}, B {sumB:+#;-#;0}, per launch {(double)(sumA - sumB) / (launches * pairs):F2}");
+        return 0;
+    }
+
+    sealed class BatchResult { public long Before, After; public double LaunchS; public int Bad; }
+
+    static void Batch(BatchResult b, string[] arm, int launches, double window)
+    {
+        long t0 = Stopwatch.GetTimestamp();
+        b.Before = Toke();
+        for (int i = 0; i < launches; i++)
+        {
+            Spec s = Preset(arm[0], i); string mode = Resolve(arm[1], s);
+            if (Launch(s, mode).Exit != 0) b.Bad++;
+        }
+        b.LaunchS = (Stopwatch.GetTimestamp() - t0) / (double)Stopwatch.Frequency;
+        if (b.LaunchS > window - 8) { Console.Error.WriteLine($"launches took {b.LaunchS:F1}s of a {window}s window; raise the window"); Environment.Exit(1); }
+        double left = window - (Stopwatch.GetTimestamp() - t0) / (double)Stopwatch.Frequency;
+        if (left > 0) Thread.Sleep((int)(left * 1000));
+        b.After = Toke();
+    }
+
+    // ---------- stand-in: WindowsDaemonLaunch.Create shape ----------
+    static int StandIn(string[] a)
+    {
+        string flagsName = Opt(a, "--flags"); string log = Opt(a, "--log"); string? desk = a.Contains("--desktop") ? Opt(a, "--desktop") : null;
+        IntPtr deskHandle = IntPtr.Zero;
+        if (desk is not null) { deskHandle = Native.CreateDesktopW(desk, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000, IntPtr.Zero); if (deskHandle == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "CreateDesktop"); }
+        int dash = Array.IndexOf(a, "--run");
+        string[] cmdArgs = a[(dash + 1)..];
+        uint flags = flagsName switch { "nowindow" => Native.CreateNoWindow, "detached" => Native.DetachedProcess, "none" => 0, "newconsole" => Native.CreateNewConsole, "hiddenconsole" => Native.CreateNewConsole, _ => throw new ArgumentException(flagsName) };
+        var sa = new Native.SecurityAttributes { Length = Marshal.SizeOf<Native.SecurityAttributes>(), Inherit = 1 };
+        SafeFileHandle nul = Native.CreateFileW("NUL", 0x80000000, 7, ref sa, 3, 0x80, IntPtr.Zero);
+        SafeFileHandle lg = Native.CreateFileW(log, 0x0004 | 0x00100000, 7, ref sa, 4, 0x80, IntPtr.Zero);   // FILE_APPEND_DATA | SYNCHRONIZE, OPEN_ALWAYS
+        var si = new Native.StartupInfo { Size = Marshal.SizeOf<Native.StartupInfo>(), Flags = Native.UseStdHandles | (flagsName == "hiddenconsole" ? 1 : 0), ShowWindow = 0, Desktop = desk is null ? null : "WinSta0\\" + desk, StdIn = nul.DangerousGetHandle(), StdOut = lg.DangerousGetHandle(), StdErr = lg.DangerousGetHandle() };
+        string cmd = string.Join(' ', cmdArgs.Select(Quote));
+        if (!Native.CreateProcessW(null, new StringBuilder(cmd), IntPtr.Zero, IntPtr.Zero, true, flags | Native.CreateUnicodeEnvironment, IntPtr.Zero, Worktree, ref si, out var pi))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        Native.CloseHandle(pi.Thread);
+        Console.WriteLine($"STANDIN pid={pi.ProcessId} flags={flagsName}"); Console.Out.Flush();
+        Native.WaitForSingleObject(pi.Process, 0xFFFFFFFF);
+        Native.GetExitCodeProcess(pi.Process, out uint code);
+        Console.WriteLine($"STANDIN pid={pi.ProcessId} exit={code}");
+        if (deskHandle != IntPtr.Zero) Native.CloseDesktop(deskHandle);
+        return (int)code;
+    }
+}

@@ -1,0 +1,7 @@
+RUN program=spawnprog-detached mode=detached n=40 launcherPid=33036 launcherConsoleHost=15140 consoleWindow=0
+CHAIN spawnprog-detached/detached#0 pid=11092 ppid=33036 console=NONE :: probe.exe :: C:\temp\h9kdetach\bin\probe.exe spawn detached
+CHAIN spawnprog-detached/detached#0 pid=34216 ppid=11092 console=NONE :: probe.exe :: C:\temp\h9kdetach\bin\probe.exe nop
+CHAIN spawnprog-detached/detached#1 pid=42312 ppid=33036 console=NONE :: probe.exe :: C:\temp\h9kdetach\bin\probe.exe spawn detached
+CHAIN spawnprog-detached/detached#1 pid=34064 ppid=42312 console=NONE :: probe.exe :: C:\temp\h9kdetach\bin\probe.exe nop
+DONE program=spawnprog-detached mode=detached launches=40 exits=[0x40] avgMs=169 totalS=6.9
+WINDOWS new visible top-level windows during the run: 0

@@ -1,0 +1,25 @@
+RUN program=sh mode=today n=40 launcherPid=17736 launcherConsoleHost=0 consoleWindow=0
+CHAIN sh/inherit#0 pid=34496 ppid=17736 console=NEW console (host pid 39564) :: sh.exe :: "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN sh/inherit#0 pid=39564 ppid=34496 console=NEW console (host pid 34496) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN sh/inherit#0 pid=42936 ppid=34496 console=NEW console (host pid 39564) :: sh.exe :: "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN sh/inherit#0 pid=31108 ppid=34496 console=NEW console (host pid 39564) :: sh.exe :: "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN sh/inherit#0 pid=6408 ppid=31108 console=NEW console (host pid 39564) ::  :: 
+CHAIN sh/inherit#0 pid=4528 ppid=34496 console=NEW console (host pid 39564) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+CHAIN sh/inherit#1 pid=46148 ppid=17736 console=NEW console (host pid 42700) :: sh.exe :: "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN sh/inherit#1 pid=42700 ppid=46148 console=NEW console (host pid 46148) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN sh/inherit#1 pid=41172 ppid=46148 console=NEW console (host pid 42700) :: sh.exe :: "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN sh/inherit#1 pid=16572 ppid=41172 console=NEW console (host pid 42700) ::  :: 
+CHAIN sh/inherit#1 pid=38056 ppid=46148 console=NEW console (host pid 42700) :: sh.exe :: "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN sh/inherit#1 pid=44808 ppid=46148 console=NEW console (host pid 42700) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+DONE program=sh mode=today launches=40 exits=[0x40] avgMs=287 totalS=11.6
+WINDOWS new visible top-level windows during the run: 40
+  WIN class=ConsoleWindowClass pid=34496 title='C:\Program Files\Git\usr\bin\sh.exe'
+  WIN class=ConsoleWindowClass pid=46148 title='C:\Program Files\Git\usr\bin\sh.exe'
+  WIN class=ConsoleWindowClass pid=16548 title='C:\Program Files\Git\usr\bin\sh.exe'
+  WIN class=ConsoleWindowClass pid=37740 title='C:\Program Files\Git\usr\bin\sh.exe'
+  WIN class=ConsoleWindowClass pid=22752 title='C:\Program Files\Git\usr\bin\sh.exe'
+  WIN class=ConsoleWindowClass pid=46180 title='C:\Program Files\Git\usr\bin\sh.exe'
+  WIN class=ConsoleWindowClass pid=43888 title='C:\Program Files\Git\usr\bin\sh.exe'
+  WIN class=ConsoleWindowClass pid=6888 title='C:\Program Files\Git\usr\bin\sh.exe'
+  WIN class=ConsoleWindowClass pid=48576 title='C:\Program Files\Git\usr\bin\sh.exe'
+  WIN class=ConsoleWindowClass pid=21336 title='C:\Program Files\Git\usr\bin\sh.exe'

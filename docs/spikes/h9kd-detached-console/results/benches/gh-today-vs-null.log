@@ -1,0 +1,11 @@
+pair,order,arm,spec,launches,before,after,delta,launch_seconds,window_seconds,nonzero_exits
+1,first,A,gh:today,200,1777160,1778445,1285,105.24,130.0,0
+1,second,B,hostname:today,200,1778445,1779738,1293,6.51,130.0,0
+pair 1: A +1285, B +1293, per launch (A-B)/n = -0.04
+2,second,A,gh:today,200,1781066,1782357,1291,102.51,130.0,0
+2,first,B,hostname:today,200,1779738,1781066,1328,4.86,130.0,0
+pair 2: A +1291, B +1328, per launch (A-B)/n = -0.18
+3,first,A,gh:today,200,1782357,1783760,1403,119.26,130.0,0
+3,second,B,hostname:today,200,1783760,1785005,1245,5.03,130.0,0
+pair 3: A +1403, B +1245, per launch (A-B)/n = 0.79
+TOTAL 600 launches per arm: A +3979, B +3866, per launch 0.19

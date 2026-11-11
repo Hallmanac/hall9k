@@ -1,0 +1,4 @@
+RUN program=git-null mode=detached n=30 launcherPid=42880 launcherConsoleHost=20652 consoleWindow=0
+CHAIN git-null/detached#0 pid=25184 ppid=42880 console=NONE :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" --version
+DONE program=git-null mode=detached launches=30 exits=[0x30] avgMs=40 totalS=1.3
+WINDOWS new visible top-level windows during the run: 0

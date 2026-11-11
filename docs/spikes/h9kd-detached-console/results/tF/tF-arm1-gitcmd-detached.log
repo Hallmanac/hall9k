@@ -1,0 +1,12 @@
+RUN program=gitcmd mode=detached n=40 launcherPid=9568 launcherConsoleHost=42260 consoleWindow=0
+CHAIN gitcmd/detached#0 pid=49540 ppid=9568 console=NONE :: git.exe :: "C:\Program Files\Git\cmd\git.exe" --version
+CHAIN gitcmd/detached#0 pid=49012 ppid=49540 console=NEW console (host pid 18012) :: git.exe :: git.exe --version
+CHAIN gitcmd/detached#0 pid=18012 ppid=49012 console=NEW console (host pid 49012) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+  launch 0: exit=0 55 ms out=29 err=0 outHead='git version 2.56.0.windows.4 ' errHead=''
+CHAIN gitcmd/detached#1 pid=24512 ppid=9568 console=NONE :: git.exe :: "C:\Program Files\Git\cmd\git.exe" --version
+CHAIN gitcmd/detached#1 pid=38108 ppid=24512 console=NEW console (host pid 39580) :: git.exe :: git.exe --version
+CHAIN gitcmd/detached#1 pid=39580 ppid=38108 console=NEW console (host pid 38108) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+  launch 1: exit=0 45 ms out=29 err=0 outHead='git version 2.56.0.windows.4 ' errHead=''
+  launch 2: exit=0 50 ms out=29 err=0 outHead='git version 2.56.0.windows.4 ' errHead=''
+DONE program=gitcmd mode=detached launches=40 exits=[0x40] avgMs=55 totalS=2.3
+WINDOWS new visible top-level windows during the run: 0

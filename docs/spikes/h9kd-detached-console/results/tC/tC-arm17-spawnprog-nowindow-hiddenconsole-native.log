@@ -1,0 +1,3 @@
+RUN program=spawnprog-nowindow mode=hiddenconsole-native n=20 launcherPid=43612 launcherConsoleHost=46104 consoleWindow=0
+DONE program=spawnprog-nowindow mode=hiddenconsole-native launches=20 exits=[0x20] avgMs=211 totalS=4.2
+WINDOWS new visible top-level windows during the run: 0

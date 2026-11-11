@@ -1,0 +1,71 @@
+RUN program=claude-direct mode=detached n=4 launcherPid=34408 launcherConsoleHost=33376 consoleWindow=0
+CHAIN claude-direct/detached#0 pid=38600 ppid=34408 console=NONE :: claude.exe :: C:\Users\Hallm\.local\bin\claude.exe -p "Use the Bash tool to run the single command: hostname. Then reply with the single word done." --output-format
+CHAIN claude-direct/detached#0 pid=42736 ppid=38600 console=NEW console (host pid 40368) :: reg.exe :: C:\Windows\System32\reg.exe query HKLM\SOFTWARE\Policies\ClaudeCode /v Settings
+CHAIN claude-direct/detached#0 pid=47568 ppid=38600 console=NEW console (host pid 42368) :: reg.exe :: C:\Windows\System32\reg.exe query HKCU\SOFTWARE\Policies\ClaudeCode /v Settings
+CHAIN claude-direct/detached#0 pid=40368 ppid=42736 console=NEW console (host pid 42736) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=42368 ppid=47568 console=NEW console (host pid 47568) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=22388 ppid=38600 console=NEW console (host pid 39308) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.hooksPath=/dev/null -c core.fsmonitor= -C C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-66
+CHAIN claude-direct/detached#0 pid=39308 ppid=22388 console=NEW console (host pid 22388) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=14240 ppid=38600 console=NEW console (host pid 2340) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude-direct/detached#0 pid=2340 ppid=14240 console=NEW console (host pid 14240) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=3996 ppid=38600 console=NEW console (host pid 27572) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude-direct/detached#0 pid=27572 ppid=3996 console=NEW console (host pid 3996) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=49980 ppid=38600 console=NEW console (host pid 16276) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude-direct/detached#0 pid=16276 ppid=49980 console=NEW console (host pid 49980) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=32260 ppid=38600 console=NEW console (host pid 14764) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude-direct/detached#0 pid=14764 ppid=32260 console=NEW console (host pid 32260) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=32708 ppid=38600 console=NEW console (host pid 44000) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude-direct/detached#0 pid=44000 ppid=32708 console=NEW console (host pid 32708) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=39260 ppid=38600 console=NEW console (host pid 14892) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude-direct/detached#0 pid=14892 ppid=39260 console=NEW console (host pid 39260) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=44628 ppid=38600 console=NEW console (host pid 9676) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-ea
+CHAIN claude-direct/detached#0 pid=9676 ppid=44628 console=NEW console (host pid 44628) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=24048 ppid=38600 console=NEW console (host pid 49460) :: claude.exe :: rg --no-config --files --hidden C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-666e4d42
+CHAIN claude-direct/detached#0 pid=49460 ppid=24048 console=NEW console (host pid 24048) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=48500 ppid=38600 console=NEW console (host pid 33332) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.hooksPath=/dev/null -c core.fsmonitor= -C C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-66
+CHAIN claude-direct/detached#0 pid=33332 ppid=48500 console=NEW console (host pid 48500) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=45224 ppid=38600 console=NEW console (host pid 47640) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\Hallm\.claude\hooks\herdr-agent-state.ps1\" ses
+CHAIN claude-direct/detached#0 pid=47640 ppid=45224 console=NEW console (host pid 45224) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=9188 ppid=45224 console=NEW console (host pid 47640) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\Hallm\.claude\hooks\herdr-agent-stat
+CHAIN claude-direct/detached#0 pid=42572 ppid=9188 console=NEW console (host pid 47640) :: powershell.exe :: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\Hallm\.claude\hooks\herdr-agent-state.ps1 
+CHAIN claude-direct/detached#0 pid=38212 ppid=38600 console=NEW console (host pid 32400) :: claude.exe :: rg --version
+CHAIN claude-direct/detached#0 pid=32400 ppid=38212 console=NEW console (host pid 38212) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=16200 ppid=38600 console=NEW console (host pid 39432) :: claude.exe :: rg --no-config --files --hidden --no-ignore --max-depth 4 --glob .orphaned_at C:\Users\Hallm\.claude\plugins\cache
+CHAIN claude-direct/detached#0 pid=39432 ppid=16200 console=NEW console (host pid 16200) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=31140 ppid=38600 console=NEW console (host pid 24828) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude\
+CHAIN claude-direct/detached#0 pid=24828 ppid=31140 console=NEW console (host pid 31140) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=8216 ppid=31140 console=NEW console (host pid 24828) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.
+CHAIN claude-direct/detached#0 pid=46568 ppid=8216 console=NEW console (host pid 24828) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.
+CHAIN claude-direct/detached#0 pid=48104 ppid=38600 console=NEW console (host pid 1316) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c env
+CHAIN claude-direct/detached#0 pid=1316 ppid=48104 console=NEW console (host pid 48104) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=12584 ppid=38600 console=NEW console (host pid 49260) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -lc "echo \"$PATH\""
+CHAIN claude-direct/detached#0 pid=49260 ppid=12584 console=NEW console (host pid 12584) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=22360 ppid=48104 console=NEW console (host pid 1316) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c env
+CHAIN claude-direct/detached#0 pid=48616 ppid=12584 console=NEW console (host pid 49260) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""
+CHAIN claude-direct/detached#0 pid=31152 ppid=48616 console=NEW console (host pid 49260) ::  :: 
+CHAIN claude-direct/detached#0 pid=43480 ppid=48616 console=NEW console (host pid 49260) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""
+CHAIN claude-direct/detached#0 pid=31848 ppid=43480 console=NEW console (host pid 49260) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""
+CHAIN claude-direct/detached#0 pid=50156 ppid=31848 console=NEW console (host pid 49260) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" --exec-path
+CHAIN claude-direct/detached#0 pid=24316 ppid=38600 console=NEW console (host pid 38440) :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408489451-2w4fks.sh'
+      # No use
+CHAIN claude-direct/detached#0 pid=38440 ppid=24316 console=NEW console (host pid 24316) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=13676 ppid=24316 console=NEW console (host pid 38440) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408489451-2w4fks.sh'
+   
+CHAIN claude-direct/detached#0 pid=41108 ppid=13676 console=NEW console (host pid 13676) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408489451-2w4fks.sh'
+   
+CHAIN claude-direct/detached#0 pid=43656 ppid=13676 console=NEW console (host pid 38440) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408489451-2w4fks.sh'
+   
+CHAIN claude-direct/detached#0 pid=48284 ppid=43656 console=NEW console (host pid 38440) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408489451-2w4fks.sh'
+   
+CHAIN claude-direct/detached#0 pid=46452 ppid=13676 console=NEW console (host pid 38440) ::  :: 
+CHAIN claude-direct/detached#0 pid=47476 ppid=13676 console=NEW console (host pid 38440) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408489451-2w4fks.sh'
+   
+CHAIN claude-direct/detached#0 pid=46704 ppid=38600 console=NONE :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408489451-2w4fks.sh 2>/dev/null || true && exp
+CHAIN claude-direct/detached#0 pid=37668 ppid=46704 console=NEW console (host pid 11252) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408489451-2w4fks.sh 2>/dev/null || 
+CHAIN claude-direct/detached#0 pid=11252 ppid=37668 console=NEW console (host pid 37668) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-direct/detached#0 pid=1524 ppid=37668 console=NEW console (host pid 11252) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408489451-2w4fks.sh 2>/dev/null || 
+  launch 0: exit=0 5992 ms out=11906 err=0 outHead='{"type":"system","subtype":"hook_started","hook_id":"f46bab88-3c8f-417c-abd1-b84a3578e691"' errHead=''
+  launch 1: exit=0 5771 ms out=11905 err=0 outHead='{"type":"system","subtype":"hook_started","hook_id":"df18c28b-85f3-4564-8bda-164220783804"' errHead=''
+  launch 2: exit=0 6643 ms out=11906 err=0 outHead='{"type":"system","subtype":"hook_started","hook_id":"76841a2a-c945-4618-89c4-1219c808bfde"' errHead=''
+DONE program=claude-direct mode=detached launches=4 exits=[0x4] avgMs=6252 totalS=25.1
+WINDOWS new visible top-level windows during the run: 0

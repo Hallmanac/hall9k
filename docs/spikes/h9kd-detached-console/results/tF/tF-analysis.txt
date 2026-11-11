@@ -1,0 +1,399 @@
+trace: 164.4 s, Toke allocations 104730, frees 103171 (102991 of allocations seen in this trace), still allocated at the end 1739, other-tag pool events skipped 0
+process creations seen: 6050, child token claimed for 6050, no allocation found for 0
+
+================ ROOT 3940 ================
+processes in the tree of pid 3940: 82
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\cmd\git.exe  <=  "C:\Program Files\Git\cmd\git.exe" --version
+                                                                  40       0           40        0
+C:\Program Files\Git\cmd\git.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe --version
+                                                                  40      40            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                             81      41           40        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      40
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\cmd\git.exe  <=  "C:\Program Files\Git\cmd\git.exe" --version   never freed 40 of 40
+       40  C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe --version
+
+================ ROOT 9568 ================
+processes in the tree of pid 9568: 122
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\cmd\git.exe  <=  "C:\Program Files\Git\cmd\git.exe" --version
+                                                                  40       0           40        0
+C:\Program Files\Git\cmd\git.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe --version
+                                                                  40      40            0        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  40      40            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                            121      81           40        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      40
+  started a child, but the process ended first (or the child never ended)          freed      40  never freed       0
+  started no child                                                                 freed      41  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\cmd\git.exe  <=  "C:\Program Files\Git\cmd\git.exe" --version   never freed 40 of 40
+       40  C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe --version
+C:\Program Files\Git\cmd\git.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe --version   never freed 0 of 40
+       40  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+
+================ ROOT 32244 ================
+processes in the tree of pid 32244: 272
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Program Files\GitHub CLI\gh.exe > C:\Windows\System32\tzutil.exe  <=  tzutil /g
+                                                                  60      60            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+                                                                  30      30            0        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+                                                                  30      30            0        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+                                                                  30      30            0        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+                                                                  30      30            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+                                                                  30      30            0        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+                                                                  30      30            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+                                                                  30      30            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                            271     271            0        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed     210  never freed       0
+  started no child                                                                 freed      61  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 5
+       5  C:\Program Files\Git\ucrt64\bin\git.exe
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD   never freed 0 of 30
+       30  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git   never freed 0 of 30
+       30  C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git   never freed 0 of 30
+       30  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+       30  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre   never freed 0 of 30
+       30  C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get   never freed 0 of 30
+       30  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c   never freed 0 of 30
+       30  C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store   never freed 0 of 30
+       30  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+
+================ ROOT 46180 ================
+processes in the tree of pid 46180: 122
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Program Files\GitHub CLI\gh.exe > C:\Windows\System32\tzutil.exe  <=  tzutil /g
+                                                                  80      80            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" api user -q .login
+                                                                  40      40            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                            121     121            0        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed      40  never freed       0
+  started no child                                                                 freed      81  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" api user -q .login   never freed 0 of 40
+       80  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+
+================ ROOT 42336 ================
+processes in the tree of pid 42336: 242
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+                                                                  80      80            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Windows\System32\HOSTNAME.EXE  <=  C:\Windows\System32\hostname.exe
+                                                                  80      80            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+                                                                  40      40            0        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\uname.exe  <=  "C:\Program Files\Git\usr\bin\uname.exe" -s
+                                                                  40      40            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                            241     241            0        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed      80  never freed       0
+  started a child, but the process ended first (or the child never ended)          freed      40  never freed       0
+  started no child                                                                 freed     121  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"   never freed 0 of 40
+       80  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+       40  C:\Windows\System32\HOSTNAME.EXE  <=  C:\Windows\System32\hostname.exe
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:\Program Files\Git\usr\bin\sh.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"   never freed 0 of 80
+       40  C:\Windows\System32\HOSTNAME.EXE  <=  C:\Windows\System32\hostname.exe
+       40  C:\Program Files\Git\usr\bin\uname.exe  <=  "C:\Program Files\Git\usr\bin\uname.exe" -s
+
+================ ROOT 34136 ================
+processes in the tree of pid 34136: 282
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+                                                                  80      80            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Windows\System32\HOSTNAME.EXE  <=  C:\Windows\System32\hostname.exe
+                                                                  80      80            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+                                                                  40      40            0        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+                                                                  40      40            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\uname.exe  <=  "C:\Program Files\Git\usr\bin\uname.exe" -s
+                                                                  40      40            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+TOTAL                                                            281     281            0        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed     120  never freed       0
+  started a child, but the process ended first (or the child never ended)          freed      40  never freed       0
+  started no child                                                                 freed     121  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 5
+       5  C:\Program Files\Git\bin\bash.exe
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"   never freed 0 of 40
+       40  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"   never freed 0 of 40
+       80  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+       40  C:\Windows\System32\HOSTNAME.EXE  <=  C:\Windows\System32\hostname.exe
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"   never freed 0 of 80
+       40  C:\Windows\System32\HOSTNAME.EXE  <=  C:\Windows\System32\hostname.exe
+       40  C:\Program Files\Git\usr\bin\uname.exe  <=  "C:\Program Files\Git\usr\bin\uname.exe" -s
+
+================ ROOT 46144 ================
+processes in the tree of pid 46144: 218
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  27      27            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-each-ref --f
+                                                                  21      21            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""
+                                                                  18      18            0        0
+C:\Program Files\Git\bin\bash.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  15      15            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  12      12            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408797241-7kh07m.sh'       # No us
+                                                                   7       7            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408804130-v9donz.sh'       # No us
+                                                                   7       7            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408809150-xrz6qa.sh'       # No us
+                                                                   7       7            0        0
+C:\Windows\System32\reg.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   6       6            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.hooksPath=/dev/null -c core.fsmonitor= -C C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-666e4d42 ls-
+                                                                   6       6            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" --exec-path
+                                                                   6       6            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\locale.exe  <=  "C:\Program Files\Git\usr\bin\locale.exe" -uU
+                                                                   6       6            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Users\Hallm\.local\bin\claude.exe  <=  "C:\Users\Hallm\.local\bin\claude.exe" -p "Use the Bash tool to run the single command: hostname. Then reply with the single word done." --output-format stream-
+                                                                   3       3            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Windows\System32\reg.exe  <=  C:\Windows\System32\reg.exe query HKLM\SOFTWARE\Policies\ClaudeCode /v Settings
+                                                                   3       3            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Windows\System32\reg.exe  <=  C:\Windows\System32\reg.exe query HKCU\SOFTWARE\Policies\ClaudeCode /v Settings
+                                                                   3       3            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Users\Hallm\.local\bin\claude.exe  <=  rg --no-config --files --hidden C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-666e4d42
+                                                                   3       3            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\Hallm\.claude\hooks\herdr-agent-state.ps1\" session"
+                                                                   3       3            0        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\Hallm\.claude\hooks\herdr-agent-state.ps1\" se
+                                                                   3       3            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe  <=  C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\Hallm\.claude\hooks\herdr-agent-state.ps1 session
+                                                                   3       3            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Users\Hallm\.local\bin\claude.exe  <=  rg --version
+                                                                   3       3            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Users\Hallm\.local\bin\claude.exe  <=  rg --no-config --files --hidden --no-ignore --max-depth 4 --glob .orphaned_at C:\Users\Hallm\.claude\plugins\cache
+                                                                   3       3            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude\.com/claud
+                                                                   3       3            0        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude
+                                                                   3       3            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude
+                                                                   3       3            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\grep.exe  <=  "C:\Program Files\Git\usr\bin\grep.exe" -qiE "co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude\.com/claude-code"
+                                                                   3       3            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c env
+                                                                   3       3            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -lc "echo \"$PATH\""
+                                                                   3       3            0        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c env
+                                                                   3       3            0        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""
+                                                                   3       3            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\env.exe  <=  "C:\Program Files\Git\usr\bin\env.exe"
+                                                                   3       3            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\cat.exe  <=  "C:\Program Files\Git\usr\bin\cat.exe"
+                                                                   3       3            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   3       3            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\hostname.exe  <=  "C:\Program Files\Git\usr\bin\hostname.exe"
+                                                                   3       3            0        0
+C:\Temp\h9kdetach\bin\probe.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408797241-7kh07m.sh'       # No user config f
+                                                                   1       1            0        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408797241-7kh07m.sh'       # No us
+                                                                   1       1            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408797241-7kh07m.sh 2>/dev/null || true && export TEMP='
+                                                                   1       1            0        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408797241-7kh07m.sh 2>/dev/null || true && ex
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408797241-7kh07m.sh 2>/dev/null || true && ex
+                                                                   1       1            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408804130-v9donz.sh'       # No user config f
+                                                                   1       1            0        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408804130-v9donz.sh'       # No us
+                                                                   1       1            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408804130-v9donz.sh 2>/dev/null || true && export TEMP='
+                                                                   1       1            0        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408804130-v9donz.sh 2>/dev/null || true && ex
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408804130-v9donz.sh 2>/dev/null || true && ex
+                                                                   1       1            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408809150-xrz6qa.sh'       # No user config f
+                                                                   1       1            0        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408809150-xrz6qa.sh'       # No us
+                                                                   1       1            0        0
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408809150-xrz6qa.sh 2>/dev/null || true && export TEMP='
+                                                                   1       1            0        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408809150-xrz6qa.sh 2>/dev/null || true && ex
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408809150-xrz6qa.sh 2>/dev/null || true && ex
+                                                                   1       1            0        0
+TOTAL                                                            217     217            0        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed      52  never freed       0
+  started a child, but the process ended first (or the child never ended)          freed      56  never freed       0
+  started no child                                                                 freed     109  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 0
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Temp\h9kdetach\bin\probe.exe > C:\Users\Hallm\.local\bin\claude.exe  <=  "C:\Users\Hallm\.local\bin\claude.exe" -p "Use the Bash tool to run the single command: hostname. Then reply with the single word done." --output-format stream-   never freed 0 of 3
+       21  C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-each-ref --f
+        6  C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.hooksPath=/dev/null -c core.fsmonitor= -C C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-666e4d42 ls-
+        3  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        3  C:\Windows\System32\reg.exe  <=  C:\Windows\System32\reg.exe query HKLM\SOFTWARE\Policies\ClaudeCode /v Settings
+        3  C:\Windows\System32\reg.exe  <=  C:\Windows\System32\reg.exe query HKCU\SOFTWARE\Policies\ClaudeCode /v Settings
+        3  C:\Users\Hallm\.local\bin\claude.exe  <=  rg --no-config --files --hidden C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-666e4d42
+C:\Users\Hallm\.local\bin\claude.exe > C:\Windows\System32\reg.exe  <=  C:\Windows\System32\reg.exe query HKLM\SOFTWARE\Policies\ClaudeCode /v Settings   never freed 0 of 3
+        3  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Users\Hallm\.local\bin\claude.exe > C:\Windows\System32\reg.exe  <=  C:\Windows\System32\reg.exe query HKCU\SOFTWARE\Policies\ClaudeCode /v Settings   never freed 0 of 3
+        3  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.hooksPath=/dev/null -c core.fsmonitor= -C C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-666e4d42 ls-   never freed 0 of 6
+        6  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" -c core.askPass= -c protocol.ext.allow=never -c "core.alternateRefsCommand=f() { git --git-dir=\"$1\" for-each-ref --f   never freed 0 of 21
+       21  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Users\Hallm\.local\bin\claude.exe > C:\Users\Hallm\.local\bin\claude.exe  <=  rg --no-config --files --hidden C:\Users\Hallm\.hall9k\projects\hall9k\repo\wt-0b4685d2-666e4d42   never freed 0 of 3
+        3  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\Hallm\.claude\hooks\herdr-agent-state.ps1\" session"   never freed 0 of 3
+        3  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        3  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\Hallm\.claude\hooks\herdr-agent-state.ps1\" se
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\Hallm\.claude\hooks\herdr-agent-state.ps1\" se   never freed 0 of 3
+        3  C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe  <=  C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\Hallm\.claude\hooks\herdr-agent-state.ps1 session
+C:\Users\Hallm\.local\bin\claude.exe > C:\Users\Hallm\.local\bin\claude.exe  <=  rg --version   never freed 0 of 3
+        3  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Users\Hallm\.local\bin\claude.exe > C:\Users\Hallm\.local\bin\claude.exe  <=  rg --no-config --files --hidden --no-ignore --max-depth 4 --glob .orphaned_at C:\Users\Hallm\.claude\plugins\cache   never freed 0 of 3
+        3  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude\.com/claud   never freed 0 of 3
+        3  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        3  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude   never freed 0 of 3
+        3  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude   never freed 0 of 3
+        3  C:\Program Files\Git\usr\bin\grep.exe  <=  "C:\Program Files\Git\usr\bin\grep.exe" -qiE "co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude\.com/claude-code"
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c env   never freed 0 of 3
+        3  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        3  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c env
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -lc "echo \"$PATH\""   never freed 0 of 3
+        3  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        3  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c env   never freed 0 of 3
+        3  C:\Program Files\Git\usr\bin\env.exe  <=  "C:\Program Files\Git\usr\bin\env.exe"
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""   never freed 0 of 3
+       15  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""   never freed 0 of 18
+        3  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -lc "echo \"$PATH\""
+        3  C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" --exec-path
+        3  C:\Program Files\Git\usr\bin\locale.exe  <=  "C:\Program Files\Git\usr\bin\locale.exe" -uU
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408797241-7kh07m.sh'       # No user config f   never freed 0 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        1  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408797241-7kh07m.sh'       # No us
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408797241-7kh07m.sh'       # No us   never freed 0 of 1
+        6  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408797241-7kh07m.sh'       # No us
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408797241-7kh07m.sh'       # No us   never freed 0 of 7
+        1  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408797241-7kh07m.sh'       # No us
+        1  C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" --exec-path
+        1  C:\Program Files\Git\usr\bin\locale.exe  <=  "C:\Program Files\Git\usr\bin\locale.exe" -uU
+        1  C:\Program Files\Git\usr\bin\cat.exe  <=  "C:\Program Files\Git\usr\bin\cat.exe"
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408797241-7kh07m.sh 2>/dev/null || true && export TEMP='   never freed 0 of 1
+        1  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408797241-7kh07m.sh 2>/dev/null || true && ex
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408797241-7kh07m.sh 2>/dev/null || true && ex   never freed 0 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        1  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408797241-7kh07m.sh 2>/dev/null || true && ex
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408797241-7kh07m.sh 2>/dev/null || true && ex   never freed 0 of 1
+        1  C:\Program Files\Git\usr\bin\hostname.exe  <=  "C:\Program Files\Git\usr\bin\hostname.exe"
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408804130-v9donz.sh'       # No user config f   never freed 0 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        1  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408804130-v9donz.sh'       # No us
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408804130-v9donz.sh'       # No us   never freed 0 of 1
+        6  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408804130-v9donz.sh'       # No us
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408804130-v9donz.sh'       # No us   never freed 0 of 7
+        1  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408804130-v9donz.sh'       # No us
+        1  C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" --exec-path
+        1  C:\Program Files\Git\usr\bin\locale.exe  <=  "C:\Program Files\Git\usr\bin\locale.exe" -uU
+        1  C:\Program Files\Git\usr\bin\cat.exe  <=  "C:\Program Files\Git\usr\bin\cat.exe"
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408804130-v9donz.sh 2>/dev/null || true && export TEMP='   never freed 0 of 1
+        1  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408804130-v9donz.sh 2>/dev/null || true && ex
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408804130-v9donz.sh 2>/dev/null || true && ex   never freed 0 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        1  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408804130-v9donz.sh 2>/dev/null || true && ex
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408804130-v9donz.sh 2>/dev/null || true && ex   never freed 0 of 1
+        1  C:\Program Files\Git\usr\bin\hostname.exe  <=  "C:\Program Files\Git\usr\bin\hostname.exe"
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408809150-xrz6qa.sh'       # No user config f   never freed 0 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        1  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408809150-xrz6qa.sh'       # No us
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408809150-xrz6qa.sh'       # No us   never freed 0 of 1
+        6  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408809150-xrz6qa.sh'       # No us
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408809150-xrz6qa.sh'       # No us   never freed 0 of 7
+        1  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c -l "SNAPSHOT_FILE='C:\Users\Hallm\.claude\shell-snapshots\snapshot-bash-1794408809150-xrz6qa.sh'       # No us
+        1  C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" --exec-path
+        1  C:\Program Files\Git\usr\bin\locale.exe  <=  "C:\Program Files\Git\usr\bin\locale.exe" -uU
+        1  C:\Program Files\Git\usr\bin\cat.exe  <=  "C:\Program Files\Git\usr\bin\cat.exe"
+C:\Users\Hallm\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408809150-xrz6qa.sh 2>/dev/null || true && export TEMP='   never freed 0 of 1
+        1  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408809150-xrz6qa.sh 2>/dev/null || true && ex
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408809150-xrz6qa.sh 2>/dev/null || true && ex   never freed 0 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        1  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408809150-xrz6qa.sh 2>/dev/null || true && ex
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/Hallm/.claude/shell-snapshots/snapshot-bash-1794408809150-xrz6qa.sh 2>/dev/null || true && ex   never freed 0 of 1
+        1  C:\Program Files\Git\usr\bin\hostname.exe  <=  "C:\Program Files\Git\usr\bin\hostname.exe"

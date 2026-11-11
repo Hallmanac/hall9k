@@ -1,0 +1,100 @@
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+internal static class Native
+{
+    public const uint DetachedProcess = 0x00000008;
+    public const uint CreateNewConsole = 0x00000010;
+    public const uint CreateNoWindow = 0x08000000;
+    public const uint CreateUnicodeEnvironment = 0x00000400;
+    public const int UseStdHandles = 0x100;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct StartupInfo
+    {
+        public int Size; public string? Reserved; public string? Desktop; public string? Title;
+        public int X, Y, XSize, YSize, XChars, YChars, FillAttribute, Flags;
+        public short ShowWindow, Reserved2; public IntPtr Reserved2Ptr, StdIn, StdOut, StdErr;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ProcessInformation { public IntPtr Process, Thread; public int ProcessId, ThreadId; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SecurityAttributes { public int Length; public IntPtr Descriptor; public int Inherit; }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool CreateProcessW(string? app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit,
+        uint flags, IntPtr env, string? cwd, ref StartupInfo si, out ProcessInformation pi);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CreatePipe(out SafeFileHandle read, out SafeFileHandle write, ref SecurityAttributes sa, int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetHandleInformation(SafeFileHandle h, int mask, int flags);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern SafeFileHandle CreateFileW(string name, uint access, uint share, ref SecurityAttributes sa,
+        uint disposition, uint attrs, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint WaitForSingleObject(IntPtr h, uint ms);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+
+    [DllImport("kernel32.dll")]
+    public static extern bool CloseHandle(IntPtr h);
+
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool QueryFullProcessImageNameW(IntPtr h, int flags, StringBuilder name, ref int size);
+
+    [DllImport("kernel32.dll")]
+    public static extern bool GetProcessTimes(IntPtr h, out long create, out long exit, out long kernel, out long user);
+
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint GetConsoleProcessList(uint[] list, uint count);
+
+    [DllImport("ntdll.dll")]
+    public static extern int NtQueryInformationProcess(IntPtr h, int cls, out IntPtr info, int len, out int ret);
+
+    [DllImport("ntdll.dll")]
+    public static extern int NtQueryInformationProcess(IntPtr h, int cls, IntPtr info, int len, out int ret);
+
+    [DllImport("ntdll.dll")]
+    public static extern int NtQuerySystemInformation(int cls, IntPtr buf, int len, out int ret);
+
+    // toolhelp
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct ProcessEntry
+    {
+        public int Size, Usage, ProcessId; public IntPtr DefaultHeap; public int ModuleId, Threads, ParentProcessId, PriClassBase, Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string ExeFile;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool Process32FirstW(IntPtr snap, ref ProcessEntry e);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool Process32NextW(IntPtr snap, ref ProcessEntry e);
+
+    // windows
+    public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool EnumDesktopWindows(IntPtr desktop, EnumWindowsProc cb, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out int pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr CreateDesktopW(string name, IntPtr dev, IntPtr dm, int flags, uint access, IntPtr sa);
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool CloseDesktop(IntPtr d);
+}

@@ -1,0 +1,14 @@
+RUN program=bashusr mode=today n=40 launcherPid=41092 launcherConsoleHost=15952 consoleWindow=0
+CHAIN bashusr/inherit#0 pid=47328 ppid=41092 console=inherited (launcher's console host 15952) :: bash.exe :: "C:\Program Files\Git\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bashusr/inherit#0 pid=34500 ppid=47328 console=inherited (launcher's console host 15952) :: bash.exe :: "C:\Program Files\Git\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bashusr/inherit#0 pid=43236 ppid=34500 console=inherited (launcher's console host 15952) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+CHAIN bashusr/inherit#0 pid=34536 ppid=47328 console=inherited (launcher's console host 15952) :: bash.exe :: "C:\Program Files\Git\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bashusr/inherit#0 pid=12424 ppid=47328 console=inherited (launcher's console host 15952) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+CHAIN bashusr/inherit#1 pid=13996 ppid=41092 console=inherited (launcher's console host 15952) :: bash.exe :: "C:\Program Files\Git\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bashusr/inherit#1 pid=37620 ppid=13996 console=inherited (launcher's console host 15952) :: bash.exe :: "C:\Program Files\Git\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bashusr/inherit#1 pid=15784 ppid=37620 console=inherited (launcher's console host 15952) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+CHAIN bashusr/inherit#1 pid=20656 ppid=13996 console=inherited (launcher's console host 15952) :: bash.exe :: "C:\Program Files\Git\usr\bin\bash.exe" -c "/c/Windows/System32/hostname.exe && /usr/bin/uname -s && /c/Windows/System32/hostname.exe"
+CHAIN bashusr/inherit#1 pid=48136 ppid=20656 console=inherited (launcher's console host 15952) :: uname.exe :: "C:\Program Files\Git\usr\bin\uname.exe" -s
+CHAIN bashusr/inherit#1 pid=25220 ppid=13996 console=inherited (launcher's console host 15952) :: HOSTNAME.EXE :: C:\Windows\System32\hostname.exe
+DONE program=bashusr mode=today launches=40 exits=[0x40] avgMs=161 totalS=6.6
+WINDOWS new visible top-level windows during the run: 0

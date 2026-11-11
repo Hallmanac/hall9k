@@ -1,0 +1,266 @@
+### arm 0 [spawnprog-inherit:inherit:20:hidden:nowindow:0] root pid 47924: child creations 41, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created    1 freed    1 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started no child                                                         freed   21 never    0
+### arm 1 [spawnprog-nowindow:inherit:20:hidden:nowindow:0] root pid 44452: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 2 [spawnprog-detached:inherit:20:hidden:nowindow:0] root pid 44892: child creations 41, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created    1 freed    1 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started no child                                                         freed   21 never    0
+### arm 3 [spawnprog-newconsole-native:inherit:20:hidden:nowindow:0] root pid 44076: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 4 [spawnprog-inherit:nowindow:20:hidden:nowindow:0] root pid 44252: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started no child                                                         freed   41 never    0
+### arm 5 [spawnprog-nowindow:nowindow:20:hidden:nowindow:0] root pid 40904: child creations 81, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   41 freed   41 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 6 [spawnprog-detached:nowindow:20:hidden:nowindow:0] root pid 10008: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started no child                                                         freed   41 never    0
+### arm 7 [spawnprog-newconsole-native:nowindow:20:hidden:nowindow:0] root pid 49644: child creations 81, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   41 freed   41 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 8 [spawnprog-inherit:detached:20:hidden:nowindow:0] root pid 2820: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 9 [spawnprog-nowindow:detached:20:hidden:nowindow:0] root pid 47252: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 10 [spawnprog-detached:detached:20:hidden:nowindow:0] root pid 23348: child creations 41, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created    1 freed    1 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started no child                                                         freed   21 never    0
+### arm 11 [spawnprog-newconsole-native:detached:20:hidden:nowindow:0] root pid 43404: child creations 61, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 12 [spawnprog-inherit:newconsole-native:20:hidden:nowindow:0] root pid 16544: child creations 61, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 13 [spawnprog-nowindow:newconsole-native:20:hidden:nowindow:0] root pid 7452: child creations 81, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   41 freed   41 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 14 [spawnprog-detached:newconsole-native:20:hidden:nowindow:0] root pid 17140: child creations 61, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 15 [spawnprog-newconsole-native:newconsole-native:20:hidden:nowindow:0] root pid 47452: child creations 81, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   41 freed   41 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 16 [spawnprog-inherit:inherit:20:hidden:detached:0] root pid 12208: child creations 60, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   20 freed   20 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   40 never    0
+### arm 17 [spawnprog-nowindow:inherit:20:hidden:detached:0] root pid 21144: child creations 80, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   40 freed   40 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   40 never    0
+### arm 18 [spawnprog-detached:inherit:20:hidden:detached:0] root pid 42060: child creations 60, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   20 freed   20 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   40 never    0
+### arm 19 [spawnprog-newconsole-native:inherit:20:hidden:detached:0] root pid 16496: child creations 80, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   40 freed   40 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   40 never    0
+### arm 20 [spawnprog-inherit:nowindow:20:hidden:detached:0] root pid 28296: child creations 60, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   20 freed   20 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started no child                                                         freed   40 never    0
+### arm 21 [spawnprog-nowindow:nowindow:20:hidden:detached:0] root pid 8944: child creations 80, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   40 freed   40 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   40 never    0
+### arm 22 [spawnprog-detached:nowindow:20:hidden:detached:0] root pid 26596: child creations 60, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   20 freed   20 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started no child                                                         freed   40 never    0
+### arm 23 [spawnprog-newconsole-native:nowindow:20:hidden:detached:0] root pid 16028: child creations 80, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   40 freed   40 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   40 never    0
+### arm 24 [spawnprog-inherit:detached:20:hidden:detached:0] root pid 25988: child creations 60, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   20 freed   20 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   20 never    0
+### arm 25 [spawnprog-nowindow:detached:20:hidden:detached:0] root pid 44540: child creations 60, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   20 freed   20 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   20 never    0
+### arm 26 [spawnprog-detached:detached:20:hidden:detached:0] root pid 33324: child creations 40, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started no child                                                         freed   20 never    0
+### arm 27 [spawnprog-newconsole-native:detached:20:hidden:detached:0] root pid 30412: child creations 60, tokens kept (never freed) 20, pending 0; 20 launches -> kept per launch 1.00
+    probe.exe > conhost.exe                                        created   20 freed   20 kept    0
+    probe.exe > probe.exe                                          created   40 freed   20 kept   20
+      rule: a child exited while the process was still running                       freed    0 never   20
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   20 never    0
+### arm 28 [spawnprog-inherit:newconsole-native:20:hidden:detached:0] root pid 33164: child creations 60, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   20 freed   20 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   40 never    0
+### arm 29 [spawnprog-nowindow:newconsole-native:20:hidden:detached:0] root pid 29780: child creations 80, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   40 freed   40 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   40 never    0
+### arm 30 [spawnprog-detached:newconsole-native:20:hidden:detached:0] root pid 10480: child creations 60, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   20 freed   20 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   40 never    0
+### arm 31 [spawnprog-newconsole-native:newconsole-native:20:hidden:detached:0] root pid 49412: child creations 80, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   40 freed   40 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   40 never    0
+### arm 32 [spawnprog-inherit:inherit:20:hidden:newconsole:0] root pid 33236: child creations 41, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created    1 freed    1 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 33 [spawnprog-nowindow:inherit:20:hidden:newconsole:0] root pid 38224: child creations 61, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 34 [spawnprog-detached:inherit:20:hidden:newconsole:0] root pid 17992: child creations 41, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created    1 freed    1 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 35 [spawnprog-newconsole-native:inherit:20:hidden:newconsole:0] root pid 13832: child creations 61, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 36 [spawnprog-inherit:nowindow:20:hidden:newconsole:0] root pid 39888: child creations 61, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 37 [spawnprog-nowindow:nowindow:20:hidden:newconsole:0] root pid 19556: child creations 81, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   41 freed   41 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 38 [spawnprog-detached:nowindow:20:hidden:newconsole:0] root pid 44876: child creations 61, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 39 [spawnprog-newconsole-native:nowindow:20:hidden:newconsole:0] root pid 42148: child creations 81, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   41 freed   41 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 40 [spawnprog-inherit:detached:20:hidden:newconsole:0] root pid 14660: child creations 61, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 41 [spawnprog-nowindow:detached:20:hidden:newconsole:0] root pid 34840: child creations 61, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 42 [spawnprog-detached:detached:20:hidden:newconsole:0] root pid 38904: child creations 41, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created    1 freed    1 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 43 [spawnprog-newconsole-native:detached:20:hidden:newconsole:0] root pid 45320: child creations 61, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   21 never    0
+### arm 44 [spawnprog-inherit:newconsole-native:20:hidden:newconsole:0] root pid 48808: child creations 61, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 45 [spawnprog-nowindow:newconsole-native:20:hidden:newconsole:0] root pid 46316: child creations 81, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   41 freed   41 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 46 [spawnprog-detached:newconsole-native:20:hidden:newconsole:0] root pid 18076: child creations 61, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   21 freed   21 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started no child                                                         freed   41 never    0
+### arm 47 [spawnprog-newconsole-native:newconsole-native:20:hidden:newconsole:0] root pid 44016: child creations 81, tokens kept (never freed) 0, pending 0; 20 launches -> kept per launch 0.00
+    probe.exe > conhost.exe                                        created   41 freed   41 kept    0
+    probe.exe > probe.exe                                          created   40 freed   40 kept    0
+      rule: a child exited while the process was still running                       freed   20 never    0
+      rule: started a child, but the process ended first (or the child never ended)  freed   20 never    0
+      rule: started no child                                                         freed   41 never    0

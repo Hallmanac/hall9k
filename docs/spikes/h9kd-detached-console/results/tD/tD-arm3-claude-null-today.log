@@ -1,0 +1,6 @@
+RUN program=claude-null mode=today n=8 launcherPid=48664 launcherConsoleHost=5508 consoleWindow=0
+CHAIN claude-null/nowindow#0 pid=3912 ppid=48664 console=NEW console (host pid 30744) :: cmd.exe :: "C:\Windows\System32\cmd.exe" /c ""claude" --version > "C:\temp\h9kdetach\scratch\claude-claude-null-48664-0.out" 2> "C:\temp\h9kdetach\scratch\claude
+CHAIN claude-null/nowindow#0 pid=30744 ppid=3912 console=NEW console (host pid 3912) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN claude-null/nowindow#0 pid=44964 ppid=3912 console=NEW console (host pid 30744) :: claude.exe :: "claude"  --version 
+DONE program=claude-null mode=today launches=8 exits=[0x8] avgMs=89 totalS=0.8
+WINDOWS new visible top-level windows during the run: 0

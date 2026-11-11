@@ -1,0 +1,7 @@
+RUN program=spawnprog-inherit mode=today n=40 launcherPid=7644 launcherConsoleHost=44304 consoleWindow=0
+CHAIN spawnprog-inherit/inherit#0 pid=43972 ppid=7644 console=inherited (launcher's console host 44304) :: probe.exe :: "C:\temp\h9kdetach\bin\probe.exe" spawn inherit
+CHAIN spawnprog-inherit/inherit#0 pid=668 ppid=43972 console=inherited (launcher's console host 44304) :: probe.exe :: "C:\temp\h9kdetach\bin\probe.exe" nop
+CHAIN spawnprog-inherit/inherit#1 pid=13424 ppid=7644 console=inherited (launcher's console host 44304) :: probe.exe :: "C:\temp\h9kdetach\bin\probe.exe" spawn inherit
+CHAIN spawnprog-inherit/inherit#1 pid=33304 ppid=13424 console=inherited (launcher's console host 44304) :: probe.exe :: "C:\temp\h9kdetach\bin\probe.exe" nop
+DONE program=spawnprog-inherit mode=today launches=40 exits=[0x40] avgMs=128 totalS=5.2
+WINDOWS new visible top-level windows during the run: 0

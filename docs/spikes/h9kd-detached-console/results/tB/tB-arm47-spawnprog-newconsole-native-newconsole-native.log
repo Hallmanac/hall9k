@@ -1,0 +1,13 @@
+RUN program=spawnprog-newconsole-native mode=newconsole-native n=20 launcherPid=44016 launcherConsoleHost=17572 consoleWindow=32574628
+DONE program=spawnprog-newconsole-native mode=newconsole-native launches=20 exits=[0x20] avgMs=206 totalS=4.1
+WINDOWS new visible top-level windows during the run: 40
+  WIN class=ConsoleWindowClass pid=49572 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=46668 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=6440 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=44964 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=44544 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=18988 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=44864 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=14636 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=9560 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=16028 title='C:\temp\h9kdetach\bin\probe.exe'

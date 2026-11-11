@@ -1,0 +1,30 @@
+RUN program=git-bad mode=today n=2 launcherPid=49716 launcherConsoleHost=39592 consoleWindow=0
+  launch 0: exit=128 478 ms out=0 err=116 outHead='' errHead='remote: Repository not found. fatal: repository 'https://github.com/Hallmanac/no-such-repo'
+  launch 1: exit=128 446 ms out=0 err=116 outHead='' errHead='remote: Repository not found. fatal: repository 'https://github.com/Hallmanac/no-such-repo'
+DONE program=git-bad mode=today launches=2 exits=[128x2] avgMs=462 totalS=0.9
+WINDOWS new visible top-level windows during the run: 0
+RUN program=git mode=today n=2 launcherPid=48940 launcherConsoleHost=47696 consoleWindow=0
+  launch 0: exit=0 854 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+  launch 1: exit=0 1529 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+DONE program=git mode=today launches=2 exits=[0x2] avgMs=1192 totalS=2.4
+WINDOWS new visible top-level windows during the run: 0
+RUN program=gh mode=today n=2 launcherPid=27836 launcherConsoleHost=40940 consoleWindow=0
+  launch 0: exit=0 464 ms out=10 err=0 outHead='Hallmanac ' errHead=''
+  launch 1: exit=0 443 ms out=10 err=0 outHead='Hallmanac ' errHead=''
+DONE program=gh mode=today launches=2 exits=[0x2] avgMs=454 totalS=0.9
+WINDOWS new visible top-level windows during the run: 0
+RUN program=git-bad mode=detached n=2 launcherPid=40528 launcherConsoleHost=38928 consoleWindow=0
+  launch 0: exit=128 707 ms out=0 err=116 outHead='' errHead='remote: Repository not found. fatal: repository 'https://github.com/Hallmanac/no-such-repo'
+  launch 1: exit=128 626 ms out=0 err=116 outHead='' errHead='remote: Repository not found. fatal: repository 'https://github.com/Hallmanac/no-such-repo'
+DONE program=git-bad mode=detached launches=2 exits=[128x2] avgMs=666 totalS=1.4
+WINDOWS new visible top-level windows during the run: 0
+RUN program=git mode=detached n=2 launcherPid=10816 launcherConsoleHost=44212 consoleWindow=0
+  launch 0: exit=0 995 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+  launch 1: exit=0 907 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+DONE program=git mode=detached launches=2 exits=[0x2] avgMs=951 totalS=1.9
+WINDOWS new visible top-level windows during the run: 0
+RUN program=gh mode=detached n=2 launcherPid=23792 launcherConsoleHost=44980 consoleWindow=0
+  launch 0: exit=0 752 ms out=10 err=0 outHead='Hallmanac ' errHead=''
+  launch 1: exit=0 474 ms out=10 err=0 outHead='Hallmanac ' errHead=''
+DONE program=gh mode=detached launches=2 exits=[0x2] avgMs=613 totalS=1.2
+WINDOWS new visible top-level windows during the run: 0

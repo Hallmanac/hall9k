@@ -1,0 +1,10 @@
+RUN program=gitcmd mode=today n=40 launcherPid=3940 launcherConsoleHost=20840 consoleWindow=0
+CHAIN gitcmd/inherit#0 pid=38028 ppid=3940 console=inherited (launcher's console host 20840) :: git.exe :: "C:\Program Files\Git\cmd\git.exe" --version
+CHAIN gitcmd/inherit#0 pid=47188 ppid=38028 console=inherited (launcher's console host 20840) :: git.exe :: git.exe --version
+  launch 0: exit=0 39 ms out=29 err=0 outHead='git version 2.56.0.windows.4 ' errHead=''
+CHAIN gitcmd/inherit#1 pid=36760 ppid=3940 console=inherited (launcher's console host 20840) :: git.exe :: "C:\Program Files\Git\cmd\git.exe" --version
+CHAIN gitcmd/inherit#1 pid=25292 ppid=36760 console=inherited (launcher's console host 20840) :: git.exe :: git.exe --version
+  launch 1: exit=0 35 ms out=29 err=0 outHead='git version 2.56.0.windows.4 ' errHead=''
+  launch 2: exit=0 32 ms out=29 err=0 outHead='git version 2.56.0.windows.4 ' errHead=''
+DONE program=gitcmd mode=today launches=40 exits=[0x40] avgMs=58 totalS=2.5
+WINDOWS new visible top-level windows during the run: 0

@@ -1,0 +1,6 @@
+RUN program=bash-null mode=detached n=40 launcherPid=19428 launcherConsoleHost=24504 consoleWindow=0
+CHAIN bash-null/detached#0 pid=11868 ppid=19428 console=NONE :: bash.exe :: "C:\Program Files\Git\bin\bash.exe" -c "echo hi"
+CHAIN bash-null/detached#0 pid=21096 ppid=11868 console=NEW console (host pid 32700) :: bash.exe :: "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "echo hi"
+CHAIN bash-null/detached#0 pid=32700 ppid=21096 console=NEW console (host pid 21096) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+DONE program=bash-null mode=detached launches=40 exits=[0x40] avgMs=65 totalS=2.7
+WINDOWS new visible top-level windows during the run: 0

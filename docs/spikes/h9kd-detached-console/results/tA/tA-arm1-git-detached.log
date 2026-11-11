@@ -1,0 +1,26 @@
+RUN program=git mode=detached n=30 launcherPid=21468 launcherConsoleHost=668 consoleWindow=0
+CHAIN git/detached#0 pid=49000 ppid=21468 console=NONE :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+CHAIN git/detached#0 pid=13064 ppid=49000 console=NONE :: git.exe :: git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/detached#0 pid=30496 ppid=13064 console=NONE :: git-remote-https.exe :: git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/detached#0 pid=8708 ppid=30496 console=NEW console (host pid 14960) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' au
+CHAIN git/detached#0 pid=8392 ppid=8708 console=NEW console (host pid 14960) :: cygwin-console-helper.exe :: "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x258 0x220
+CHAIN git/detached#0 pid=14960 ppid=8392 console=NEW console (host pid 8392) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN git/detached#0 pid=12436 ppid=8708 console=NEW console (host pid 14960) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+CHAIN git/detached#0 pid=33180 ppid=30496 console=NEW console (host pid 20308) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' 
+CHAIN git/detached#0 pid=32500 ppid=33180 console=NEW console (host pid 33180) :: cygwin-console-helper.exe :: "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x274 0x270
+CHAIN git/detached#0 pid=20308 ppid=32500 console=NEW console (host pid 32500) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN git/detached#0 pid=47756 ppid=33180 console=NEW console (host pid 20308) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+CHAIN git/detached#1 pid=40692 ppid=21468 console=NONE :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+CHAIN git/detached#1 pid=34728 ppid=40692 console=NONE :: git.exe :: git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/detached#1 pid=11044 ppid=34728 console=NONE :: git-remote-https.exe :: git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/detached#1 pid=48652 ppid=11044 console=NEW console (host pid 48528) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' au
+CHAIN git/detached#1 pid=28132 ppid=48652 console=NEW console (host pid 48528) :: cygwin-console-helper.exe :: "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x278 0x274
+CHAIN git/detached#1 pid=48528 ppid=28132 console=NEW console (host pid 28132) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN git/detached#1 pid=14044 ppid=48652 console=NEW console (host pid 48528) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+CHAIN git/detached#1 pid=7876 ppid=11044 console=NEW console (host pid 33192) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' 
+CHAIN git/detached#1 pid=24060 ppid=7876 console=NEW console (host pid 33192) :: cygwin-console-helper.exe :: "\\?\C:\Program Files\Git\usr\bin\cygwin-console-helper.exe" 0x284 0x288
+CHAIN git/detached#1 pid=33192 ppid=24060 console=NEW console (host pid 24060) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN git/detached#1 pid=45352 ppid=7876 console=NEW console (host pid 33192) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+CHAIN git/detached#1 pid=37572 ppid=45352 console=NEW console (host pid 33192) :: tzutil.exe :: tzutil /g
+DONE program=git mode=detached launches=30 exits=[0x30] avgMs=947 totalS=28.5
+WINDOWS new visible top-level windows during the run: 0

@@ -1,0 +1,6 @@
+RUN program=sh mode=today n=40 launcherPid=42336 launcherConsoleHost=12884 consoleWindow=5375436
+  launch 0: exit=0 91 ms out=51 err=0 outHead='Hall-AgelessRx  MSYS_NT-10.0-26300 Hall-AgelessRx  ' errHead=''
+  launch 1: exit=0 248 ms out=51 err=0 outHead='Hall-AgelessRx  MSYS_NT-10.0-26300 Hall-AgelessRx  ' errHead=''
+  launch 2: exit=0 74 ms out=51 err=0 outHead='Hall-AgelessRx  MSYS_NT-10.0-26300 Hall-AgelessRx  ' errHead=''
+DONE program=sh mode=today launches=40 exits=[0x40] avgMs=162 totalS=6.5
+WINDOWS new visible top-level windows during the run: 0

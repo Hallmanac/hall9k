@@ -1,0 +1,3 @@
+RUN program=spawnprog-inherit mode=nowindow n=20 launcherPid=39888 launcherConsoleHost=21156 consoleWindow=31788196
+DONE program=spawnprog-inherit mode=nowindow launches=20 exits=[0x20] avgMs=144 totalS=2.9
+WINDOWS new visible top-level windows during the run: 0

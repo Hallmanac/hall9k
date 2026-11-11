@@ -1,0 +1,19 @@
+RUN program=spawnprog-inherit mode=today n=40 launcherPid=9460 launcherConsoleHost=0 consoleWindow=0
+CHAIN spawnprog-inherit/inherit#0 pid=38452 ppid=9460 console=NEW console (host pid 48412) :: probe.exe :: "C:\temp\h9kdetach\bin\probe.exe" spawn inherit
+CHAIN spawnprog-inherit/inherit#0 pid=48412 ppid=38452 console=NEW console (host pid 38452) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN spawnprog-inherit/inherit#0 pid=22356 ppid=38452 console=NEW console (host pid 48412) :: probe.exe :: "C:\temp\h9kdetach\bin\probe.exe" nop
+CHAIN spawnprog-inherit/inherit#1 pid=42644 ppid=9460 console=NEW console (host pid 20832) :: probe.exe :: "C:\temp\h9kdetach\bin\probe.exe" spawn inherit
+CHAIN spawnprog-inherit/inherit#1 pid=20832 ppid=42644 console=NEW console (host pid 42644) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN spawnprog-inherit/inherit#1 pid=17348 ppid=42644 console=NEW console (host pid 20832) :: probe.exe :: "C:\temp\h9kdetach\bin\probe.exe" nop
+DONE program=spawnprog-inherit mode=today launches=40 exits=[0x40] avgMs=223 totalS=9.1
+WINDOWS new visible top-level windows during the run: 40
+  WIN class=ConsoleWindowClass pid=38452 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=42644 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=33308 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=27844 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=42948 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=50096 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=12424 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=37776 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=36408 title='C:\temp\h9kdetach\bin\probe.exe'
+  WIN class=ConsoleWindowClass pid=24048 title='C:\temp\h9kdetach\bin\probe.exe'

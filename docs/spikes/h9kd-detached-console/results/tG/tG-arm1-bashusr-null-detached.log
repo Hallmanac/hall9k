@@ -1,0 +1,6 @@
+RUN program=bashusr-null mode=detached n=40 launcherPid=53548 launcherConsoleHost=21820 consoleWindow=0
+  launch 0: exit=0 27 ms out=3 err=0 outHead='hi ' errHead=''
+  launch 1: exit=0 15 ms out=3 err=0 outHead='hi ' errHead=''
+  launch 2: exit=0 14 ms out=3 err=0 outHead='hi ' errHead=''
+DONE program=bashusr-null mode=detached launches=40 exits=[0x40] avgMs=19 totalS=0.8
+WINDOWS new visible top-level windows during the run: 0

@@ -1,0 +1,4 @@
+RUN program=gh-null mode=today n=40 launcherPid=43300 launcherConsoleHost=47292 consoleWindow=0
+CHAIN gh-null/inherit#0 pid=21356 ppid=43300 console=inherited (launcher's console host 47292) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" --version
+DONE program=gh-null mode=today launches=40 exits=[0x40] avgMs=91 totalS=3.7
+WINDOWS new visible top-level windows during the run: 0

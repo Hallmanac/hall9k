@@ -1,0 +1,16 @@
+RUN program=gh-null mode=today n=40 launcherPid=42868 launcherConsoleHost=0 consoleWindow=0
+CHAIN gh-null/inherit#0 pid=23140 ppid=42868 console=NEW console (host pid 5904) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" --version
+CHAIN gh-null/inherit#0 pid=5904 ppid=23140 console=NEW console (host pid 23140) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN gh-null/inherit#0 pid=7248 ppid=23140 console=NEW console (host pid 5904) :: tzutil.exe :: tzutil /g
+DONE program=gh-null mode=today launches=40 exits=[0x40] avgMs=150 totalS=6.0
+WINDOWS new visible top-level windows during the run: 40
+  WIN class=ConsoleWindowClass pid=23140 title='C:\Program Files\GitHub CLI\gh.exe'
+  WIN class=ConsoleWindowClass pid=40424 title='C:\Program Files\GitHub CLI\gh.exe'
+  WIN class=ConsoleWindowClass pid=12424 title='C:\Program Files\GitHub CLI\gh.exe'
+  WIN class=ConsoleWindowClass pid=44312 title='C:\Program Files\GitHub CLI\gh.exe'
+  WIN class=ConsoleWindowClass pid=36832 title='C:\Program Files\GitHub CLI\gh.exe'
+  WIN class=ConsoleWindowClass pid=36144 title='C:\Program Files\GitHub CLI\gh.exe'
+  WIN class=ConsoleWindowClass pid=18716 title='C:\Program Files\GitHub CLI\gh.exe'
+  WIN class=ConsoleWindowClass pid=20060 title='C:\Program Files\GitHub CLI\gh.exe'
+  WIN class=ConsoleWindowClass pid=24880 title='C:\Program Files\GitHub CLI\gh.exe'
+  WIN class=ConsoleWindowClass pid=17832 title='C:\Program Files\GitHub CLI\gh.exe'

@@ -1,0 +1,7 @@
+RUN program=claude-direct-null mode=detached n=8 launcherPid=12604 launcherConsoleHost=2824 consoleWindow=0
+CHAIN claude-direct-null/detached#0 pid=25168 ppid=12604 console=NONE ::  :: 
+  launch 0: exit=0 33 ms out=22 err=0 outHead='2.1.322 (Claude Code) ' errHead=''
+  launch 1: exit=0 24 ms out=22 err=0 outHead='2.1.322 (Claude Code) ' errHead=''
+  launch 2: exit=0 23 ms out=22 err=0 outHead='2.1.322 (Claude Code) ' errHead=''
+DONE program=claude-direct-null mode=detached launches=8 exits=[0x8] avgMs=24 totalS=0.2
+WINDOWS new visible top-level windows during the run: 0

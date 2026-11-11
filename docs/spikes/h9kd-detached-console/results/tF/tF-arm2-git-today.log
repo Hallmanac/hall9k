@@ -1,0 +1,15 @@
+RUN program=git mode=today n=30 launcherPid=32244 launcherConsoleHost=31544 consoleWindow=39652912
+CHAIN git/inherit#0 pid=20656 ppid=32244 console=inherited (launcher's console host 31544) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+CHAIN git/inherit#0 pid=13900 ppid=20656 console=inherited (launcher's console host 31544) :: git.exe :: git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/inherit#0 pid=30168 ppid=13900 console=inherited (launcher's console host 31544) :: git-remote-https.exe :: git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/inherit#0 pid=41016 ppid=30168 console=inherited (launcher's console host 31544) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' au
+CHAIN git/inherit#0 pid=31388 ppid=41016 console=inherited (launcher's console host 31544) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+CHAIN git/inherit#0 pid=41088 ppid=31388 console=inherited (launcher's console host 31544) :: tzutil.exe :: tzutil /g
+CHAIN git/inherit#0 pid=42180 ppid=30168 console=inherited (launcher's console host 31544) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' 
+CHAIN git/inherit#0 pid=47720 ppid=42180 console=inherited (launcher's console host 31544) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+CHAIN git/inherit#0 pid=48704 ppid=47720 console=inherited (launcher's console host 31544) :: tzutil.exe :: tzutil /g
+  launch 0: exit=0 1016 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+  launch 1: exit=0 682 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+  launch 2: exit=0 1420 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+DONE program=git mode=today launches=30 exits=[0x30] avgMs=832 totalS=25.0
+WINDOWS new visible top-level windows during the run: 0

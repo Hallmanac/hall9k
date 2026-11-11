@@ -1,0 +1,14 @@
+RUN program=git mode=nowindow n=30 launcherPid=1852 launcherConsoleHost=26084 consoleWindow=0
+CHAIN git/nowindow#0 pid=44116 ppid=1852 console=NEW console (host pid 24692) :: git.exe :: "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/Hallmanac/hall9k-smoke.git HEAD
+CHAIN git/nowindow#0 pid=24692 ppid=44116 console=NEW console (host pid 44116) :: conhost.exe :: \??\C:\Windows\system32\conhost.exe 0x4
+CHAIN git/nowindow#0 pid=34512 ppid=44116 console=NEW console (host pid 24692) :: git.exe :: git remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/nowindow#0 pid=51076 ppid=34512 console=NEW console (host pid 24692) :: git-remote-https.exe :: git-remote-https https://github.com/Hallmanac/hall9k-smoke.git https://github.com/Hallmanac/hall9k-smoke.git
+CHAIN git/nowindow#0 pid=47416 ppid=51076 console=NEW console (host pid 24692) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' au
+CHAIN git/nowindow#0 pid=51876 ppid=47416 console=NEW console (host pid 24692) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+CHAIN git/nowindow#0 pid=13228 ppid=51076 console=NEW console (host pid 24692) :: sh.exe :: "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' 
+CHAIN git/nowindow#0 pid=49228 ppid=13228 console=NEW console (host pid 24692) :: gh.exe :: "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+  launch 0: exit=0 740 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+  launch 1: exit=0 1049 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+  launch 2: exit=0 834 ms out=46 err=0 outHead='f8900deec5883108c81d402f9ad1c3ea1ee89776	HEAD ' errHead=''
+DONE program=git mode=nowindow launches=30 exits=[0x30] avgMs=846 totalS=25.4
+WINDOWS new visible top-level windows during the run: 0

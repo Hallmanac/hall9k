@@ -1,0 +1,40 @@
+     the Xceed Fluent Assertions Community License. You may use Fluent Assertions free of charge for
+     non-commercial use only. An active subscription is required to use Fluent Assertions for commercial use.
+     Please contact Xceed Sales mailto:sales@xceed.com to acquire a subscription at a very low cost.
+     A paid commercial license supports the development and continued increasing support of
+     Fluent Assertions users under both commercial and community licenses. Help us
+     keep Fluent Assertions at the forefront of unit testing.
+     For more information, visit https://xceed.com/products/unit-testing/fluent-assertions/
+[xUnit.net 00:05:58.28]   Finished:    Hall9k.Tests
+  Passed Hall9k.Tests.Connectors.WindowsDetachedStartTokenLeakTests.A_detached_start_of_git_for_windows_launcher_leaves_as_many_tokens_as_a_plain_start [5 m 47 s]
+  Standard Output Messages:
+ launcher C:\Program Files\Git\cmd\git.exe; real git C:\Program Files\Git\ucrt64\bin\git.exe
+ warm-up (not counted) Plain: 20 launches in 1.4 s, window 16.0 s, live Toke before 1796939, after 1797165, delta 226
+ warm-up (not counted) Detached: 20 launches in 1.9 s, window 16.0 s, live Toke before 1797165, after 1797340, delta 175
+ warm-up (not counted) Null: 20 launches in 1.2 s, window 16.0 s, live Toke before 1797340, after 1797440, delta 100
+ round 1 Detached: 200 launches in 18.6 s, window 18.6 s, live Toke before 1797440, after 1797760, delta 320
+ round 1 Null: 200 launches in 8.6 s, window 16.0 s, live Toke before 1797760, after 1797975, delta 215
+ round 1 Plain: 200 launches in 11.5 s, window 16.0 s, live Toke before 1797975, after 1798370, delta 395
+ round 2 Detached: 200 launches in 18.1 s, window 18.1 s, live Toke before 1798370, after 1798747, delta 377
+ round 2 Plain: 200 launches in 12.6 s, window 16.0 s, live Toke before 1798747, after 1799095, delta 348
+ round 2 Null: 200 launches in 8.1 s, window 16.0 s, live Toke before 1799096, after 1799242, delta 146
+ round 3 Plain: 200 launches in 10.7 s, window 16.0 s, live Toke before 1799242, after 1799535, delta 293
+ round 3 Detached: 200 launches in 19.1 s, window 19.1 s, live Toke before 1799535, after 1799911, delta 376
+ round 3 Null: 200 launches in 7.2 s, window 16.0 s, live Toke before 1799911, after 1800020, delta 109
+ round 4 Plain: 200 launches in 11.0 s, window 16.0 s, live Toke before 1800020, after 1800354, delta 334
+ round 4 Null: 200 launches in 7.1 s, window 16.0 s, live Toke before 1800354, after 1800446, delta 92
+ round 4 Detached: 200 launches in 18.8 s, window 18.8 s, live Toke before 1800446, after 1800840, delta 394
+ round 5 Null: 200 launches in 6.4 s, window 16.0 s, live Toke before 1800840, after 1801024, delta 184
+ round 5 Plain: 200 launches in 10.7 s, window 16.0 s, live Toke before 1801024, after 1801218, delta 194
+ round 5 Detached: 200 launches in 17.2 s, window 17.2 s, live Toke before 1801218, after 1801613, delta 395
+ round 6 Null: 200 launches in 8.8 s, window 16.0 s, live Toke before 1801613, after 1801875, delta 262
+ round 6 Detached: 200 launches in 15.8 s, window 16.0 s, live Toke before 1801875, after 1802090, delta 215
+ round 6 Plain: 200 launches in 11.0 s, window 16.0 s, live Toke before 1802090, after 1802360, delta 270
+ TOTAL over 1200 launches per arm: plain +1834, detached +2077, null +1008; plain minus null 826 (0.69 per launch), detached minus null 1069 (0.89 per launch)
+
+
+
+Test Run Successful.
+Total tests: 1
+     Passed: 1
+ Total time: 5.9788 Minutes

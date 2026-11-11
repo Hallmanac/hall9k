@@ -1,0 +1,7 @@
+RUN program=bashusr-null mode=today n=40 launcherPid=49132 launcherConsoleHost=20608 consoleWindow=0
+CHAIN bashusr-null/inherit#0 pid=2420 ppid=49132 console=inherited (launcher's console host 20608) ::  :: 
+  launch 0: exit=0 18 ms out=3 err=0 outHead='hi ' errHead=''
+  launch 1: exit=0 16 ms out=3 err=0 outHead='hi ' errHead=''
+  launch 2: exit=0 15 ms out=3 err=0 outHead='hi ' errHead=''
+DONE program=bashusr-null mode=today launches=40 exits=[0x40] avgMs=31 totalS=1.3
+WINDOWS new visible top-level windows during the run: 0

@@ -1,0 +1,9 @@
+### arm 0 [gitcmd:today:40:hidden:nowindow:2] root pid 3940: child creations 81, tokens kept (never freed) 40, pending 0; 40 launches -> kept per launch 1.00
+    probe.exe > C:\Program Files\Git\cmd\git.exe                   created   40 freed    0 kept   40
+### arm 1 [gitcmd:detached:40:hidden:nowindow:2] root pid 9568: child creations 121, tokens kept (never freed) 40, pending 0; 40 launches -> kept per launch 1.00
+    probe.exe > C:\Program Files\Git\cmd\git.exe                   created   40 freed    0 kept   40
+### arm 2 [git:today:30:hidden:newconsole:1] root pid 32244: child creations 271, tokens kept (never freed) 0, pending 0; 30 launches -> kept per launch 0.00
+### arm 3 [gh:today:40:hidden:newconsole:0] root pid 46180: child creations 121, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 4 [sh:today:40:hidden:newconsole:0] root pid 42336: child creations 241, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 5 [bash:today:40:hidden:newconsole:0] root pid 34136: child creations 281, tokens kept (never freed) 0, pending 0; 40 launches -> kept per launch 0.00
+### arm 6 [claude-direct:nowindow:3:hidden:newconsole:0] root pid 46144: child creations 217, tokens kept (never freed) 0, pending 0; 3 launches -> kept per launch 0.00
