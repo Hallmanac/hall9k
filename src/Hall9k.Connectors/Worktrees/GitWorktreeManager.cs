@@ -1284,8 +1284,17 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         string repositoryPath, string arguments, CancellationToken cancellationToken) =>
         TryRunGitAsync(repositoryPath, arguments, endGitOnCancel: false, cancellationToken);
 
-    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunGitAsync(
-        string repositoryPath, string arguments, bool endGitOnCancel, CancellationToken cancellationToken)
+    private static Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunGitAsync(
+        string repositoryPath, string arguments, bool endGitOnCancel, CancellationToken cancellationToken) =>
+        GitRemoteAuthentication.RunAsync(
+            "git", arguments, repositoryPath,
+            remote => TryRunGitOnceAsync(repositoryPath, arguments, endGitOnCancel, remote, cancellationToken),
+            result => (result.ExitCode, result.StandardError),
+            cancellationToken);
+
+    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunGitOnceAsync(
+        string repositoryPath, string arguments, bool endGitOnCancel, GitRemoteAuthorization? remote,
+        CancellationToken cancellationToken)
     {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
@@ -1297,6 +1306,11 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             UseShellExecute = false,
         };
         NonInteractiveGit.Apply(process.StartInfo);
+        if (remote is not null)
+        {
+            GitRemoteAuthentication.Apply(process.StartInfo, remote);
+        }
+
         GitForWindowsLauncher.Shared.Apply(process.StartInfo);
         process.Start();
 

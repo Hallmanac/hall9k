@@ -1140,8 +1140,17 @@ public sealed class PullRequestOpener(
                 $"{fileName} {string.Join(' ', arguments)} exited {exitCode}: {standardError}");
     }
 
-    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunInWorktreeAsync(
-        string worktreePath, string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    private static Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunInWorktreeAsync(
+        string worktreePath, string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken) =>
+        GitRemoteAuthentication.RunAsync(
+            fileName, arguments, worktreePath,
+            remote => TryRunInWorktreeOnceAsync(worktreePath, fileName, arguments, remote, cancellationToken),
+            result => (result.ExitCode, result.StandardError),
+            cancellationToken);
+
+    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunInWorktreeOnceAsync(
+        string worktreePath, string fileName, IReadOnlyList<string> arguments, GitRemoteAuthorization? remote,
+        CancellationToken cancellationToken)
     {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
@@ -1155,6 +1164,11 @@ public sealed class PullRequestOpener(
         foreach (string argument in arguments)
         {
             process.StartInfo.ArgumentList.Add(argument);
+        }
+
+        if (remote is not null)
+        {
+            GitRemoteAuthentication.Apply(process.StartInfo, remote);
         }
 
         GitForWindowsLauncher.Shared.Apply(process.StartInfo);
