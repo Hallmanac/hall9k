@@ -1,0 +1,358 @@
+// TokeTrace: reads a tracerpt CSV of a kernel trace taken with toke.wprp / toke-nostacks.wprp
+// (process, image-load and pool events for the pool tag "Toke", optionally with pool stacks) and
+// works out which Toke allocations were never freed and which process creation each belongs to.
+//
+//   dotnet TokeTrace.dll <trace.csv> [--root <pid>] [--settle <s>] [--by-cmd] [--stacks]
+//                        [--min-start <s>] [--tsv <file>] [--dump <n>] [--drivers <file>]
+//
+//   --root <pid>    only creations made by that process or anything below it (a pid that is in the
+//                   process list at the start of the trace, or one that starts during it)
+//   --exclude <pid> leave that process and everything below it out of the tree (the measuring session itself)
+//   --settle <s>    a token counts as "never freed" only when its process ended at least this many
+//                   seconds before the trace stopped (default 60); otherwise it is "pending"
+//   --by-cmd        split each creator>child row by the child's command line
+//   --stacks        cross-check the child-token match against the kernel stack of every allocation
+//   --min-start <s> ignore creations that started in the first <s> seconds (warm-up)
+//
+// How an allocation is tied to a process creation: it is the last Toke allocation made by the
+// creating thread before that creation's Process/Start event (within 1 s), not already taken by an
+// earlier creation. --stacks proves the match rather than assuming it: every claimed allocation must
+// carry the same full kernel stack (the CreateProcess one) and no unclaimed allocation may carry it.
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
+
+internal static partial class Program
+{
+    private const uint TokeTag = 0x656B6F54;
+
+    private sealed class Proc
+    {
+        public int Pid, Ppid, Parent = -1; public long Key; public string Image = "?", Cmd = "", Full = "";
+        public long Start, End; public bool Alive = true; public int CreatorPid, CreatorTid; public bool FromRundown;
+        public int ClaimedAlloc = -1; public List<int> Children = [];
+    }
+    private struct Pool { public long Time; public int Pid, Tid; public long Addr; public bool Alloc; public int Match; public string Sig; }
+    private sealed record Ev(long Time, int Order, string Type, int Pid, int Ppid, long Key, string Image, string Cmd, int CreatorPid, int CreatorTid, string Path);
+
+    private static long Hex(ReadOnlySpan<char> s)
+    {
+        s = s.Trim();
+        return s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+            ? long.Parse(s[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture)
+            : long.Parse(s, NumberStyles.Integer, CultureInfo.InvariantCulture);
+    }
+    private static ulong HexU(ReadOnlySpan<char> s)
+    {
+        s = s.Trim();
+        return s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+            ? ulong.Parse(s[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture) : ulong.Parse(s, CultureInfo.InvariantCulture);
+    }
+
+    [GeneratedRegex("\"(?<sid>[^\"]*)\",\\s*\"(?<img>[^\"]*)\",\\s*\"(?<cmd>.*)\",\\s*\"(?<pkg>[^\"]*)\",\\s*\"(?<app>[^\"]*)\"\\s*$")]
+    private static partial Regex ProcTail();
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint QueryDosDevice(string name, StringBuilder target, uint max);
+
+    private static Dictionary<string, string> DeviceMap()
+    {
+        Dictionary<string, string> map = new(StringComparer.OrdinalIgnoreCase);
+        for (char d = 'A'; d <= 'Z'; d++)
+        {
+            StringBuilder sb = new(1024);
+            if (QueryDosDevice($"{d}:", sb, 1024) > 0) map[sb.ToString().Split('\0')[0]] = $"{d}:";
+        }
+        return map;
+    }
+
+    private static string DosPath(string nt, Dictionary<string, string> map)
+    {
+        foreach ((string dev, string drive) in map)
+            if (nt.StartsWith(dev + "\\", StringComparison.OrdinalIgnoreCase)) return drive + nt[dev.Length..];
+        return nt.StartsWith("\\SystemRoot\\", StringComparison.OrdinalIgnoreCase) ? @"C:\Windows" + nt[11..] : nt;
+    }
+
+    public static int Main(string[] args)
+    {
+        string file = args[0];
+        int root = -1, exclude = -1, dump = 0, spawnRows = 40; double settle = 60, minStart = 0; string? tsv = null, driversFile = null; bool byCmd = false, stacks = false;
+        for (int i = 1; i < args.Length; i++)
+            switch (args[i])
+            {
+                case "--root": root = int.Parse(args[++i]); break;
+                case "--settle": settle = double.Parse(args[++i], CultureInfo.InvariantCulture); break;
+                case "--exclude": exclude = int.Parse(args[++i]); break;
+                case "--spawn-rows": spawnRows = int.Parse(args[++i]); break;
+                case "--min-start": minStart = double.Parse(args[++i], CultureInfo.InvariantCulture); break;
+                case "--tsv": tsv = args[++i]; break;
+                case "--drivers": driversFile = args[++i]; break;
+                case "--dump": dump = int.Parse(args[++i]); break;
+                case "--by-cmd": byCmd = true; break;
+                case "--stacks": stacks = true; break;
+            }
+
+        Dictionary<string, string> dev = DeviceMap();
+        List<Ev> events = [];
+        List<Pool> pool = new(1 << 20);
+        List<(long time, int tid, string sig)> stackEvents = [];
+        long first = long.MaxValue, last = 0, nonToke = 0;
+        HashSet<string> drivers = new(StringComparer.OrdinalIgnoreCase);
+        List<(long baseAddr, long size, string name)> kernelModules = [];
+        int order = 0;
+
+        using StreamReader reader = new(file, Encoding.UTF8, false, 1 << 20);
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+        {
+            ReadOnlySpan<char> l = line.AsSpan().TrimStart();
+            int c1 = l.IndexOf(',');
+            if (c1 < 0) continue;
+            ReadOnlySpan<char> name = l[..c1].Trim();
+            if (name.SequenceEqual("Pool"))
+            {
+                string[] f = line.Split(',');
+                if (f.Length < 23) continue;
+                string type = f[1].Trim();
+                if (type != "PoolAllocation" && type != "PoolFree") continue;
+                if ((uint)HexU(f[^3]) != TokeTag) { nonToke++; continue; }
+                long t = Hex(f[16]);
+                first = Math.Min(first, t); last = Math.Max(last, t);
+                pool.Add(new Pool { Time = t, Pid = (int)Hex(f[9]), Tid = (int)Hex(f[10]), Addr = (long)HexU(f[^1]), Alloc = type == "PoolAllocation", Match = -1 });
+            }
+            else if (name.SequenceEqual("StackWalk"))
+            {
+                if (!stacks) continue;
+                string[] f = line.Split(',');
+                if (f.Length < 26) continue;
+                // 19 event time stamp, 20 process, 21 thread, 22.. frames; a kernel stack starts with a kernel address
+                if ((long)HexU(f[22]) >= 0) continue;
+                stackEvents.Add((Hex(f[16]), (int)Hex(f[21]), string.Join('|', f.Skip(22).TakeWhile(x => x.Trim().StartsWith("0xFFFF", StringComparison.OrdinalIgnoreCase)).Select(x => x.Trim()))));
+            }
+            else if (name.SequenceEqual("Process"))
+            {
+                string[] f = line.Split(',', 27);
+                if (f.Length < 27) continue;
+                string type = f[1].Trim();
+                if (type is not ("Start" or "DCStart" or "End")) continue;
+                Match m = ProcTail().Match(f[26]);
+                events.Add(new Ev(Hex(f[16]), type == "DCStart" ? 0 : 1, type, (int)Hex(f[20]), (int)Hex(f[21]), Hex(f[19]),
+                    m.Success ? m.Groups["img"].Value : "?", m.Success ? m.Groups["cmd"].Value : "", (int)Hex(f[9]), (int)Hex(f[10]), ""));
+            }
+            else if (name.SequenceEqual("Image"))
+            {
+                string[] f = line.Split(',');
+                string type = f[1].Trim();
+                if (type is not ("Load" or "DCStart")) continue;
+                string fn = f[^1].Trim().Trim('"');
+                long baseAddr = (long)HexU(f[19]);
+                if (baseAddr < 0)
+                {
+                    if (type == "DCStart") { drivers.Add(DosPath(fn, dev)); kernelModules.Add((baseAddr, (long)HexU(f[20]), Path.GetFileName(fn))); }
+                    continue;
+                }
+                if (fn.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    events.Add(new Ev(Hex(f[16]), 2, "Image", (int)Hex(f[21]), 0, 0, "", "", 0, 0, DosPath(fn, dev)));
+            }
+        }
+
+        // replay processes in time order (rundown first)
+        List<Proc> procs = [];
+        Dictionary<int, int> live = [];
+        foreach (Ev e in events.OrderBy(e => e.Time).ThenBy(e => e.Order))
+        {
+            if (e.Type == "Image")
+            {
+                if (live.TryGetValue(e.Pid, out int ix) && procs[ix].Full.Length == 0) procs[ix].Full = e.Path;
+                continue;
+            }
+            if (e.Type == "End")
+            {
+                if (live.TryGetValue(e.Pid, out int ix) && procs[ix].Key == e.Key) { procs[ix].End = e.Time; procs[ix].Alive = false; live.Remove(e.Pid); }
+                continue;
+            }
+            Proc p = new()
+            {
+                Pid = e.Pid, Ppid = e.Ppid, Key = e.Key, Image = e.Image, Cmd = e.Cmd, Start = e.Type == "DCStart" ? 0 : e.Time,
+                FromRundown = e.Type == "DCStart", CreatorPid = e.CreatorPid, CreatorTid = e.CreatorTid,
+            };
+            if (e.Type == "Start") p.Parent = live.TryGetValue(e.Ppid, out int pi) ? pi : -1;
+            procs.Add(p);
+            live[e.Pid] = procs.Count - 1;
+        }
+        Dictionary<int, int> rundown = [];
+        for (int i = 0; i < procs.Count; i++) if (procs[i].FromRundown) rundown[procs[i].Pid] = i;
+        for (int i = 0; i < procs.Count; i++) if (procs[i].FromRundown) procs[i].Parent = rundown.TryGetValue(procs[i].Ppid, out int pi) ? pi : -1;
+        for (int i = 0; i < procs.Count; i++) if (procs[i].Parent >= 0) procs[procs[i].Parent].Children.Add(i);
+
+        pool.Sort((a, b) => a.Time.CompareTo(b.Time));
+        Dictionary<long, int> open = [];
+        int allocs = 0, frees = 0, freedKnown = 0;
+        for (int i = 0; i < pool.Count; i++)
+        {
+            Pool e = pool[i];
+            if (e.Alloc) { allocs++; open[e.Addr] = i; }
+            else { frees++; if (open.Remove(e.Addr, out int a)) { freedKnown++; Pool pa = pool[a]; pa.Match = i; pool[a] = pa; } }
+        }
+        long end = last;
+        double traceStart = first;
+        Console.WriteLine($"trace: {(last - first) / 1e7:F1} s, Toke allocations {allocs}, frees {frees} ({freedKnown} of allocations seen in this trace), still allocated at the end {allocs - freedKnown}, other-tag pool events skipped {nonToke}");
+
+        // claim the child token of each process creation
+        Dictionary<(int, int), List<int>> byThread = [];
+        for (int i = 0; i < pool.Count; i++)
+            if (pool[i].Alloc) { var k = (pool[i].Pid, pool[i].Tid); if (!byThread.TryGetValue(k, out var lst)) byThread[k] = lst = []; lst.Add(i); }
+        HashSet<int> claimed = [];
+        int unclaimedCreations = 0;
+        foreach (Proc p in procs.Where(p => !p.FromRundown).OrderBy(p => p.Start))
+        {
+            if (!byThread.TryGetValue((p.CreatorPid, p.CreatorTid), out var lst)) { unclaimedCreations++; continue; }
+            int lo = 0, hi = lst.Count - 1, at = -1;
+            while (lo <= hi) { int mid = (lo + hi) / 2; if (pool[lst[mid]].Time <= p.Start) { at = mid; lo = mid + 1; } else hi = mid - 1; }
+            for (; at >= 0 && p.Start - pool[lst[at]].Time < 10_000_000; at--)  // within 1 s (100 ns ticks)
+                if (!claimed.Contains(lst[at])) { p.ClaimedAlloc = lst[at]; claimed.Add(lst[at]); break; }
+            if (p.ClaimedAlloc < 0) unclaimedCreations++;
+        }
+        Console.WriteLine($"process creations seen: {procs.Count(p => !p.FromRundown)}, child token claimed for {claimed.Count}, no allocation found for {unclaimedCreations}");
+
+        if (stacks)
+        {
+            // the first kernel stack event of the allocating thread at or after each allocation
+            var byTid = stackEvents.GroupBy(s => s.tid).ToDictionary(g => g.Key, g => g.OrderBy(s => s.time).ToList());
+            for (int i = 0; i < pool.Count; i++)
+            {
+                if (!pool[i].Alloc || !byTid.TryGetValue(pool[i].Tid, out var sl)) continue;
+                int lo = 0, hi = sl.Count - 1, at = -1;
+                while (lo <= hi) { int mid = (lo + hi) / 2; if (sl[mid].time >= pool[i].Time) { at = mid; hi = mid - 1; } else lo = mid + 1; }
+                if (at >= 0 && sl[at].time - pool[i].Time < 50_000) { Pool pp = pool[i]; pp.Sig = sl[at].sig; pool[i] = pp; }
+            }
+            var claimedSigs = claimed.GroupBy(i => pool[i].Sig ?? "(no stack)").OrderByDescending(g => g.Count()).ToList();
+            Console.WriteLine($"\nstack check: {claimed.Count} claimed child-token allocations carry {claimedSigs.Count} distinct full kernel stacks:");
+            foreach (var g in claimedSigs.Take(4)) Console.WriteLine($"  {g.Count(),6} claimed, {g.Count(i => pool[i].Match < 0),6} never freed  {g.Key[..Math.Min(g.Key.Length, 120)]}");
+            string top = claimedSigs[0].Key;
+            // which kernel module does each frame of that stack fall in?
+            var modulesOnStack = top.Split('|').Select(x => (long)HexU(x)).Select(a => kernelModules.FirstOrDefault(m => a >= m.baseAddr && a < m.baseAddr + m.size).name ?? "(none)").GroupBy(n => n).Select(g => $"{g.Key} x{g.Count()}");
+            Console.WriteLine($"  kernel modules the {top.Split('|').Length} frames of that stack fall in: {string.Join(", ", modulesOnStack)}");
+            int sameUnclaimed = Enumerable.Range(0, pool.Count).Count(i => pool[i].Alloc && !claimed.Contains(i) && pool[i].Sig == top);
+            int sameTotal = Enumerable.Range(0, pool.Count).Count(i => pool[i].Alloc && pool[i].Sig == top);
+            Console.WriteLine($"  allocations with the most common claimed stack: {sameTotal} in total, {sameUnclaimed} of them NOT claimed as any process's child token");
+            var unfreedOther = Enumerable.Range(0, pool.Count).Where(i => pool[i].Alloc && pool[i].Match < 0 && pool[i].Sig != top).GroupBy(i => pool[i].Sig ?? "(no stack)").OrderByDescending(g => g.Count()).Take(3);
+            foreach (var g in unfreedOther) Console.WriteLine($"  never-freed allocations with another stack: {g.Count(),6}  {g.Key[..Math.Min(g.Key.Length, 120)]}");
+        }
+
+        HashSet<int> tree = [];
+        if (root >= 0)
+        {
+            int ri = procs.FindLastIndex(p => p.Pid == root);
+            if (ri < 0) { Console.WriteLine("root pid not found"); return 1; }
+            Stack<int> st = new(); st.Push(ri);
+            while (st.Count > 0) { int x = st.Pop(); if (!tree.Add(x)) continue; foreach (int ch in procs[x].Children) st.Push(ch); }
+            if (exclude >= 0)
+            {
+                int xi = procs.FindLastIndex(p => p.Pid == exclude);
+                HashSet<int> sub = [];
+                Stack<int> sx = new(); if (xi >= 0) sx.Push(xi);
+                while (sx.Count > 0) { int x = sx.Pop(); if (!sub.Add(x)) continue; foreach (int ch in procs[x].Children) sx.Push(ch); }
+                tree.ExceptWith(sub);
+                Console.WriteLine($"left out the {sub.Count} processes below pid {exclude}");
+            }
+            Console.WriteLine($"processes in the tree of pid {root}: {tree.Count}");
+            foreach (int ix in tree.Where(i => procs[i].ClaimedAlloc < 0 && !procs[i].FromRundown).Take(10))
+                Console.WriteLine($"  creation with no child token found: pid {procs[ix].Pid} {procs[ix].Cmd} at +{(procs[ix].Start - first) / 1e7:F2} s");
+        }
+
+        string State(Proc p, int allocIx)
+        {
+            if (pool[allocIx].Match >= 0) return "freed";
+            if (p.Alive || end - p.End < settle * 1e7) return "pending";
+            return "never";
+        }
+
+        string Img(Proc p) => p.Full.Length > 0 ? p.Full : p.Image;
+        string Child(Proc p) => byCmd ? $"{Img(p)}  <=  {(p.Cmd.Length > 160 ? p.Cmd[..160] : p.Cmd)}" : Img(p);
+        var rows = new Dictionary<(string, string), int[]>();
+        var spawnsOf = new Dictionary<(string, string), Dictionary<string, int>>();
+        foreach (Proc p in procs)
+        {
+            if (p.ClaimedAlloc < 0 || p.Start < traceStart + minStart * 1e7) continue;
+            if (root >= 0 && !tree.Contains(p.Parent)) continue;
+            string parentImage = p.Parent >= 0 ? Img(procs[p.Parent]) : $"(unknown creator pid {p.CreatorPid})";
+            var key = (parentImage, Child(p));
+            if (!rows.TryGetValue(key, out int[]? r)) rows[key] = r = new int[4];
+            r[0]++; string s = State(p, p.ClaimedAlloc); r[s == "freed" ? 1 : s == "never" ? 2 : 3]++;
+            if (!spawnsOf.TryGetValue(key, out var sp)) spawnsOf[key] = sp = [];
+            foreach (int ch in p.Children)
+            {
+                string k2 = Img(procs[ch]) + "  <=  " + (procs[ch].Cmd.Length > 160 ? procs[ch].Cmd[..160] : procs[ch].Cmd);
+                sp[k2] = sp.GetValueOrDefault(k2) + 1;
+            }
+        }
+        Console.WriteLine($"\n{"creator > child (token of the child)",-60}{"created",8}{"freed",8}{"never freed",13}{"pending",9}");
+        foreach (var kv in rows.OrderByDescending(kv => kv.Value[2]).ThenByDescending(kv => kv.Value[0]))
+            Console.WriteLine($"{kv.Key.Item1} > {kv.Key.Item2}\n{"",-60}{kv.Value[0],8}{kv.Value[1],8}{kv.Value[2],13}{kv.Value[3],9}");
+        Console.WriteLine($"{"TOTAL",-60}{rows.Values.Sum(v => v[0]),8}{rows.Values.Sum(v => v[1]),8}{rows.Values.Sum(v => v[2]),13}{rows.Values.Sum(v => v[3]),9}");
+
+        {
+            // the rule, checked on every process whose child token was claimed: a token is kept when the
+            // process started a child that exited while the process itself was still running
+            var tab = new Dictionary<string, int[]>();   // category -> freed, never
+            foreach (Proc p in procs)
+            {
+                if (p.ClaimedAlloc < 0 || p.Start < traceStart + minStart * 1e7) continue;
+                if (root >= 0 && !tree.Contains(p.Parent)) continue;
+                string s = State(p, p.ClaimedAlloc);
+                if (s == "pending") continue;
+                bool anyChild = p.Children.Count > 0;
+                bool outlived = p.Children.Any(ch => !procs[ch].Alive && !p.Alive && procs[ch].End < p.End);
+                string cat = !anyChild ? "started no child" : outlived ? "a child exited while the process was still running" : "started a child, but the process ended first (or the child never ended)";
+                if (!tab.TryGetValue(cat, out int[]? c)) tab[cat] = c = new int[2];
+                c[s == "freed" ? 0 : 1]++;
+            }
+            Console.WriteLine("\nrule check (processes whose token state is settled):");
+            foreach (var kv in tab.OrderBy(k => k.Key)) Console.WriteLine($"  {kv.Key,-80} freed {kv.Value[0],7}  never freed {kv.Value[1],7}");
+        }
+
+        if (root >= 0)
+        {
+            // unfreed allocations made in the tree that are not the child token of any creation
+            int other = 0, otherPending = 0; Dictionary<string, int> byProc = [];
+            var treePids = tree.Select(i => procs[i]).ToList();
+            for (int i = 0; i < pool.Count; i++)
+            {
+                if (!pool[i].Alloc || pool[i].Match >= 0 || claimed.Contains(i)) continue;
+                Proc? owner = treePids.LastOrDefault(p => p.Pid == pool[i].Pid && (p.FromRundown || p.Start <= pool[i].Time));
+                if (owner is null) continue;
+                other++; byProc[Img(owner)] = byProc.GetValueOrDefault(Img(owner)) + 1;
+            }
+            Console.WriteLine($"\nunfreed Toke allocations made in the tree that are not a process's child token: {other}");
+            foreach (var kv in byProc.OrderByDescending(kv => kv.Value).Take(10)) Console.WriteLine($"  {kv.Value,6}  {kv.Key}");
+        }
+
+        Console.WriteLine("\nwhat the creators of the kept-token processes' children themselves start (grandchild image <= its command line):");
+        foreach (var kv in spawnsOf.Where(kv => kv.Value.Count > 0).OrderByDescending(kv => rows[kv.Key][2]).Take(spawnRows))
+        {
+            Console.WriteLine($"{kv.Key.Item1} > {kv.Key.Item2}   never freed {rows[kv.Key][2]} of {rows[kv.Key][0]}");
+            foreach (var c in kv.Value.OrderByDescending(x => x.Value).Take(6)) Console.WriteLine($"    {c.Value,5}  {c.Key}");
+        }
+
+        if (tsv is not null)
+            using (StreamWriter w = new(tsv))
+            {
+                w.WriteLine("creator\tchild\tcreated\tfreed\tnever\tpending");
+                foreach (var kv in rows) w.WriteLine($"{kv.Key.Item1}\t{kv.Key.Item2}\t{string.Join('\t', kv.Value)}");
+            }
+        if (driversFile is not null) File.WriteAllLines(driversFile, drivers.OrderBy(d => d, StringComparer.OrdinalIgnoreCase));
+        if (dump > 0)
+        {
+            Console.WriteLine("\nfirst creations with the Toke events of the creating thread around them:");
+            foreach (Proc p in procs.Where(p => !p.FromRundown).Take(dump))
+            {
+                Console.WriteLine($"start {p.Image} pid {p.Pid} by {p.CreatorPid}/{p.CreatorTid} claimed {p.ClaimedAlloc}");
+                foreach (Pool e in pool.Where(e => e.Pid == p.CreatorPid && e.Tid == p.CreatorTid && Math.Abs(e.Time - p.Start) < 3_000_000))
+                    Console.WriteLine($"    {(e.Time - p.Start) / 10.0,10:F0} us {(e.Alloc ? "alloc" : "free ")} {e.Addr:X}");
+            }
+        }
+        return 0;
+    }
+}

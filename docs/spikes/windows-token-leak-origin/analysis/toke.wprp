@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WindowsPerformanceRecorder Version="1.0">
+  <Profiles>
+    <SystemCollector Id="SC" Name="NT Kernel Logger">
+      <BufferSize Value="1024"/>
+      <Buffers Value="128"/>
+    </SystemCollector>
+    <SystemProvider Id="SP">
+      <Keywords>
+        <Keyword Value="ProcessThread"/>
+        <Keyword Value="Loader"/>
+        <Keyword Value="Pool"/>
+      </Keywords>
+      <Stacks>
+        <Stack Value="PoolAllocation"/>
+      </Stacks>
+      <PoolTags>
+        <PoolTag Value="Toke"/>
+      </PoolTags>
+    </SystemProvider>
+    <Profile Id="TokePool.Verbose.File" Name="TokePool" Description="Token pool allocations" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="SC">
+          <SystemProviderId Value="SP"/>
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>
