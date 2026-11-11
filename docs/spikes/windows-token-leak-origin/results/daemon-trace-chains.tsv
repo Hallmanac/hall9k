@@ -1,0 +1,12 @@
+creator	child	created	freed	never	pending
+C:\Users\<user>\.hall9k\bin\h9kd.exe	C:\Program Files\Git\cmd\git.exe	48179	0	47095	1084
+C:\Program Files\Git\cmd\git.exe	C:\Program Files\Git\ucrt64\bin\git.exe	48431	38154	10035	242
+C:\Program Files\Git\ucrt64\bin\git.exe	C:\Program Files\Git\ucrt64\libexec\git-core\git.exe	8667	4670	3925	72
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe	C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe	3997	388	3553	56
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe	C:\Program Files\Git\usr\bin\sh.exe	7218	0	7108	110
+C:\Program Files\Git\usr\bin\sh.exe	C:\Program Files\GitHub CLI\gh.exe	7218	0	7108	110
+C:\Program Files\GitHub CLI\gh.exe	C:\Windows\System32\tzutil.exe	10053	10053	0	0
+C:\Users\<user>\.hall9k\bin\h9kd.exe	C:\Windows\System32\OpenSSH\ssh-keygen.exe	1449	1447	0	2
+C:\Program Files\Git\ucrt64\bin\git.exe	C:\Program Files\Git\usr\bin\ssh-keygen.exe	12506	12506	0	0
+C:\Users\<user>\.hall9k\bin\h9kd.exe	C:\Program Files\GitHub CLI\gh.exe	1365	0	1300	65
+C:\Program Files\GitHub CLI\gh.exe	C:\Program Files\Git\cmd\git.exe	252	0	240	12

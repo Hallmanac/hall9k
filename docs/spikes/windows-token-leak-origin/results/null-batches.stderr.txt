@@ -1,0 +1,11 @@
+pair 1: A +1042, B +414, per launch (A-B)/n = 1.57
+pair 2: A +975, B +1074, per launch (A-B)/n = -0.25
+pair 3: A +833, B +858, per launch (A-B)/n = -0.06
+pair 4: A +844, B +1075, per launch (A-B)/n = -0.58
+pair 5: A +671, B +989, per launch (A-B)/n = -0.80
+pair 6: A +661, B +950, per launch (A-B)/n = -0.72
+pair 7: A +1056, B +1034, per launch (A-B)/n = 0.06
+pair 8: A +1021, B +618, per launch (A-B)/n = 1.01
+pair 9: A +955, B +1059, per launch (A-B)/n = -0.26
+pair 10: A +1218, B +360, per launch (A-B)/n = 2.15
+TOTAL 4000 launches per arm: A +9276, B +8431, per launch 0.21

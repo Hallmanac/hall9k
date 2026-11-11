@@ -1,0 +1,46 @@
+trace: 152.3 s, Toke allocations 84599, frees 81504 (81431 of allocations seen in this trace), still allocated at the end 3168, other-tag pool events skipped 0
+process creations seen: 5743, child token claimed for 5741, no allocation found for 2
+processes in the tree of pid 47924: 23
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Program Files\dotnet\dotnet.exe > C:\Program Files\dotnet\dotnet.exe
+                                                                   6       4            2        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\cmd.exe
+                                                                   2       0            2        0
+C:\Windows\System32\cmd.exe > C:\Program Files\dotnet\dotnet.exe
+                                                                   1       0            1        0
+C:\Program Files\dotnet\dotnet.exe > C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2\tests\Hall9k.Tests\bin\Debug\net10.0\testhost.exe
+                                                                   1       0            1        0
+C:\Program Files\dotnet\dotnet.exe > C:\Windows\System32\conhost.exe
+                                                                   6       6            0        0
+C:\Windows\System32\cmd.exe > C:\Windows\System32\conhost.exe
+                                                                   2       2            0        0
+C:\Windows\System32\cmd.exe > C:\Users\<user>\.local\bin\claude.exe
+                                                                   1       1            0        0
+C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2\tests\Hall9k.Tests\bin\Debug\net10.0\testhost.exe > C:\Windows\System32\conhost.exe
+                                                                   1       1            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\wpr.exe
+                                                                   1       0            0        1
+TOTAL                                                             21      14            6        1
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed       5
+  started a child, but the process ended first (or the child never ended)          freed       4  never freed       1
+  started no child                                                                 freed      10  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 1
+       1  C:\Windows\System32\wpr.exe
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\cmd.exe   never freed 2 of 2
+        2  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        1  C:\Users\<user>\.local\bin\claude.exe  <=  "claude"  --version 
+        1  C:\Program Files\dotnet\dotnet.exe  <=  dotnet  test tests/Hall9k.Tests --filter "FullyQualifiedName~GitForWindowsLauncherTests"
+C:\Program Files\dotnet\dotnet.exe > C:\Program Files\dotnet\dotnet.exe   never freed 2 of 6
+        6  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+        1  C:\Program Files\dotnet\dotnet.exe  <=  "C:\Program Files\dotnet\dotnet.exe"  exec "C:\Program Files\dotnet\sdk\10.0.301\vstest.console.dll" --testAdapterPath:C:\Users\<user>\.nuget\packages\coverlet.c
+        1  C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2\tests\Hall9k.Tests\bin\Debug\net10.0\testhost.exe  <=  "C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2\tests\Hall9k.Tests\bin\Debug\net10.0\testhost.exe"  --runtimeconfig "C:\Users\<user>\.hall9k\pr
+C:\Windows\System32\cmd.exe > C:\Program Files\dotnet\dotnet.exe   never freed 1 of 1
+        5  C:\Program Files\dotnet\dotnet.exe  <=  "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.301\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+C:\Program Files\dotnet\dotnet.exe > C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2\tests\Hall9k.Tests\bin\Debug\net10.0\testhost.exe   never freed 1 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1

@@ -1,0 +1,8 @@
+21:57:06 h9kd pid 34684 started 2026-11-10T11:39:57.7473287-05:00 path C:\Users\<user>\.hall9k\bin\h9kd.exe
+21:57:07 trace started
+21:57:07 already running at trace start: pid 38628 conhost.exe
+21:57:07 already running at trace start: pid 42564 cmd.exe
+21:57:07 already running at trace start: pid 11608 git.exe
+22:57:08 waiting 90 s before stopping the trace
+22:59:18 trace stopped after 3,731 s; h9kd still pid 34684: True
+23:08:39 converted to CSV

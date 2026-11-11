@@ -1,0 +1,32 @@
+trace: 118.0 s, Toke allocations 76846, frees 74064 (73989 of allocations seen in this trace), still allocated at the end 2857, other-tag pool events skipped 0
+process creations seen: 5425, child token claimed for 5425, no allocation found for 0
+
+stack check: 5425 claimed child-token allocations carry 2 distinct full kernel stacks:
+    5382 claimed,   2811 never freed  0xFFFFF8017B6F8483|0xFFFFF8017B6F8F14|0xFFFFF8017B65D355|0xFFFFF8017B6ED02E|0xFFFFF8017B75E515|0xFFFFF8017B75B9C2|0xFFFF
+      43 claimed,      0 never freed  0xFFFFF8017B6F8483|0xFFFFF8017B6F8F14|0xFFFFF8017B65D355|0xFFFFF8017B6ED02E|0xFFFFF8017B75E515|0xFFFFF8017B75B9C2|0xFFFF
+  kernel modules the 16 frames of that stack fall in: ntoskrnl.exe x16
+  allocations with the most common claimed stack: 5382 in total, 0 of them NOT claimed as any process's child token
+  never-freed allocations with another stack:     18  0xFFFFF8017B6F8483|0xFFFFF8017B6F8F14|0xFFFFF8017B65D355|0xFFFFF8017B6ED02E|0xFFFFF8017B75E515|0xFFFFF8017B75B9C2|0xFFFF
+  never-freed allocations with another stack:     11  0xFFFFF8017B6F8483|0xFFFFF8017B6F8F14|0xFFFFF8017B65D355|0xFFFFF8017B6ED02E|0xFFFFF8017B75E515|0xFFFFF8017B75B9C2|0xFFFF
+  never-freed allocations with another stack:      8  0xFFFFF8017B6F8483|0xFFFFF8017B6F8F14|0xFFFFF8017B65D355|0xFFFFF8017B6ED02E|0xFFFFF8017B75E515|0xFFFFF8017B75B9C2|0xFFFF
+processes in the tree of pid 18464: 451
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Users\<user>\AppData\Local\Temp\tokeleak\bench.exe > C:\Users\<user>\AppData\Local\Temp\tokeleak\spawn.exe  <=  "C:\Users\<user>\AppData\Local\Temp\tokeleak\spawn.exe" 1
+                                                                 150       0          150        0
+C:\Users\<user>\AppData\Local\Temp\tokeleak\spawn.exe > C:\Users\<user>\AppData\Local\Temp\tokeleak\spawn.exe  <=  "C:\Users\<user>\AppData\Local\Temp\tokeleak\spawn.exe" 0
+                                                                 150     150            0        0
+C:\Users\<user>\AppData\Local\Temp\tokeleak\bench.exe > C:\Users\<user>\AppData\Local\Temp\tokeleak\spawn.exe  <=  "C:\Users\<user>\AppData\Local\Temp\tokeleak\spawn.exe" 0
+                                                                 150     150            0        0
+TOTAL                                                            450     300          150        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed     150
+  started no child                                                                 freed     300  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 4
+       4  C:\Users\<user>\AppData\Local\Temp\tokeleak\spawn.exe
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Users\<user>\AppData\Local\Temp\tokeleak\bench.exe > C:\Users\<user>\AppData\Local\Temp\tokeleak\spawn.exe  <=  "C:\Users\<user>\AppData\Local\Temp\tokeleak\spawn.exe" 1   never freed 150 of 150
+      150  C:\Users\<user>\AppData\Local\Temp\tokeleak\spawn.exe  <=  "C:\Users\<user>\AppData\Local\Temp\tokeleak\spawn.exe" 0

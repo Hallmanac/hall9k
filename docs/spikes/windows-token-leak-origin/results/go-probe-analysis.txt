@@ -1,0 +1,30 @@
+trace: 81.9 s, Toke allocations 43207, frees 40916 (40884 of allocations seen in this trace), still allocated at the end 2323, other-tag pool events skipped 0
+process creations seen: 4204, child token claimed for 4204, no allocation found for 0
+processes in the tree of pid 6252: 128
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" --version
+                                                                  25       0           25        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\whoami.exe  <=  "C:\Windows\System32\whoami.exe"
+                                                                  25      24            1        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\HOSTNAME.EXE  <=  "C:\Windows\System32\hostname.exe"
+                                                                  25      24            1        0
+C:\Program Files\GitHub CLI\gh.exe > C:\Windows\System32\tzutil.exe  <=  tzutil /g
+                                                                  25      25            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\Docker\Docker\resources\bin\docker.exe  <=  "C:\Program Files\Docker\Docker\resources\bin\docker.exe" --version
+                                                                  25      25            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\wpr.exe  <=  "C:\Windows\system32\wpr.exe" -stop C:\Users\<user>\AppData\Local\Temp\tokeleak\goprobe.etl
+                                                                   1       0            0        1
+TOTAL                                                            126      98           27        1
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      25
+  started no child                                                                 freed      98  never freed       2
+
+unfreed Toke allocations made in the tree that are not a process's child token: 6
+       5  C:\Windows\System32\HOSTNAME.EXE
+       1  C:\Windows\System32\wpr.exe
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" --version   never freed 25 of 25
+       25  C:\Windows\System32\tzutil.exe  <=  tzutil /g

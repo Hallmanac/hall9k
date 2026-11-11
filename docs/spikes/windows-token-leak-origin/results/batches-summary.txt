@@ -1,0 +1,8 @@
+repro-batches.csv: 10 pairs of 400 launches; per launch (A-B): mean 0.71, sd 0.66, standard error 0.21, min -0.13, max 1.92; pairs above 0: 9
+    A first in 5 pairs (mean 0.54), A second in 5 pairs (mean 0.87); total A 12257, total B 9433
+null-batches.csv: 10 pairs of 400 launches; per launch (A-B): mean 0.21, sd 1.01, standard error 0.32, min -0.80, max 2.15; pairs above 0: 4
+    A first in 5 pairs (mean 0.10), A second in 5 pairs (mean 0.32); total A 9276, total B 8431
+repro-batches-nowindow.csv: 10 pairs of 400 launches; per launch (A-B): mean 0.78, sd 0.65, standard error 0.20, min -0.01, max 2.40; pairs above 0: 9
+    A first in 5 pairs (mean 0.71), A second in 5 pairs (mean 0.85); total A 12183, total B 9058
+null-batches-nowindow.csv: 10 pairs of 400 launches; per launch (A-B): mean -0.06, sd 0.79, standard error 0.25, min -1.48, max 0.97; pairs above 0: 5
+    A first in 5 pairs (mean -0.01), A second in 5 pairs (mean -0.11); total A 8647, total B 8883

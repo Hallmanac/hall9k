@@ -1,0 +1,39 @@
+creator	child	created	freed	never	pending
+C:\Users\<user>\.local\bin\claude.exe	C:\Program Files\Git\bin\bash.exe	35	0	35	0
+C:\Program Files\Git\bin\bash.exe	C:\Windows\System32\conhost.exe	30	30	0	0
+C:\Program Files\Git\bin\bash.exe	C:\Program Files\Git\usr\bin\bash.exe	35	0	35	0
+C:\Program Files\Git\usr\bin\bash.exe	C:\Program Files\Git\usr\bin\bash.exe	35	1	34	0
+C:\Program Files\Git\usr\bin\bash.exe	C:\Users\<user>\.hall9k\bin\h9k.exe	15	15	0	0
+C:\Program Files\Git\usr\bin\bash.exe	C:\Program Files\Git\usr\bin\grep.exe	15	15	0	0
+C:\Users\<user>\.local\bin\claude.exe	C:\Program Files\PowerShell\7\pwsh.exe	10	10	0	0
+C:\Program Files\PowerShell\7\pwsh.exe	C:\Windows\System32\conhost.exe	10	10	0	0
+C:\Users\<user>\.local\bin\claude.exe	C:\Windows\System32\cmd.exe	10	0	9	1
+C:\Windows\System32\cmd.exe	C:\Windows\System32\conhost.exe	10	9	0	1
+C:\Windows\System32\cmd.exe	chcp.com	10	10	0	0
+C:\Windows\System32\cmd.exe	C:\Program Files\PowerShell\7\pwsh.exe	10	2	7	1
+C:\Program Files\PowerShell\7\pwsh.exe	C:\Users\<user>\AppData\Local\Temp\tokeleak\modules.exe	1	1	0	0
+C:\Program Files\PowerShell\7\pwsh.exe	C:\Program Files\Git\cmd\git.exe	2	0	2	0
+C:\Program Files\Git\cmd\git.exe	C:\Program Files\Git\ucrt64\bin\git.exe	2	2	0	0
+C:\Program Files\PowerShell\7\pwsh.exe	C:\Program Files\PowerShell\7\pwsh.exe	1	1	0	0
+C:\Program Files\Git\usr\bin\bash.exe	C:\Windows\System32\conhost.exe	5	5	0	0
+C:\Program Files\Git\usr\bin\bash.exe	C:\Program Files\Git\usr\bin\cat.exe	1	1	0	0
+C:\Program Files\Git\usr\bin\bash.exe	C:\Program Files\Git\usr\bin\date.exe	1	1	0	0
+C:\Program Files\PowerShell\7\pwsh.exe	C:\Windows\System32\cmd.exe	1	1	0	0
+C:\Program Files\PowerShell\7\pwsh.exe	C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe	1	1	0	0
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe	C:\Windows\System32\conhost.exe	1	1	0	0
+C:\Users\<user>\.local\bin\claude.exe	C:\Windows\System32\reg.exe	4	4	0	0
+C:\Windows\System32\reg.exe	C:\Windows\System32\conhost.exe	4	4	0	0
+C:\Program Files\PowerShell\7\pwsh.exe	C:\Users\<user>\.hall9k\bin\h9k.exe	3	3	0	0
+C:\Users\<user>\.local\bin\claude.exe	C:\Users\<user>\.local\bin\claude.exe	2	2	0	0
+C:\Users\<user>\.local\bin\claude.exe	C:\Windows\System32\conhost.exe	2	2	0	0
+C:\Program Files\Git\usr\bin\bash.exe	C:\Program Files\Git\ucrt64\bin\git.exe	7	5	2	0
+C:\Program Files\Git\usr\bin\bash.exe	C:\Program Files\Git\usr\bin\head.exe	5	5	0	0
+C:\Program Files\Git\usr\bin\bash.exe	C:\Program Files\Git\usr\bin\which.exe	1	1	0	0
+C:\Program Files\Git\usr\bin\bash.exe	C:\Program Files\Git\usr\bin\ps.exe	1	1	0	0
+C:\Program Files\Git\usr\bin\bash.exe	C:\Program Files\GitHub CLI\gh.exe	1	0	1	0
+C:\Program Files\GitHub CLI\gh.exe	C:\Windows\System32\tzutil.exe	1	1	0	0
+C:\Program Files\Git\ucrt64\bin\git.exe	C:\Program Files\Git\ucrt64\libexec\git-core\git.exe	4	3	1	0
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe	C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe	1	1	0	0
+C:\Program Files\Git\usr\bin\bash.exe	C:\Program Files\Git\usr\bin\du.exe	1	1	0	0
+C:\Program Files\Git\ucrt64\bin\git.exe	C:\Program Files\Git\usr\bin\ssh-keygen.exe	1	1	0	0
+C:\Program Files\PowerShell\7\pwsh.exe	C:\Windows\System32\wpr.exe	1	0	0	1

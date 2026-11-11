@@ -1,0 +1,3 @@
+pair,order,arm,arg,launches,before,after,delta,launch_seconds,window_seconds
+1,first,A,1,150,922330,922827,497,4.18,20.0
+1,second,B,0,150,922827,923237,410,1.53,20.0

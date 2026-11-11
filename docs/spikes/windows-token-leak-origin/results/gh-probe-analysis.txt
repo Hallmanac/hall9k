@@ -1,0 +1,26 @@
+trace: 102.2 s, Toke allocations 60351, frees 57953 (57905 of allocations seen in this trace), still allocated at the end 2446, other-tag pool events skipped 0
+process creations seen: 4414, child token claimed for 4414, no allocation found for 0
+processes in the tree of pid 48040: 103
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" --version
+                                                                  20       9           11        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth token --user Hallmanac
+                                                                  20       9           11        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" api user -q .id
+                                                                  20       9           11        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" api rate_limit -q .rate.limit
+                                                                  20       9           11        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\curl.exe  <=  "C:\Windows\System32\curl.exe" -s -o NUL https://api.github.com/zen
+                                                                  20      20            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\wpr.exe  <=  "C:\Windows\system32\wpr.exe" -stop C:\Users\<user>\AppData\Local\Temp\tokeleak\ghprobe.etl
+                                                                   1       0            0        1
+TOTAL                                                            101      56           44        1
+
+rule check (processes whose token state is settled):
+  started no child                                                                 freed      56  never freed      44
+
+unfreed Toke allocations made in the tree that are not a process's child token: 1
+       1  C:\Windows\System32\wpr.exe
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
