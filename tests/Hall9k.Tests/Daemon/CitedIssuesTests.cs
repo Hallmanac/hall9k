@@ -391,6 +391,64 @@ public sealed class CitedIssuesTests : IDisposable
     }
 
     [Fact]
+    public async Task A_review_diff_is_read_for_the_named_commit_once_per_run_and_never_through_gh_pr_diff()
+    {
+        string path = RunPaths.ReviewDiffFile(_runDirectory);
+        List<string> commands = [];
+        ProcessRunner reads = (file, arguments, _, _) =>
+        {
+            commands.Add($"{file} {string.Join(' ', arguments)}");
+            return Task.FromResult(new ProcessResult(0, "diff --git a/x b/x\n", string.Empty));
+        };
+        const string oid = "0123456789abcdef0123456789abcdef01234567";
+
+        await PullRequestDiffFile.EnsureWrittenForCommitAsync(
+            reads, "github-pr:" + Reference, "main", oid, "/repo", path, NullLogger.Instance, CancellationToken.None);
+        await PullRequestDiffFile.EnsureWrittenForCommitAsync(
+            reads, "github-pr:" + Reference, "main", "ffffffffffffffffffffffffffffffffffffffff", "/repo", path,
+            NullLogger.Instance, CancellationToken.None);
+
+        commands.Should().Equal(
+            $"gh api repos/acme/web/compare/main...{oid} -H Accept: application/vnd.github.v3.diff");
+        File.ReadAllText(path).Should().Be("diff --git a/x b/x\n", "the file the run's first lens read is the one every later lens reads");
+    }
+
+    [Theory]
+    [InlineData("acme/web#412", "not-a-commit", "main")]
+    [InlineData("acme/web#412", "0123456789abcdef0123456789abcdef01234567", "--output=/tmp/x")]
+    [InlineData("not a reference", "0123456789abcdef0123456789abcdef01234567", "main")]
+    public async Task A_review_diff_with_nothing_safe_to_read_it_at_is_the_note_and_gh_is_never_run(
+        string reference, string headOid, string baseRefName)
+    {
+        string path = RunPaths.ReviewDiffFile(_runDirectory);
+        List<string> commands = [];
+        ProcessRunner reads = (file, arguments, _, _) =>
+        {
+            commands.Add($"{file} {string.Join(' ', arguments)}");
+            return Task.FromResult(new ProcessResult(0, "diff --git a/x b/x\n", string.Empty));
+        };
+
+        await PullRequestDiffFile.EnsureWrittenForCommitAsync(
+            reads, reference, baseRefName, headOid, "/repo", path, NullLogger.Instance, CancellationToken.None);
+
+        commands.Should().BeEmpty();
+        File.ReadAllText(path).Should().Contain("could not read this pull request's diff").And.Contain("with git");
+    }
+
+    [Fact]
+    public async Task A_review_diff_gh_cannot_read_is_the_note()
+    {
+        string path = RunPaths.ReviewDiffFile(_runDirectory);
+        ProcessRunner fails = (_, _, _, _) => Task.FromResult(new ProcessResult(1, string.Empty, "HTTP 406: diff too large"));
+
+        await PullRequestDiffFile.EnsureWrittenForCommitAsync(
+            fails, Reference, "main", "0123456789abcdef0123456789abcdef01234567", "/repo", path, NullLogger.Instance,
+            CancellationToken.None);
+
+        File.ReadAllText(path).Should().Contain("could not read this pull request's diff").And.Contain("gh could not read it");
+    }
+
+    [Fact]
     public void Every_lens_prompt_names_the_review_diff_file_as_the_authors_material_to_read_with_the_read_tool()
     {
         string path = RunPaths.ReviewDiffFile(_runDirectory);

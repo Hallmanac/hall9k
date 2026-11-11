@@ -31,6 +31,7 @@ using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -77,8 +78,14 @@ namespace Hall9k.Tests.Integration;
 /// </para>
 /// </summary>
 [Trait("Category", "RequiresDocker")]
-public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
+public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
+    // A pr-review dispatch writes the run's diff file into its run directory, which for a project with no home is
+    // under the platform home, so every test here runs against a temporary one.
+    private readonly ScopedTestHome _home = new();
+
+    public void Dispose() => _home.Dispose();
+
     private static readonly DateTimeOffset Now = new(2026, 9, 4, 12, 0, 0, TimeSpan.Zero);
 
 
@@ -2397,6 +2404,134 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         File.ReadAllText(file).Should().Contain("A coupon cannot be removed.").And.Contain("not in this pull request's own repository: other/repo#3");
         executor.Requests.Should().ContainSingle("only the conformance lens is dispatched after the primary session");
         executor.Requests[0].Prompt.Should().Contain($"`{file}`").And.Contain("source material");
+    }
+
+    /// <summary>
+    /// Every lens of one run reads the diff the run's first dispatch wrote for the commit the checkout was cut at: a
+    /// later session finds that file and is pointed at it as it is, so a push to the pull request since then changes
+    /// nothing a later lens is told to review, and the daemon reads nothing again.
+    /// </summary>
+    [Fact]
+    public async Task A_later_lens_is_given_the_diff_the_run_wrote_for_the_checkouts_commit_after_the_head_has_moved()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+        string file = RunPaths.ReviewDiffFile(runDirectory);
+        await File.WriteAllTextAsync(file, "diff at the checkout's commit\n", cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, PrReviewNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        List<string> commands = [];
+        ProcessRunner movedHead = (fileName, arguments, _, _) =>
+        {
+            commands.Add($"{fileName} {string.Join(' ', arguments)}");
+            return Task.FromResult(new ProcessResult(0, "diff at the moved head\n", string.Empty));
+        };
+        ScriptedExecutor executor = new("Matches.\n\nVERDICT: merge-ready");
+        PrReviewEngine engine = NewPrReviewEngine(store, executor, executor.Processes, new NoOpWorktreeManager(), movedHead);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        File.ReadAllText(file).Should().Be("diff at the checkout's commit\n");
+        commands.Should().NotContain(command => command.StartsWith("gh api", StringComparison.Ordinal) || command.StartsWith("gh pr diff", StringComparison.Ordinal));
+        executor.Requests.Should().ContainSingle("only the conformance lens is dispatched after the primary session");
+        executor.Requests[0].Prompt.Should().Contain($"`{file}`").And.Contain("Read tool");
+    }
+
+    /// <summary>
+    /// When the run's first write left no diff file, a later session's dispatch writes one for the commit the review
+    /// checkout holds, read from the checkout itself, and never for the pull request's current head.
+    /// </summary>
+    [Fact]
+    public async Task A_later_lens_that_finds_no_diff_file_gets_the_checkouts_commit_never_the_moved_head()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+        string checkoutPath = Path.Combine(Path.GetTempPath(), $"hall9k-pr-review-wt-{runId:N}");
+        Directory.CreateDirectory(checkoutPath);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, PrReviewNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string checkoutOid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        List<(string Command, string WorkingDirectory)> commands = [];
+        ProcessRunner reader = (fileName, arguments, workingDirectory, _) =>
+        {
+            string command = $"{fileName} {string.Join(' ', arguments)}";
+            commands.Add((command, workingDirectory));
+            string output = command switch
+            {
+                "git rev-parse --verify HEAD" => checkoutOid + "\n",
+                _ when command.Contains($"compare/main...{checkoutOid}", StringComparison.Ordinal) => "diff at the checkout's commit\n",
+                _ => "diff at the moved head\n",
+            };
+            return Task.FromResult(new ProcessResult(0, output, string.Empty));
+        };
+        ScriptedExecutor executor = new("Matches.\n\nVERDICT: merge-ready");
+        PrReviewEngine engine = NewPrReviewEngine(store, executor, executor.Processes, new NoOpWorktreeManager(), reader);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+        try
+        {
+            await engine.ReviewAsync(runId, taskId, cts.Token);
+        }
+        finally
+        {
+            Directory.Delete(checkoutPath, recursive: true);
+        }
+
+        string file = RunPaths.ReviewDiffFile(runDirectory);
+        File.ReadAllText(file).Should().Be("diff at the checkout's commit\n");
+        commands.Should().Contain(("git rev-parse --verify HEAD", checkoutPath), "the commit is read from the checkout itself");
+        commands.Should().NotContain(command => command.Command.StartsWith("gh pr diff", StringComparison.Ordinal));
+        executor.Requests.Should().ContainSingle();
+        executor.Requests[0].Prompt.Should().Contain($"`{file}`");
+    }
+
+    /// <summary>
+    /// A later session whose run has neither a diff file nor a checkout to read the commit from is given the note that
+    /// says the daemon could not read the diff, and still starts; nothing reads the pull request's current head instead.
+    /// </summary>
+    [Fact]
+    public async Task A_later_lens_with_no_diff_file_and_no_checkout_to_read_gets_the_unreadable_note()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, PrReviewNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        List<string> commands = [];
+        ProcessRunner movedHead = (fileName, arguments, _, _) =>
+        {
+            commands.Add($"{fileName} {string.Join(' ', arguments)}");
+            return Task.FromResult(new ProcessResult(0, "diff at the moved head\n", string.Empty));
+        };
+        ScriptedExecutor executor = new("Matches.\n\nVERDICT: merge-ready");
+        PrReviewEngine engine = NewPrReviewEngine(store, executor, executor.Processes, new NoOpWorktreeManager(), movedHead);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        string file = RunPaths.ReviewDiffFile(runDirectory);
+        File.ReadAllText(file).Should().Contain("could not read this pull request's diff").And.NotContain("moved head");
+        commands.Should().NotContain(command => command.StartsWith("gh api", StringComparison.Ordinal) || command.StartsWith("gh pr diff", StringComparison.Ordinal));
+        executor.Requests.Should().ContainSingle("the session still starts");
+        executor.Requests[0].Prompt.Should().Contain($"`{file}`").And.Contain("`git diff origin/main...HEAD`");
     }
 
     /// <summary>

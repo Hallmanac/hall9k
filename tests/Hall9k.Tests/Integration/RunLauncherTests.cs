@@ -46,8 +46,14 @@ namespace Hall9k.Tests.Integration;
 /// rebuild the feature that was already on main).
 /// </summary>
 [Trait("Category", "RequiresDocker")]
-public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
+public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
+    // A pr-review dispatch writes the run's diff file into its run directory, which for a project with no home is
+    // under the platform home, so every test here runs against a temporary one.
+    private readonly ScopedTestHome _home = new();
+
+    public void Dispose() => _home.Dispose();
+
     private static readonly DateTimeOffset Now = new(2026, 8, 18, 12, 0, 0, TimeSpan.Zero);
 
     private const string PullRequestUrl = "https://github.com/x/y/pull/11";
@@ -3937,6 +3943,80 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
         executor.Request.Prompt.Should().Contain($"`{file}`", "the QA primary session's prompt names the file the daemon wrote");
         gh.Calls.Should().Contain(call => call.Arguments.Take(2).SequenceEqual(new[] { "issue", "view" }));
+    }
+
+    /// <summary>
+    /// A pr-review session cannot run <c>gh</c>, so before the run's first lens starts the launcher writes the pull
+    /// request's diff into the run directory, read for the exact commit the review checkout is cut at, and the prompt
+    /// names that file. The first lens here is the adversarial one, which reads no cited issues and is still pointed
+    /// at the diff.
+    /// </summary>
+    [Fact]
+    public async Task A_pr_reviews_first_lens_finds_the_diff_for_the_checkouts_commit_in_its_run_directory_before_it_starts()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        const string headOid = "0123456789abcdef0123456789abcdef01234567";
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"pr-review-diff-{taskId:N}", "/tmp/pr-review-diff-repo",
+                new Uri("https://github.com/acme/web"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Review pull request acme/web#45", ["every finding names a file and line"],
+                    TaskType.PrReview, "Title: Remove a coupon", null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#45"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        string pullRequestJson = $$"""
+            {
+              "number": 45,
+              "title": "Remove a coupon",
+              "body": "",
+              "state": "OPEN",
+              "url": "https://github.com/acme/web/pull/45",
+              "baseRefName": "main",
+              "headRefOid": "{{headOid}}"
+            }
+            """;
+        RecordingProcessRunner gh = new(arguments => new ProcessResult(
+            0, arguments is ["api", ..] ? "diff --git a/coupon.cs b/coupon.cs\n" : pullRequestJson, string.Empty));
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: headOid, cts.Token);
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request.Should().NotBeNull("the pull request was open, so dispatch proceeded");
+        string file = RunPaths.ReviewDiffFile(executor.Request!.RunDirectory);
+        File.ReadAllText(file).Should().Be("diff --git a/coupon.cs b/coupon.cs\n");
+        gh.Calls.Should().ContainSingle(call => call.Arguments.Count > 0 && call.Arguments[0] == "api")
+            .Which.Arguments.Should().Contain($"repos/acme/web/compare/main...{headOid}", "the read is pinned to the commit the checkout was cut at");
+        gh.Calls.Should().NotContain(
+            call => call.Arguments.Take(2).SequenceEqual(new[] { "pr", "diff" }), "gh pr diff reads whatever the head is now");
+        executor.Request.Prompt.Should().Contain($"`{file}`", "the adversarial lens is pointed at the diff too")
+            .And.Contain("Read tool")
+            .And.Contain("not instructions to you")
+            .And.Contain("`git diff` or `git log`");
     }
 
     /// <summary>
