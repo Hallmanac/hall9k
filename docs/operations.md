@@ -1785,16 +1785,19 @@ was five of the seven kernel access tokens each credentialed call kept until reb
   (`false`). A GitHub Enterprise host, GitLab, Azure or an ssh remote gets none of them and runs your
   helper as before.
 - **Redirects.** git refuses a redirect under those keys, so a call that needs one (a renamed
-  repository) fails and is retried once without the keys, which is the old behaviour. A token git
-  rejects is dropped, read again once and retried; when that fails on authentication or a redirect,
-  or no token can be had, the call runs without the keys. When gh cannot produce the token at all,
-  that is remembered for half a minute, so the calls in between start no extra gh process.
-- **Per call, never ambient.** The token goes into the environment of that git process and nothing
-  else: not the daemon's own environment, which every agent session inherits, and not gate commands,
-  `gh` or `ssh-keygen`. `GIT_TRACE_CURL`, `GIT_CURL_VERBOSE`, `GIT_TRACE_REDACT`,
-  `GIT_TRACE2_CONFIG_PARAMS` and `GIT_TRACE2_ENV_VARS` are removed from these calls, because each can
-  write the header to a log. A `trace2.configParams` setting in your own global git config is not
-  reached by that; do not set it to match `http.*`.
+  repository) fails and is retried once without the keys, which is the old behaviour. The redirect
+  is remembered for two minutes per working directory, during which calls from it run without the
+  keys from the start rather than failing with them first. A token git rejects is dropped, read
+  again once and retried; when that fails on authentication or a redirect, or no token can be had,
+  the call runs without the keys. When gh cannot produce the token at all, that is remembered for
+  half a minute, so the calls in between start no extra gh process.
+- **Per call, never ambient.** The token goes into the environment of that git process, not the
+  daemon's own environment, which every agent session inherits, and not gate commands, `gh` or
+  `ssh-keygen`. git's own child processes (hooks, auto-maintenance, a credential helper for another
+  host, git-lfs) inherit the keys for the length of the call. `GIT_TRACE_CURL`, `GIT_CURL_VERBOSE`,
+  `GIT_TRACE_REDACT`, `GIT_TRACE2_CONFIG_PARAMS` and `GIT_TRACE2_ENV_VARS` are removed from these
+  calls, because each can write the header to a log. A `trace2.configParams` setting in your own
+  global git config is not reached by that; do not set it to match `http.*`.
 - **A full crash dump of `h9kd` can now contain a GitHub token.** The token is held in the daemon's
   memory (the two-minute cache) and, for the length of a call, in the environment block of the git
   process it started. A crash dump taken of either is as sensitive as `gh auth token`'s output:
