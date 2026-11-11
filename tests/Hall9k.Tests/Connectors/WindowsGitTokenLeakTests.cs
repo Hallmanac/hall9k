@@ -9,19 +9,10 @@ using Xunit.Abstractions;
 namespace Hall9k.Tests.Connectors;
 
 /// <summary>
-/// One xUnit collection with parallelization disabled: the test below reads a machine-wide
-/// kernel counter, so any other test creating processes while it runs would land in the reading.
-/// </summary>
-[CollectionDefinition(Name, DisableParallelization = true)]
-public sealed class WindowsGitTokenLeakCollection
-{
-    public const string Name = "WindowsGitTokenLeak";
-}
-
-/// <summary>
-/// A <see cref="FactAttribute"/> that is skipped off Windows, when Git for Windows' own layout
-/// cannot be found, and when the kernel's pool-tag counters refuse to be read for lack of rights.
-/// xunit 2.9.3 has no run-time skip, so the check is made here, once, when the test is discovered.
+/// A <see cref="FactAttribute"/> that is skipped off Windows, on GitHub Actions, when Git for
+/// Windows' own layout cannot be found, and when the kernel's pool-tag counters refuse to be read
+/// for lack of rights. xunit 2.9.3 has no run-time skip, so the check is made here, once, when the
+/// test is discovered.
 /// </summary>
 public sealed class WindowsGitTokenLeakFactAttribute : FactAttribute
 {
@@ -30,6 +21,12 @@ public sealed class WindowsGitTokenLeakFactAttribute : FactAttribute
         if (!OperatingSystem.IsWindows())
         {
             Skip = "Windows-only: it counts live access-token objects in the Windows kernel pool.";
+        }
+        else if (string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
+        {
+            Skip = "Not run on GitHub Actions: ci.yml's Windows job has no host-coupled gate, and a hosted runner's "
+                + "kernel-wide token counter and loaded process table make a 6,400-launch measurement unreliable. "
+                + "It runs in the host-coupled gate (Category=RealProcessSpawn) on the node.";
         }
         else if (WindowsGitTokenLeakTests.LocateRealGit() is null)
         {
@@ -66,8 +63,15 @@ public sealed class WindowsGitTokenLeakFactAttribute : FactAttribute
 /// what the leak reaches (the same test on the commit before the fix); the pull request records
 /// both. The measured numbers are written to the test output.
 /// </para>
+/// <para>
+/// It reads a machine-wide kernel counter, so any other test creating processes while it runs
+/// lands in the reading. It sits in <c>[Collection("RealProcessSpawn")]</c> with
+/// <c>Category=RealProcessSpawn</c> (README.md): the fast gate never runs it, and the host-coupled
+/// gate runs that collection's classes one at a time.
+/// </para>
 /// </summary>
-[Collection(WindowsGitTokenLeakCollection.Name)]
+[Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class WindowsGitTokenLeakTests(ITestOutputHelper output)
 {
     private const int ChildrenPerBatch = 800;
