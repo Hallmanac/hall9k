@@ -251,7 +251,12 @@ builder.Services.AddSingleton<IPullRequestInspector>(services =>
 // it is given to that project's own GitHub account, rather than whichever account the machine's
 // own gh happens to be logged into. git spawns pass straight through unchanged.
 builder.Services.AddSingleton<ProcessRunner>(services =>
-    new ProjectScopedGitHubRunner(services.GetRequiredService<IDocumentStore>()).Runner);
+    new ProjectScopedGitHubRunner(
+        services.GetRequiredService<IDocumentStore>(), services.GetRequiredService<ProjectGitHubClient>()).Runner);
+// The one client every project-scoped gh call and every git call that reaches a remote reads its
+// token through, so its cache holds and gh auth token is not started once per call. The git calls
+// reach it through GitRemoteAuthentication, configured right after the host is built.
+builder.Services.AddSingleton(_ => new ProjectGitHubClient());
 // Jira's write transport moved off a spawned process (twg) onto hall9k's own REST client
 // (Decisions Log #114), so its seam is the same JiraRequester delegate the read-side provider
 // already uses — registered here, generically, so CloseoutEngine's and JiraWriteRetryEngine's own
@@ -411,6 +416,14 @@ if (OperatingSystem.IsWindows())
 builder.Services.Configure<HostOptions>(host => host.ShutdownTimeout = TimeSpan.FromSeconds(30));
 
 IHost host = builder.Build();
+
+// A git call that reaches github.com gets its project's token through git's own per-call
+// environment configuration, so git-remote-https never starts the owner's credential helper (sh
+// and gh on Windows, a kernel token kept for each until reboot). Per call, on the child's start
+// info alone: nothing here, or in GitRemoteAuthentication, writes the token or any of its keys
+// into this process's environment, which every agent session would inherit.
+GitRemoteAuthentication.Configure(new ProjectGitRemoteTokenSource(
+    host.Services.GetRequiredService<IDocumentStore>(), host.Services.GetRequiredService<ProjectGitHubClient>()));
 
 // The one place h9kd states its own build identity (2026-09-04: a locally built install
 // had no way to tell which commit it ran from, only the framework's own assembly-version
