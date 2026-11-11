@@ -793,10 +793,23 @@ public sealed class RunLauncher(
                         CitedIssues.ReadBudget, logger, cancellationToken);
                 }
 
+                // The diff every lens of this run reads, written once here and pinned to the commit the checkout
+                // above was cut at, so a push while the run is in progress never changes what a later lens is told
+                // to review. Every lens is pointed at it, the adversarial one included. A pull request gh reported no
+                // head commit for was checked out at whatever its fetch found, so that commit is read from the checkout.
+                string reviewDiffPath = RunPaths.ReviewDiffFile(runDirectory);
+                await (prReviewFacts.HeadRefOid.IsNotBlank()
+                    ? PullRequestDiffFile.EnsureWrittenForCommitAsync(
+                        processRunner, task.ExternalReference, baseBranch, prReviewFacts.HeadRefOid,
+                        project.RepositoryPath, reviewDiffPath, logger, cancellationToken)
+                    : PullRequestDiffFile.EnsureWrittenForCheckoutAsync(
+                        processRunner, task.ExternalReference, baseBranch, worktree.Path, project.RepositoryPath,
+                        reviewDiffPath, logger, cancellationToken));
+
                 prompt = primarySession.BuildPrompt(new ReviewPersonaPromptRequest(
                     task, project, worktree.Branch, baseBranch, options.Value.VerifyGateTimeout, primaryDrive,
                     primaryDrive.Drives ? ProjectRunSkillReader.Read(project) : null, localFleet,
-                    primarySession.ReadsCitedIssues ? runDirectory : null));
+                    primarySession.ReadsCitedIssues ? runDirectory : null, reviewDiffPath));
 
                 // This mint itself came from a GitHub mention (idea 2f079bcd, decision 2 and 3):
                 // the primary session's own ordinary verdict is not enough here, so it is also

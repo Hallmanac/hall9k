@@ -4,6 +4,7 @@ using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.AutoPrReview;
+using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Connectors.Worktrees;
@@ -718,9 +719,17 @@ public sealed class PrReviewEngine(
                 CitedIssues.ReadBudget, logger, cancellationToken);
         }
 
+        // The diff the run's first session was pointed at, which RunLauncher wrote pinned to the checkout's commit.
+        // When it is missing (that write logs and carries on when it fails), it is written here for the commit the
+        // checkout holds, never for the pull request's current head, which can have moved since the checkout was cut.
+        string reviewDiffPath = RunPaths.ReviewDiffFile(runDirectory);
+        await PullRequestDiffFile.EnsureWrittenForCheckoutAsync(
+            _gitHubReader, task.ExternalReference, baseBranch, run.WorktreePath, project.RepositoryPath,
+            reviewDiffPath, logger, cancellationToken);
+
         string prompt = personaSession.BuildPrompt(new ReviewPersonaPromptRequest(
             task, project, run.Branch, baseBranch, _options.VerifyGateTimeout, drive, runSkill, localFleet,
-            personaSession.ReadsCitedIssues ? runDirectory : null));
+            personaSession.ReadsCitedIssues ? runDirectory : null, reviewDiffPath));
 
         // The QA session's own earned exception (security review idea 6be68ee2,
         // process-injection finding 1; Brian's ruling 2026-09-27): the project's own recorded

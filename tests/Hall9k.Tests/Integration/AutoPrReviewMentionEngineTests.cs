@@ -24,6 +24,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -40,8 +41,14 @@ namespace Hall9k.Tests.Integration;
 /// canonical external reference alone, unscoped by project.
 /// </summary>
 [Trait("Category", "RequiresDocker")]
-public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
+public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
+    // A pr-review dispatch writes the run's diff file into its run directory, which for a project with no home is
+    // under the platform home, so every test here runs against a temporary one.
+    private readonly ScopedTestHome _home = new();
+
+    public void Dispose() => _home.Dispose();
+
     private static readonly DateTimeOffset Now = new(2026, 9, 11, 12, 0, 0, TimeSpan.Zero);
 
     // -------------------------------------------------------------------------------------
