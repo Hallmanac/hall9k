@@ -1,0 +1,203 @@
+trace: 3692.2 s, Toke allocations 2225541, frees 2142571 (2142112 of allocations seen in this trace), still allocated at the end 83429, other-tag pool events skipped 0
+process creations seen: 154073, child token claimed for 154073, no allocation found for 0
+processes in the tree of pid 42564: 288
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/<user>/.claude/shell-snapshots/snapshot-bash-<id>.sh 2>/dev/null || true && ex
+                                                                  19       0           19        0
+C:\Users\<user>\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude\.com/claud
+                                                                  15       0           15        0
+C:\Users\<user>\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "h9k pr reply-guard"
+                                                                  15       0           15        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude
+                                                                  15       0           15        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "h9k pr reply-guard"
+                                                                  15       0           15        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude
+                                                                  15       0           15        0
+C:\Users\<user>\.local\bin\claude.exe > C:\Windows\System32\cmd.exe  <=  C:\Windows\System32\cmd.exe /d /s /c ""C:\Windows\System32\chcp.com" 65001 >nul & "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -NonInteractive -Execution
+                                                                  10       0            9        1
+C:\Windows\System32\cmd.exe > C:\Program Files\PowerShell\7\pwsh.exe  <=  "C:\Program Files\PowerShell\7\pwsh.exe"  -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$__claudeCodeScript = $env:CLAUDE_CODE_SHELL_LAUNCHER_SCR
+                                                                  10       2            7        1
+C:\Users\<user>\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "source /c/Users/<user>/.claude/shell-snapshots/snapshot-bash-<id>.sh 2>/dev/null || true && export TEMP='
+                                                                   5       0            5        0
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/<user>/.claude/shell-snapshots/snapshot-bash-<id>.sh 2>/dev/null || true && ex
+                                                                   5       0            5        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\Git\cmd\git.exe  <=  "C:\Program Files\Git\cmd\git.exe" -C C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2 log origin/main -8 "--format=%h %cI %s"
+                                                                   1       0            1        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\Git\cmd\git.exe  <=  "C:\Program Files\Git\cmd\git.exe" -C C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2 merge-base --is-ancestor 99e54bc4 origin/main
+                                                                   1       0            1        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" --version
+                                                                   1       0            1        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" -C C:/Users/<user>/.hall9k/projects/hall9k/repo/wt-6cf289d0-41b35fc2 fetch origin main --dry-run
+                                                                   1       0            1        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/Hallmanac/hall9k.git
+                                                                   1       0            1        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" commit -q -m "wip: token leak origin repro, batch results and trace tooling"
+                                                                   1       0            1        0
+C:\Program Files\Git\bin\bash.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  30      30            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Users\<user>\.hall9k\bin\h9k.exe  <=  C:\Users\<user>\.hall9k\bin\h9k.exe pr reply-guard
+                                                                  15      15            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\grep.exe  <=  "C:\Program Files\Git\usr\bin\grep.exe" -qiE "co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude\.com/claude-code"
+                                                                  15      15            0        0
+C:\Users\<user>\.local\bin\claude.exe > C:\Program Files\PowerShell\7\pwsh.exe  <=  "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -NonInteractive -NoLogo -EncodedCommand CgBmAHUAbgBjAHQAaQBvAG4AIABXAHIAaQB0AGUALQBSAGUAcwB1AGwAdAAoACQASgBz
+                                                                  10      10            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  10      10            0        0
+C:\Windows\System32\cmd.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                  10       9            0        1
+C:\Windows\System32\cmd.exe > chcp.com  <=  "C:\Windows\System32\chcp.com"  65001  
+                                                                  10      10            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   5       5            0        0
+C:\Windows\System32\reg.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   4       4            0        0
+C:\Users\<user>\.local\bin\claude.exe > C:\Windows\System32\reg.exe  <=  C:\Windows\System32\reg.exe query HKLM\SOFTWARE\Policies\ClaudeCode /v Settings
+                                                                   2       2            0        0
+C:\Users\<user>\.local\bin\claude.exe > C:\Windows\System32\reg.exe  <=  C:\Windows\System32\reg.exe query HKCU\SOFTWARE\Policies\ClaudeCode /v Settings
+                                                                   2       2            0        0
+C:\Users\<user>\.local\bin\claude.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   2       2            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" status --short
+                                                                   2       2            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\head.exe  <=  "C:\Program Files\Git\usr\bin\head.exe" -3
+                                                                   2       2            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Users\<user>\AppData\Local\Temp\tokeleak\modules.exe  <=  "C:\Users\<user>\AppData\Local\Temp\tokeleak\modules.exe"
+                                                                   1       1            0        0
+C:\Program Files\Git\cmd\git.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe -C C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2 log origin/main -8 "--format=%h %cI %s"
+                                                                   1       1            0        0
+C:\Program Files\Git\cmd\git.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe -C C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2 merge-base --is-ancestor 99e54bc4 origin/main
+                                                                   1       1            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\PowerShell\7\pwsh.exe  <=  "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -File C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2\docs\spikes\windows-token-leak-origin
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\cat.exe  <=  "C:\Program Files\Git\usr\bin\cat.exe" C:\Users\<user>\AppData\Local\Temp/tokeleak/daemon1-watch.log
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\date.exe  <=  "C:\Program Files\Git\usr\bin\date.exe"
+                                                                   1       1            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\cmd.exe  <=  "C:\Windows\system32\cmd.exe" /c ver
+                                                                   1       1            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe  <=  "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Version 5.1 -s -NoLogo -NoProfile
+                                                                   1       1            0        0
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe > C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+                                                                   1       1            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Users\<user>\.hall9k\bin\h9k.exe  <=  "C:\Users\<user>\.hall9k\bin\h9k.exe" status
+                                                                   1       1            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Users\<user>\.hall9k\bin\h9k.exe  <=  "C:\Users\<user>\.hall9k\bin\h9k.exe" task list --project hall9k
+                                                                   1       1            0        0
+C:\Users\<user>\.local\bin\claude.exe > C:\Users\<user>\.local\bin\claude.exe  <=  rg --no-config --hidden --glob !.git --glob !.svn --glob !.hg --glob !.bzr --glob !.jj --glob !.sl --max-columns 500 --json -n -A 12 "WrapForCmdExe|static strin
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\which.exe  <=  "C:\Program Files\Git\usr\bin\which.exe" git bash sh gh
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\head.exe  <=  "C:\Program Files\Git\usr\bin\head.exe" -0
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\ps.exe  <=  "C:\Program Files\Git\usr\bin\ps.exe" -W
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" -C C:/Users/<user>/.hall9k/projects/hall9k/repo/wt-6cf289d0-41b35fc2 log --oneline -1
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\usr\bin\bash.exe" -c "echo nested bash ok"
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\head.exe  <=  "C:\Program Files\Git\usr\bin\head.exe" -1
+                                                                   1       1            0        0
+C:\Program Files\GitHub CLI\gh.exe > C:\Windows\System32\tzutil.exe  <=  tzutil /g
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\head.exe  <=  "C:\Program Files\Git\usr\bin\head.exe" -2
+                                                                   1       1            0        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/Hallmanac/hall9k.git
+                                                                   1       1            0        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git rev-list --objects --stdin --not --exclude-hidden=fetch --all --quiet --alternate-refs
+                                                                   1       1            0        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git maintenance run --auto --no-quiet --detach
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\du.exe  <=  "C:\Program Files\Git\usr\bin\du.exe" -sh docs/spikes
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" add docs/spikes
+                                                                   1       1            0        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\usr\bin\ssh-keygen.exe  <=  ssh-keygen -Y sign -n git -f C:/Users/<user>/.ssh/id_ed25519.pub C:\Users\<user>\AppData\Local\Temp/.git_signing_buffer_tmpk29Htx
+                                                                   1       1            0        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git maintenance run --auto --quiet --detach
+                                                                   1       1            0        0
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" log --oneline -1
+                                                                   1       1            0        0
+C:\Users\<user>\.local\bin\claude.exe > C:\Users\<user>\.local\bin\claude.exe  <=  rg --no-config --hidden --glob !.git --glob !.svn --glob !.hg --glob !.bzr --glob !.jj --glob !.sl --max-columns 500 --json -n "/// .*(daemon|Daemon)" C:\Users\
+                                                                   1       1            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Users\<user>\.hall9k\bin\h9k.exe  <=  "C:\Users\<user>\.hall9k\bin\h9k.exe" task verify --help
+                                                                   1       1            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\wpr.exe  <=  "C:\Windows\system32\wpr.exe" -stop C:\Users\<user>\AppData\Local\Temp\tokeleak\daemon1.etl
+                                                                   1       0            0        1
+TOTAL                                                            280     150          126        4
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed      99
+  started a child, but the process ended first (or the child never ended)          freed      17  never freed      27
+  started no child                                                                 freed     133  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 8
+       4  C:\Program Files\Git\ucrt64\bin\git.exe
+       2  C:\Program Files\PowerShell\7\pwsh.exe
+       1  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe
+       1  C:\Windows\System32\wpr.exe
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/<user>/.claude/shell-snapshots/snapshot-bash-<id>.sh 2>/dev/null || true && ex   never freed 19 of 19
+        2  C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" status --short
+        2  C:\Program Files\Git\usr\bin\head.exe  <=  "C:\Program Files\Git\usr\bin\head.exe" -3
+        1  C:\Program Files\Git\usr\bin\cat.exe  <=  "C:\Program Files\Git\usr\bin\cat.exe" C:\Users\<user>\AppData\Local\Temp/tokeleak/daemon1-watch.log
+        1  C:\Program Files\Git\usr\bin\date.exe  <=  "C:\Program Files\Git\usr\bin\date.exe"
+        1  C:\Program Files\Git\usr\bin\which.exe  <=  "C:\Program Files\Git\usr\bin\which.exe" git bash sh gh
+        1  C:\Program Files\Git\usr\bin\ps.exe  <=  "C:\Program Files\Git\usr\bin\ps.exe" -W
+C:\Users\<user>\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude\.com/claud   never freed 15 of 15
+       15  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       15  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude
+C:\Users\<user>\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "h9k pr reply-guard"   never freed 15 of 15
+       15  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       15  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "h9k pr reply-guard"
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude   never freed 15 of 15
+       15  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "h9k pr reply-guard"   never freed 15 of 15
+       15  C:\Users\<user>\.hall9k\bin\h9k.exe  <=  C:\Users\<user>\.hall9k\bin\h9k.exe pr reply-guard
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "if grep -qiE 'co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude   never freed 15 of 15
+       15  C:\Program Files\Git\usr\bin\grep.exe  <=  "C:\Program Files\Git\usr\bin\grep.exe" -qiE "co-authored-by:[[:space:]]*claude|generated with.{0,3}claude code|noreply@anthropic\.com|claude\.com/claude-code"
+C:\Users\<user>\.local\bin\claude.exe > C:\Windows\System32\cmd.exe  <=  C:\Windows\System32\cmd.exe /d /s /c ""C:\Windows\System32\chcp.com" 65001 >nul & "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -NonInteractive -Execution   never freed 9 of 10
+       10  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+       10  chcp.com  <=  "C:\Windows\System32\chcp.com"  65001  
+       10  C:\Program Files\PowerShell\7\pwsh.exe  <=  "C:\Program Files\PowerShell\7\pwsh.exe"  -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$__claudeCodeScript = $env:CLAUDE_CODE_SHELL_LAUNCHER_SCR
+C:\Windows\System32\cmd.exe > C:\Program Files\PowerShell\7\pwsh.exe  <=  "C:\Program Files\PowerShell\7\pwsh.exe"  -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$__claudeCodeScript = $env:CLAUDE_CODE_SHELL_LAUNCHER_SCR   never freed 7 of 10
+        1  C:\Users\<user>\AppData\Local\Temp\tokeleak\modules.exe  <=  "C:\Users\<user>\AppData\Local\Temp\tokeleak\modules.exe"
+        1  C:\Program Files\Git\cmd\git.exe  <=  "C:\Program Files\Git\cmd\git.exe" -C C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2 log origin/main -8 "--format=%h %cI %s"
+        1  C:\Program Files\Git\cmd\git.exe  <=  "C:\Program Files\Git\cmd\git.exe" -C C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2 merge-base --is-ancestor 99e54bc4 origin/main
+        1  C:\Program Files\PowerShell\7\pwsh.exe  <=  "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -File C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2\docs\spikes\windows-token-leak-origin
+        1  C:\Windows\System32\cmd.exe  <=  "C:\Windows\system32\cmd.exe" /c ver
+        1  C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe  <=  "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Version 5.1 -s -NoLogo -NoProfile
+C:\Users\<user>\.local\bin\claude.exe > C:\Program Files\Git\bin\bash.exe  <=  "C:\Program Files\Git\bin\bash.exe" -c "source /c/Users/<user>/.claude/shell-snapshots/snapshot-bash-<id>.sh 2>/dev/null || true && export TEMP='   never freed 5 of 5
+        5  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/<user>/.claude/shell-snapshots/snapshot-bash-<id>.sh 2>/dev/null || true && ex
+C:\Program Files\Git\bin\bash.exe > C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/<user>/.claude/shell-snapshots/snapshot-bash-<id>.sh 2>/dev/null || true && ex   never freed 5 of 5
+       19  C:\Program Files\Git\usr\bin\bash.exe  <=  "C:\Program Files\Git\bin\..\usr\bin\bash.exe" -c "source /c/Users/<user>/.claude/shell-snapshots/snapshot-bash-<id>.sh 2>/dev/null || true && ex
+        5  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\Git\cmd\git.exe  <=  "C:\Program Files\Git\cmd\git.exe" -C C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2 log origin/main -8 "--format=%h %cI %s"   never freed 1 of 1
+        1  C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe -C C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2 log origin/main -8 "--format=%h %cI %s"
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\Git\cmd\git.exe  <=  "C:\Program Files\Git\cmd\git.exe" -C C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2 merge-base --is-ancestor 99e54bc4 origin/main   never freed 1 of 1
+        1  C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe -C C:\Users\<user>\.hall9k\projects\hall9k\repo\wt-6cf289d0-41b35fc2 merge-base --is-ancestor 99e54bc4 origin/main
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" --version   never freed 1 of 1
+        1  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" -C C:/Users/<user>/.hall9k/projects/hall9k/repo/wt-6cf289d0-41b35fc2 fetch origin main --dry-run   never freed 1 of 1
+        1  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/Hallmanac/hall9k.git
+        1  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git rev-list --objects --stdin --not --exclude-hidden=fetch --all --quiet --alternate-refs
+        1  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git maintenance run --auto --no-quiet --detach
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/Hallmanac/hall9k.git   never freed 1 of 1
+        1  C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/Hallmanac/hall9k.git
+C:\Program Files\Git\usr\bin\bash.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" commit -q -m "wip: token leak origin repro, batch results and trace tooling"   never freed 1 of 1
+        1  C:\Program Files\Git\usr\bin\ssh-keygen.exe  <=  ssh-keygen -Y sign -n git -f C:/Users/<user>/.ssh/id_ed25519.pub C:\Users\<user>\AppData\Local\Temp/.git_signing_buffer_tmpk29Htx
+        1  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git maintenance run --auto --quiet --detach
+C:\Users\<user>\.local\bin\claude.exe > C:\Program Files\PowerShell\7\pwsh.exe  <=  "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -NonInteractive -NoLogo -EncodedCommand CgBmAHUAbgBjAHQAaQBvAG4AIABXAHIAaQB0AGUALQBSAGUAcwB1AGwAdAAoACQASgBz   never freed 0 of 10
+       10  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe  <=  "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Version 5.1 -s -NoLogo -NoProfile   never freed 0 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Users\<user>\.local\bin\claude.exe > C:\Windows\System32\reg.exe  <=  C:\Windows\System32\reg.exe query HKLM\SOFTWARE\Policies\ClaudeCode /v Settings   never freed 0 of 2
+        2  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Users\<user>\.local\bin\claude.exe > C:\Windows\System32\reg.exe  <=  C:\Windows\System32\reg.exe query HKCU\SOFTWARE\Policies\ClaudeCode /v Settings   never freed 0 of 2
+        2  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Users\<user>\.local\bin\claude.exe > C:\Users\<user>\.local\bin\claude.exe  <=  rg --no-config --hidden --glob !.git --glob !.svn --glob !.hg --glob !.bzr --glob !.jj --glob !.sl --max-columns 500 --json -n -A 12 "WrapForCmdExe|static strin   never freed 0 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1
+C:\Users\<user>\.local\bin\claude.exe > C:\Users\<user>\.local\bin\claude.exe  <=  rg --no-config --hidden --glob !.git --glob !.svn --glob !.hg --glob !.bzr --glob !.jj --glob !.sl --max-columns 500 --json -n "/// .*(daemon|Daemon)" C:\Users\   never freed 0 of 1
+        1  C:\Windows\System32\conhost.exe  <=  \??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1

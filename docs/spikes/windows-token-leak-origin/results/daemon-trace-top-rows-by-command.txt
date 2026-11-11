@@ -1,0 +1,130 @@
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+                                                                3609       0         3554       55
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+                                                                3609       0         3554       55
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+                                                                3609       0         3554       55
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+                                                                3609       0         3554       55
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" rev-parse --verify --quiet refs/hall9k/ledger/nodes/01a04de3-7a23-75c0-8a06-9314ef6ab27d^{commit}
+                                                                 781       0          769       12
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" for-each-ref --format=%(refname) refs/hall9k-verified/ledger/nodes/01a04de3-7a23-75c0-8a06-9314ef6ab27d
+                                                                 781       0          769       12
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" rev-parse --verify --quiet refs/hall9k-verified/ledger/nodes/01a04de3-7a23-75c0-8a06-9314ef6ab27d^{commit}
+                                                                 781       0          769       12
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" rev-parse --verify --quiet refs/hall9k/ledger/members^{commit}
+                                                                 632       0          622       10
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" for-each-ref --format=%(refname) refs/hall9k-verified/ledger/members
+                                                                 632       0          622       10
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" rev-parse --verify --quiet refs/hall9k-verified/ledger/members^{commit}
+                                                                 632       0          622       10
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/<org-a>/<private-repo-1>
+                                                                 627       0          602       25
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/<org-a>/<private-repo-1>
+                                                                 627       0          602       25
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" ls-remote origin refs/hall9k/ledger/owners/*
+                                                                 441       0          433        8
+C:\Program Files\Git\cmd\git.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe ls-remote origin refs/hall9k/ledger/owners/*
+                                                                 441       0          433        8
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" for-each-ref --format=%(refname) refs/hall9k-verified/ledger/owners/*
+                                                                 440       0          433        7
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" rev-parse --verify --quiet refs/hall9k/ledger/owners/c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac^{commit}
+                                                                 440       0          432        8
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" for-each-ref --format=%(refname) refs/hall9k-verified/ledger/owners/c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+                                                                 440       0          432        8
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" rev-parse --verify --quiet refs/hall9k-verified/ledger/owners/c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac^{commit}
+                                                                 440       0          432        8
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" ls-remote origin refs/hall9k/ledger/nodes/*
+                                                                 440       0          432        8
+C:\Program Files\Git\cmd\git.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe ls-remote origin refs/hall9k/ledger/nodes/*
+                                                                 440       0          432        8
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" for-each-ref --format=%(refname) refs/hall9k-verified/ledger/nodes/*
+                                                                 440       0          432        8
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/Hallmanac/hall9k-smoke
+                                                                 438       0          431        7
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/Hallmanac/hall9k-smoke
+                                                                 438       0          431        7
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/<org-a>/<private-repo-2>.git
+                                                                 438       0          420       18
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/<org-a>/<private-repo-2>.git
+                                                                 438       0          420       18
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/<org-b>/<private-repo-3>
+                                                                 426       0          420        6
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/<org-b>/<private-repo-3>
+                                                                 426       0          420        6
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/<org-b>/<private-repo-4>
+                                                                 420       0          420        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/<org-b>/<private-repo-4>
+                                                                 420       0          420        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/<org-b>/<private-repo-5>
+                                                                 420       0          420        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/<org-b>/<private-repo-5>
+                                                                 420       0          420        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/<org-b>/<private-repo-7>
+                                                                 420       0          420        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/<org-b>/<private-repo-7>
+                                                                 420       0          420        0
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/<org-b>/<private-repo-6>
+                                                                 420       0          420        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/<org-b>/<private-repo-6>
+                                                                 420       0          420        0
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" cat-file commit 6f31cc8376aa71ffc7955bd23a5a7fcea04e7947
+                                                                 390       0          384        6
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" cat-file commit d91f705d5a02f52754f2dd15597c88d0065088a2
+                                                                 390       0          384        6
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/Hallmanac/hall9k.git
+                                                                 388       0          372       16
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" rev-parse --verify --quiet refs/hall9k/ledger/nodes/01a00d41-5b80-753d-a3f1-070b25e490e4^{commit}
+                                                                 340       0          335        5
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" for-each-ref --format=%(refname) refs/hall9k-verified/ledger/nodes/01a00d41-5b80-753d-a3f1-070b25e490e4
+                                                                 340       0          335        5
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" rev-parse --verify --quiet refs/hall9k-verified/ledger/nodes/01a00d41-5b80-753d-a3f1-070b25e490e4^{commit}
+                                                                 340       0          335        5
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "gh" api user -q .login
+                                                                 294       0          280       14
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "gh" api graphql -f "query=query($owner: String!, $name: String!, $number: Int!) {    repository(owner: $owner, name: $name) {      pullRequest(number: $number)
+                                                                 231       0          220       11
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" rev-parse --verify --quiet refs/hall9k/ledger/run-skill^{commit}
+                                                                 193       0          190        3
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" for-each-ref --format=%(refname) refs/hall9k-verified/ledger/run-skill
+                                                                 193       0          190        3
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" rev-parse --verify --quiet refs/hall9k/ledger/prompt-addenda^{commit}
+                                                                 193       0          190        3
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" for-each-ref --format=%(refname) refs/hall9k-verified/ledger/prompt-addenda
+                                                                 193       0          190        3
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" rev-parse --verify --quiet refs/hall9k/ledger/records^{commit}
+                                                                 193       0          190        3
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" for-each-ref --format=%(refname) refs/hall9k-verified/ledger/records
+                                                                 193       0          190        3
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" ls-remote origin refs/hall9k/messages/*
+                                                                 193       0          190        3
+C:\Program Files\Git\cmd\git.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe ls-remote origin refs/hall9k/messages/*
+                                                                 193       0          190        3
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" cat-file commit 7c2a2ae045f0e144751518edb841e222133bcedb
+                                                                 150       0          147        3
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" cat-file commit bade029be5b360134b4d92f6263e78bc4814f920
+                                                                 150       0          144        6
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" cat-file commit e18995ec866e031235456df74ec83ed4996dd7c8
+                                                                 145       0          144        1
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" cat-file commit 1649cd9314e2051fac0bffb3bba6979edef3a70b
+                                                                 144       0          144        0
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" cat-file commit f23d3e2b1e21b9645543aab9d66cf98b573b314e
+                                                                 144       0          144        0
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" cat-file commit 48dfb6f2efb19d599f49638f395c2fb4a617f8b1
+                                                                 144       0          144        0
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" cat-file commit fc79a6df3b5a86759497dc2675fab41cb857412e
+                                                                 144       0          144        0
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" cat-file commit d8b70f053e7a1c2c5cffb38a30931092b88700b6
+                                                                 147       0          141        6
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" cat-file commit 482d9539bf93b6ac7cee5da087dba410736f649d
+                                                                 147       0          141        6
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" cat-file commit 6de9de5f976d819d08ed835b4761bb35af471312
+                                                                 147       0          141        6
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\Git\cmd\git.exe  <=  "git" rev-parse --verify --quiet refs/hall9k-verified/ledger/run-skill^{commit}
+                                                                 127       0          126        1
+C:\Program Files\GitHub CLI\gh.exe > C:\Program Files\Git\cmd\git.exe  <=  "C:\Program Files\Git\cmd\git.exe" remote -v
+                                                                 126       0          120        6
+C:\Program Files\GitHub CLI\gh.exe > C:\Program Files\Git\cmd\git.exe  <=  "C:\Program Files\Git\cmd\git.exe" config --get-regexp ^remote\..*\.gh-resolved$
+                                                                 126       0          120        6
+C:\Users\<user>\.hall9k\bin\h9kd.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "gh" api graphql -f "query=query($owner: String!, $name: String!, $number: Int!) {    repository(owner: $owner, name: $name) {      isPrivate      pullRequest(n
+                                                                 126       0          120        6

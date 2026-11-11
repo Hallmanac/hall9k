@@ -1,0 +1,17 @@
+Real git started for verify-commit (row 1b of FINDINGS.md): launcher > real git rows whose command line contains verify-commit,
+summed from the per-command output of analysis/TokeTrace (--by-cmd) over the daemon trace. Each row of that output is one command line,
+because every call has its own temporary allowed-signers file; the command line is cut before the commit sha.
+
+rows (distinct command lines): 6253
+created 6253   freed 0   never freed 6110   pending 143
+check: 6110 never freed + 3,925 never freed by fetch and ls-remote gits = 10,035 = the never-freed total of launcher > real git
+
+ssh-keygen launches by real git, by mode (the ssh-keygen own token; all freed, see daemon-trace-chains.tsv):
+  -Y check-novalidate 828
+  -Y find-principals  6253
+  -Y verify           5425
+  total             12506   (= 2 x 6253 verifications)
+
+sample command lines (user path and temp file names as traced, user name redacted):
+  C:\Program Files\Git\cmd\git.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=C:\Users\<user>\AppData\Local\Temp\h9k-chain-allowed-signers-a763a724548e4b8ba4ad88ce0a5412f0 verify-comm
+  C:\Program Files\Git\cmd\git.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  git.exe -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=C:\Users\<user>\AppData\Local\Temp\h9k-chain-allowed-signers-68f1c30fa1e242ddb1f2332e665d4c40 verify-comm

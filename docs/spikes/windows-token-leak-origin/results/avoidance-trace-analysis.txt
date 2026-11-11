@@ -1,0 +1,62 @@
+trace: 145.7 s, Toke allocations 87190, frees 83797 (83749 of allocations seen in this trace), still allocated at the end 3441, other-tag pool events skipped 0
+process creations seen: 6108, child token claimed for 6108, no allocation found for 0
+processes in the tree of pid 41124: 463
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/<org-a>/<private-repo-1> https://github.com/<org-a>/<private-repo-1>
+                                                                  60       0           60        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/<org-a>/<private-repo-1> https://github.com/<org-a>/<private-repo-1>
+                                                                  60      20           40        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+                                                                  40       0           40        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+                                                                  40       0           40        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+                                                                  40      20           20        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+                                                                  40      20           20        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" api user -q .login
+                                                                  20       0           20        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/<org-a>/<private-repo-1> refs/heads/main
+                                                                  20       0           20        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/<org-a>/<private-repo-1> refs/heads/main refs/heads/tz
+                                                                  20       0           20        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/<org-a>/<private-repo-1> refs/heads/main refs/heads/nohelper
+                                                                  20       0           20        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" api user -q .id
+                                                                  20       7           13        0
+C:\Program Files\GitHub CLI\gh.exe > C:\Windows\System32\tzutil.exe  <=  tzutil /g
+                                                                  80      80            0        0
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Windows\System32\wpr.exe  <=  "C:\Windows\system32\wpr.exe" -stop C:\Users\<user>\AppData\Local\Temp\tokeleak\avoid2.etl
+                                                                   1       0            0        1
+TOTAL                                                            461     147          313        1
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed     300
+  started no child                                                                 freed     147  never freed      13
+
+unfreed Toke allocations made in the tree that are not a process's child token: 1
+       1  C:\Windows\System32\wpr.exe
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/<org-a>/<private-repo-1> https://github.com/<org-a>/<private-repo-1>   never freed 60 of 60
+       60  C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/<org-a>/<private-repo-1> https://github.com/<org-a>/<private-repo-1>
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https https://github.com/<org-a>/<private-repo-1> https://github.com/<org-a>/<private-repo-1>   never freed 40 of 60
+       40  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+       40  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre   never freed 40 of 40
+       40  C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c   never freed 40 of 40
+       40  C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" api user -q .login   never freed 20 of 20
+       40  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/<org-a>/<private-repo-1> refs/heads/main   never freed 20 of 20
+       20  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/<org-a>/<private-repo-1> https://github.com/<org-a>/<private-repo-1>
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get   never freed 20 of 40
+       20  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store   never freed 20 of 40
+       20  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/<org-a>/<private-repo-1> refs/heads/main refs/heads/tz   never freed 20 of 20
+       20  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/<org-a>/<private-repo-1> https://github.com/<org-a>/<private-repo-1>
+C:\Program Files\PowerShell\7\pwsh.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "C:\Program Files\Git\ucrt64\bin\git.exe" ls-remote https://github.com/<org-a>/<private-repo-1> refs/heads/main refs/heads/nohelper   never freed 20 of 20
+       20  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https https://github.com/<org-a>/<private-repo-1> https://github.com/<org-a>/<private-repo-1>

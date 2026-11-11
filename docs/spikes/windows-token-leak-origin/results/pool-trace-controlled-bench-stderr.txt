@@ -1,0 +1,2 @@
+pair 1: A +497, B +410, per launch (A-B)/n = 0.58
+TOTAL 150 launches per arm: A +497, B +410, per launch 0.58

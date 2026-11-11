@@ -1,0 +1,7 @@
+helper pid 47924
+agent-session stand-in cmd.exe pid 49164 exit 0
+gate stand-in cmd.exe pid 45828
+gate exit 0
+The trace was successfully saved.
+
+
