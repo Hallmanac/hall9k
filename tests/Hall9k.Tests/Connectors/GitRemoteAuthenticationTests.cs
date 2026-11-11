@@ -314,6 +314,7 @@ public sealed class GitRemoteAuthenticationTests
 
         used.Should().Equal("stale-token", "also-bad", null);
         source.Invalidations.Should().Be(1, "the token is dropped and read once, not in a loop");
+        source.Redirects.Should().Be(0, "an authentication failure is not a redirect");
         source.Gets.Should().Be(2);
     }
 
@@ -340,6 +341,7 @@ public sealed class GitRemoteAuthenticationTests
 
         used.Should().Equal("stale-token", "fresh-token", null);
         result.ExitCode.Should().Be(0, "a repository renamed since the token was revoked still fetches, as it did before the keys");
+        source.Redirects.Should().Be(1, "a redirect on the retry is remembered the same as one on the first attempt");
     }
 
     [Fact]
@@ -381,6 +383,7 @@ public sealed class GitRemoteAuthenticationTests
 
         used.Should().Equal(Token, null);
         source.Invalidations.Should().Be(0);
+        source.Redirects.Should().Be(1);
         result.ExitCode.Should().Be(0);
     }
 
@@ -425,6 +428,8 @@ public sealed class GitRemoteAuthenticationTests
 
         public int Invalidations { get; private set; }
 
+        public int Redirects { get; private set; }
+
         public Task<GitRemoteAuthorization?> TryGetAsync(string workingDirectory, CancellationToken cancellationToken)
         {
             Gets++;
@@ -434,5 +439,7 @@ public sealed class GitRemoteAuthenticationTests
         }
 
         public void Invalidate(string workingDirectory) => Invalidations++;
+
+        public void RecordRedirect(string workingDirectory) => Redirects++;
     }
 }
