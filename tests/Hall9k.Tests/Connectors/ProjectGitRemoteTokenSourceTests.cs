@@ -178,6 +178,81 @@ public sealed class ProjectGitRemoteTokenSourceTests
         await run.Should().ThrowAsync<OperationCanceledException>();
     }
 
+    private const string Redirected = "fatal: unable to access 'https://github.com/o/old.git/': The requested URL returned error: 301";
+
+    /// <summary>
+    /// The real source behind the real runner: a redirect on a call carrying the keys is remembered
+    /// for that working directory alone, for two minutes. What each start is handed is the
+    /// evidence, since the client's own token cache means a count of gh reads could not show it.
+    /// </summary>
+    [Fact]
+    public async Task A_redirect_is_remembered_for_its_working_directory_for_two_minutes_and_then_forgotten()
+    {
+        MovableClock clock = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        ProjectGitRemoteTokenSource source = new(
+            Resolves(Account), ClientReading(RecordingProcessRunner.Succeeding(Token + "\n")),
+            Origin("https://github.com/o/r.git").Runner, clock);
+        using IDisposable scope = GitRemoteAuthentication.UseForCurrentFlow(source);
+
+        (await FetchAsync("/repos/renamed", remote => remote is null ? string.Empty : Redirected))
+            .Should().Equal(Token, null);
+
+        clock.Advance(TimeSpan.FromSeconds(119));
+        (await FetchAsync("/repos/renamed", _ => string.Empty)).Should().Equal(
+            [null], "inside the window the call runs once, with no keys, rather than failing with them first");
+        (await FetchAsync("/repos/other", _ => string.Empty)).Should().Equal(
+            [Token], "another working directory is not the one that redirected");
+
+        clock.Advance(TimeSpan.FromSeconds(2));
+        (await FetchAsync("/repos/renamed", _ => string.Empty)).Should().Equal(
+            [Token], "once the window lapses the directory carries the keys again");
+    }
+
+    [Fact]
+    public async Task A_redirect_on_the_retry_after_an_authentication_failure_is_remembered_too()
+    {
+        MovableClock clock = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        ProjectGitRemoteTokenSource source = new(
+            Resolves(Account), ClientReading(RecordingProcessRunner.Succeeding(Token + "\n")),
+            Origin("https://github.com/o/r.git").Runner, clock);
+        using IDisposable scope = GitRemoteAuthentication.UseForCurrentFlow(source);
+        int attempt = 0;
+
+        (await FetchAsync("/repos/renamed", remote => (attempt++, remote) switch
+        {
+            (_, null) => string.Empty,
+            (0, _) => "fatal: Authentication failed for 'https://github.com/o/old.git/'",
+            _ => Redirected,
+        })).Should().Equal(Token, Token, null);
+
+        (await FetchAsync("/repos/renamed", _ => string.Empty)).Should().Equal([null]);
+    }
+
+    /// <summary>One <c>git fetch</c> through the runner; returns the token each start was handed, in order. An empty standard error is success.</summary>
+    private static async Task<List<string?>> FetchAsync(string workingDirectory, Func<GitRemoteAuthorization?, string> standardError)
+    {
+        List<string?> handed = [];
+        await GitRemoteAuthentication.RunAsync(
+            "git", ["fetch", "origin"], workingDirectory,
+            remote =>
+            {
+                handed.Add(remote?.Token);
+                string error = standardError(remote);
+                return Task.FromResult((ExitCode: error.Length == 0 ? 0 : 128, StandardError: error));
+            },
+            result => result, CancellationToken.None);
+        return handed;
+    }
+
+    private sealed class MovableClock(DateTimeOffset start) : TimeProvider
+    {
+        private DateTimeOffset now = start;
+
+        public void Advance(TimeSpan by) => now += by;
+
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
     [Fact]
     public void A_worktree_is_followed_to_the_repository_it_was_cut_from_without_starting_git()
     {

@@ -188,6 +188,10 @@ public sealed class GitRemoteAuthenticationLocalServerTests : IDisposable
                 : null);
 
         public void Invalidate(string workingDirectory) => invalidations[0]++;
+
+        public void RecordRedirect(string workingDirectory)
+        {
+        }
     }
 
     private sealed record ObservedRequest(string Method, string Path, string? Authorization);

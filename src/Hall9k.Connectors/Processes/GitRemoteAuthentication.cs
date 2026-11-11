@@ -26,6 +26,13 @@ public interface IGitRemoteTokenSource
     /// <see cref="TryGetAsync"/> reads it again. Called when git rejected the token it was given.
     /// </summary>
     void Invalidate(string workingDirectory);
+
+    /// <summary>
+    /// Remembers that a call from <paramref name="workingDirectory"/> failed on a redirect while
+    /// carrying the keys, so for a while <see cref="TryGetAsync"/> gives it none and its calls run
+    /// once, without them, instead of failing first every time.
+    /// </summary>
+    void RecordRedirect(string workingDirectory);
 }
 
 /// <summary>
@@ -214,7 +221,7 @@ public static class GitRemoteAuthentication
     /// <see cref="Apply"/>, and returns whatever it reads from it.
     /// <list type="bullet">
     /// <item>No source, not a remote call, no token: one run without the keys, as before.</item>
-    /// <item>A redirect failure (the keys forbid following one): retried once without the keys.</item>
+    /// <item>A redirect failure (the keys forbid following one): retried once without the keys, and told to the source (<see cref="IGitRemoteTokenSource.RecordRedirect"/>), whether it came on the first attempt or on the retry below.</item>
     /// <item>An authentication failure: the cached token is dropped and read again once; if there is a fresh one the call is retried with it, and if that fails on authentication or a redirect, or there is none, it runs once more without the keys.</item>
     /// </list>
     /// A retried call is one git had already refused, so a push is never repeated after it landed.
@@ -249,6 +256,7 @@ public static class GitRemoteAuthentication
         switch (Classify(standardError))
         {
             case FailureKind.Redirect:
+                tokens.RecordRedirect(workingDirectory);
                 return await start(null);
             case FailureKind.Authentication:
                 tokens.Invalidate(workingDirectory);
@@ -260,7 +268,18 @@ public static class GitRemoteAuthentication
 
                 TResult retried = await start(fresh);
                 (int retriedExit, string retriedError) = outcome(retried);
-                return retriedExit != 0 && Classify(retriedError) is FailureKind.Authentication or FailureKind.Redirect
+                if (retriedExit == 0)
+                {
+                    return retried;
+                }
+
+                FailureKind retriedKind = Classify(retriedError);
+                if (retriedKind is FailureKind.Redirect)
+                {
+                    tokens.RecordRedirect(workingDirectory);
+                }
+
+                return retriedKind is FailureKind.Authentication or FailureKind.Redirect
                     ? await start(null)
                     : retried;
             default:

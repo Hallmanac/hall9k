@@ -47,9 +47,15 @@ public sealed class ProjectGitRemoteTokenSource(
     private readonly object gate = new();
     private readonly Dictionary<string, (string? Login, DateTimeOffset ExpiresAt)> resolutions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTimeOffset> tokenFailures = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> redirects = new(StringComparer.Ordinal);
 
     public async Task<GitRemoteAuthorization?> TryGetAsync(string workingDirectory, CancellationToken cancellationToken)
     {
+        if (RecentlyRedirected(workingDirectory))
+        {
+            return null;
+        }
+
         try
         {
             string? login = await ResolveLoginAsync(workingDirectory, cancellationToken);
@@ -102,6 +108,28 @@ public sealed class ProjectGitRemoteTokenSource(
             }
 
             client.InvalidateToken(login);
+        }
+    }
+
+    /// <summary>
+    /// Kept for <see cref="ResolutionTtl"/>: a remote that redirects (a renamed repository) keeps
+    /// doing so, and while it is remembered its calls run once without the keys rather than failing
+    /// with them first.
+    /// </summary>
+    public void RecordRedirect(string workingDirectory)
+    {
+        lock (gate)
+        {
+            redirects[workingDirectory] = clock.GetUtcNow() + ResolutionTtl;
+        }
+    }
+
+    private bool RecentlyRedirected(string workingDirectory)
+    {
+        DateTimeOffset now = clock.GetUtcNow();
+        lock (gate)
+        {
+            return redirects.TryGetValue(workingDirectory, out DateTimeOffset until) && until > now;
         }
     }
 
