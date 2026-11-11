@@ -192,6 +192,27 @@ public sealed class GitForWindowsLauncherTests : IDisposable
         startInfo.Environment["PATH"].Should().Be(PathOf("a", "b"));
     }
 
+    [Theory]
+    [InlineData("cmd")]
+    [InlineData("bin")]
+    public void Names_the_installs_bash_from_the_launchers_location_so_the_real_gits_directory_cannot_hide_it(string launcherDirectory)
+    {
+        string install = Install("git");
+        string bash = Touch("git", "bin", "bash.exe");
+        GitForWindowsLauncher launcher = new(PathOf(Path.Combine(install, launcherDirectory)), enabled: true);
+
+        GitForWindowsLauncher.GitBashPath(launcher.Current()!).Should().Be(bash);
+    }
+
+    [Fact]
+    public void Names_no_bash_when_the_install_has_none()
+    {
+        string install = Install("git");
+        GitForWindowsLauncher launcher = new(PathOf(Path.Combine(install, "cmd")), enabled: true);
+
+        GitForWindowsLauncher.GitBashPath(launcher.Current()!).Should().BeNull();
+    }
+
     [Fact]
     public void Reads_a_quoted_path_entry_with_a_trailing_separator_as_the_launchers_directory()
     {

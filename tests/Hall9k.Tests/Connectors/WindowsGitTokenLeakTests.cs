@@ -51,7 +51,7 @@ public sealed class WindowsGitTokenLeakFactAttribute : FactAttribute
 /// program) is exactly that: it starts the real <c>git.exe</c> and is still running when it
 /// exits. h9kd runs git constantly, so the shared runner runs the real git instead.
 /// <para>
-/// Both arms start <c>git --version</c> one at a time through <see cref="ExternalProcess.Runner"/>.
+/// Both arms start <c>git --version</c> through <see cref="ExternalProcess.Runner"/>, eight at a time.
 /// The first arm starts the bare name <c>git</c>, which is the launcher whenever it is first on
 /// PATH (the daemon's PATH on the node this was written on, and so its children's) unless the
 /// runner has resolved it away. The second starts the real <c>git.exe</c> by a full path this test
