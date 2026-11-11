@@ -417,13 +417,9 @@ builder.Services.Configure<HostOptions>(host => host.ShutdownTimeout = TimeSpan.
 
 IHost host = builder.Build();
 
-// A git call that reaches github.com gets its project's token through git's own per-call
-// environment configuration, so git-remote-https never starts the owner's credential helper (sh
-// and gh on Windows, a kernel token kept for each until reboot). Per call, on the child's start
-// info alone: nothing here, or in GitRemoteAuthentication, writes the token or any of its keys
-// into this process's environment, which every agent session would inherit.
-GitRemoteAuthentication.Configure(new ProjectGitRemoteTokenSource(
-    host.Services.GetRequiredService<IDocumentStore>(), host.Services.GetRequiredService<ProjectGitHubClient>()));
+// A git call that reaches github.com carries its project's token per call, never in this
+// process's environment (DaemonGitRemoteAuthentication says why, and a test pins it).
+DaemonGitRemoteAuthentication.Configure(host.Services, GitRemoteAuthentication.Configure);
 
 // The one place h9kd states its own build identity (2026-09-04: a locally built install
 // had no way to tell which commit it ran from, only the framework's own assembly-version
