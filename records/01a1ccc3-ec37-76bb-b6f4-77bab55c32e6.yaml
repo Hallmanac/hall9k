@@ -1,0 +1,61 @@
+hall9k-task-record: 1
+task-id: 01a1ccc3-ec37-76bb-b6f4-77bab55c32e6
+project: hall9k
+type: bugfix
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#867
+objective: Remote git calls carrying a project's GitHub token read that token for github.com explicitly and skip the token keys for a working directory that recently redirected, the daemon's startup is pinned by a test as writing no token or header key into its own environment, and operations.md says that git's own child processes inherit the keys.
+criteria:
+  - The keyring read of a project account's token (ProjectGitHubClient.TokenAsync, which both the pinned gh calls and the remote git calls use) names github.com as the host, so a GH_HOST in h9kd's environment cannot change which host's token is read. A unit test asserts the gh arguments include the host flag with github.com. Both failure messages of that read quote the command as it is run, including the host flag, and the existing assertions on that read and its failure message still pass.
+  - When a remote git call fails on a redirect while carrying the token keys, whether on its first attempt or on the retry after an authentication failure, its working directory is remembered for two minutes (the source's resolution TTL). A remote git call from that directory inside the window runs exactly once and is handed no keys; once the window lapses, the next call from it carries the keys again. A unit test with a controllable clock pins the skip and the lapse, and shows that a call from a different working directory still carries the keys inside the window.
+  - The daemon's wiring of git remote authentication moves out of Program.cs into a method that Program.cs calls, and that method takes the setter it configures the source through; Program.cs passes GitRemoteAuthentication.Configure. A test runs that method with a ProjectGitHubClient whose token read returns a known test token and with a capturing setter in place of GitRemoteAuthentication.Configure. It asserts that the setter was handed a source, and that afterwards this process's environment holds no variable whose name or value contains extraHeader in any letter case, and contains neither the test token nor its Basic encoding. The test never calls GitRemoteAuthentication.Configure, so it changes no process-wide state.
+  - In docs/operations.md, the "Per call, never ambient" bullet says in one sentence that git's own child processes (hooks, auto-maintenance, a credential helper for another host, git-lfs) inherit the keys for the length of the call, and no longer claims the token reaches nothing else. The "Redirects" bullet says a redirect is remembered for two minutes per working directory, during which calls from it run without the keys.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/b55c32e6-remote-git-calls-carrying-a-pr
+published: 2026-11-11 22:49:56Z
+context: |-
+  Follow-up to PR #866 (merged 2026-11-11, shipped in v0.18.2), from the post-merge review at
+  `notes/review-866/journal.md` in the project home (findings at lines 37 to 40, routing at 47 to 50).
+  The review's verdict was safe to tag; these are its four low findings, done as one pull request
+  because they all sit in the remote git token seam and none is large enough to stand alone.
+
+  Code, as of 631c949ce:
+
+  - **Host of the token read.** `src/Hall9k.Connectors/WorkItems/ProjectGitHubClient.cs:286` runs
+    `gh auth token --user <login>` with no host, so gh reads the token for its default host, which
+    `GH_HOST` changes; the header is always scoped to `https://github.com/`
+    (`src/Hall9k.Connectors/Processes/GitRemoteAuthentication.cs:190`). The two failure messages at
+    lines 290 to 301 quote the command and should quote it as run. Existing tests assert the arguments
+    with `ContainInOrder` and the message with a `*gh auth token --user hallmanac*` wildcard
+    (`tests/Hall9k.Tests/Connectors/ProjectGitHubClientTests.cs:39,53`), so appending
+    `--hostname github.com` after the login keeps them passing. The ambient `GH_TOKEN`/`GITHUB_TOKEN`
+    path (line 321) is unchanged.
+  - **Redirect memory.** The redirect branch in `GitRemoteAuthentication.RunAsync`
+    (`GitRemoteAuthentication.cs:251-252`, and the redirect case of the authentication retry at
+    261-265, which `GitRemoteAuthenticationTests.cs:321` already exercises) retries without the keys
+    but remembers nothing. The model to follow is the gh-failure memory in
+    `src/Hall9k.Connectors/WorkItems/ProjectGitRemoteTokenSource.cs:49,56,70-75`, keyed by working
+    directory like `resolutions` (line 48) and lasting `ResolutionTtl` (line 40). Telling the source
+    about a redirect needs a member on `IGitRemoteTokenSource` (`GitRemoteAuthentication.cs:13`) or an
+    equivalent; the test sources that implement it (`TokenSequence` in
+    `tests/Hall9k.Tests/Connectors/GitRemoteAuthenticationLocalServerTests.cs` and `FakeTokenSource`
+    in `GitRemoteAuthenticationTests.cs`) follow. `ProjectGitHubClient` caches a login's token for the
+    same two minutes (`ProjectGitHubClient.cs:61`), so a count of token reads cannot show the skip;
+    what the call is handed can.
+  - **Startup pin.** The daemon configures the source inline at `src/Hall9k.Daemon/Program.cs:425-426`,
+    a top-level program a test cannot run, so the wiring moves into a method Program.cs calls
+    (`Hall9k.Tests` already references `Hall9k.Daemon`, which grants it internals).
+    `GitRemoteAuthentication.Configure` is process-wide and is read by every remote git call a test
+    makes without a flow-local source, across many collections, so no test may set it, even with a
+    restore afterwards (the project's binding rule against tests observing process-global state that
+    another test set). The method therefore takes the setter as a parameter, and the test passes a
+    capturing one. The existing check at `GitRemoteAuthenticationLocalServerTests.cs:67-70` looks at
+    the test host around one call and says so in its comment; point that comment at the new test.
+  - **Docs.** `docs/operations.md:1787-1797` holds both bullets.
+
+  Out of scope (the review declined them): the CLI store's last-wins source at
+  `src/Hall9k.Cli/Infrastructure/CliStore.cs:41`, the 404 case with no fallback, and pruning the
+  source's dictionaries.
