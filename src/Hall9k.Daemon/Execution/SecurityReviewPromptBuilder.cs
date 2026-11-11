@@ -51,7 +51,7 @@ public static class SecurityReviewPromptBuilder
     public static string Build(ReviewPersonaPromptRequest request)
     {
         StringBuilder prompt = new();
-        AppendOpening(prompt, request.BaseBranch);
+        AppendOpening(prompt, request.BaseBranch, request.DiffFilePath);
         if (request.RunDirectory is not null)
         {
             prompt.AppendLine();
@@ -78,14 +78,22 @@ public static class SecurityReviewPromptBuilder
         return PromptLineEndings.Finish(prompt);
     }
 
-    private static void AppendOpening(StringBuilder prompt, string baseBranch)
+    private static void AppendOpening(StringBuilder prompt, string baseBranch, string? diffFilePath)
     {
         const string file = $"{TemplateDirectory}/build.md";
         prompt.AppendLine(Fragment(file, "title"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro");
         prompt.AppendLine();
-        AppendFragment(prompt, file, "range", ("BaseRef", baseBranch));
+        if (diffFilePath is null)
+        {
+            AppendFragment(prompt, file, "range", ("BaseRef", baseBranch));
+        }
+        else
+        {
+            AppendFragment(prompt, file, "range-diff-file", ("BaseRef", baseBranch), ("DiffPath", diffFilePath));
+        }
+
         prompt.AppendLine();
         AppendFragment(prompt, file, "where-you-are");
         prompt.AppendLine();
