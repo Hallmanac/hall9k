@@ -1,0 +1,81 @@
+Remote git calls with the project's token in the environment: kernel trace of 20 + 20 git ls-remote calls
+(2026-11-11, Windows 11 Pro 26H2, build 26300, Git for Windows 2.56.0 real git, elevated, wpr profile analysis/toke.wprp,
+read with analysis/TokeTrace). The repository is a private one of the owner's; its name is replaced by <org-a>/<private-repo-1>.
+
+Harness (not committed; a 20-line console program): in one process, alternate 20 times between two arms, both through
+ExternalProcess.Runner with GitForWindowsLauncher.ApplyToCurrentProcess() applied as the daemon does:
+  before: GitRemoteAuthentication.Configure(null)        -> git ls-remote origin refs/heads/main refs/heads/before
+  after:  GitRemoteAuthentication.Configure(real source: ProjectGitRemoteTokenSource + one ProjectGitHubClient)
+                                                         -> git ls-remote origin refs/heads/main refs/heads/after
+The owner's ~/.gitconfig has credential.helper = !gh auth git-credential. All 40 calls exited 0.
+
+Reading the table: the two arms differ only in their last ref name, which the kept-token rows below do not show for the
+helper-started processes, so the arms are told apart by arithmetic that the table closes exactly:
+  - sh.exe and gh.exe started under git-remote-https: 20 sh + 20 gh for "get" and 20 + 20 for "store" = one pair per
+    "before" call, none for the 20 "after" calls (a helper that ran for an "after" call would make these 40, not 20).
+  - git-remote-https.exe kept its token 20 of 40 times (the 20 "before" calls that started sh); freed 20 of 40 (the "after" calls).
+  - tokens kept in total: 181 = 20 x 7 ("before": real git 1, dispatcher 1, git-remote-https 1, two sh, two gh)
+                              + 20 x 2 ("after": real git 1, dispatcher 1)
+                              + 1 (the one gh auth token the source read, once, for all 20 calls)
+  - so kept per call: 7 before, 2 after.
+
+trace: 111.6 s, Toke allocations 58864, frees 57702 (57607 of allocations seen in this trace), still allocated at the end 1257, other-tag pool events skipped 0
+process creations seen: 2968, child token claimed for 2968, no allocation found for 0
+processes in the tree of pid 40324: 246
+
+creator > child (token of the child)                         created   freed  never freed  pending
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/<org-a>/<private-repo-1>.git
+                                                                  40       0           40        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/<org-a>/<private-repo-1>.git
+                                                                  40      20           20        0
+C:\Program Files\dotnet\dotnet.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "git" ls-remote origin refs/heads/main refs/heads/before
+                                                                  20       0           20        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+                                                                  20       0           20        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+                                                                  20       0           20        0
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+                                                                  20       0           20        0
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+                                                                  20       0           20        0
+C:\Program Files\dotnet\dotnet.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "git" ls-remote origin refs/heads/main refs/heads/after
+                                                                  20       0           20        0
+C:\Program Files\dotnet\dotnet.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "gh" auth token --user <owner-login>
+                                                                   1       0            1        0
+C:\Program Files\GitHub CLI\gh.exe > C:\Windows\System32\tzutil.exe  <=  tzutil /g
+                                                                  41      41            0        0
+C:\Program Files\dotnet\dotnet.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "git" init -q
+                                                                   1       1            0        0
+C:\Program Files\dotnet\dotnet.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "git" remote add origin https://github.com/<org-a>/<private-repo-1>.git
+                                                                   1       1            0        0
+C:\Program Files\dotnet\dotnet.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "git" remote get-url origin
+                                                                   1       1            0        0
+TOTAL                                                            245      64          181        0
+
+rule check (processes whose token state is settled):
+  a child exited while the process was still running                               freed       0  never freed     181
+  started no child                                                                 freed      64  never freed       0
+
+unfreed Toke allocations made in the tree that are not a process's child token: 2
+       2  C:\Program Files\Git\ucrt64\bin\git.exe
+
+what the creators of the kept-token processes' children themselves start (grandchild image <= its command line):
+C:\Program Files\Git\ucrt64\bin\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/<org-a>/<private-repo-1>.git   never freed 40 of 40
+       40  C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/<org-a>/<private-repo-1>.git
+C:\Program Files\dotnet\dotnet.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "git" ls-remote origin refs/heads/main refs/heads/before   never freed 20 of 20
+       20  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/<org-a>/<private-repo-1>.git
+C:\Program Files\Git\ucrt64\libexec\git-core\git.exe > C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe  <=  git-remote-https origin https://github.com/<org-a>/<private-repo-1>.git   never freed 20 of 40
+       20  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre
+       20  C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential get" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-cre   never freed 20 of 20
+       20  C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential get   never freed 20 of 20
+       20  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+C:\Program Files\Git\ucrt64\libexec\git-core\git-remote-https.exe > C:\Program Files\Git\usr\bin\sh.exe  <=  "C:/Program Files/Git/usr/bin/sh.exe" -c "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-credential store" "'C:\\Program Files\\GitHub CLI\\gh.exe' auth git-c   never freed 20 of 20
+       20  C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store
+C:\Program Files\Git\usr\bin\sh.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "C:\Program Files\GitHub CLI\gh.exe" auth git-credential store   never freed 20 of 20
+       20  C:\Windows\System32\tzutil.exe  <=  tzutil /g
+C:\Program Files\dotnet\dotnet.exe > C:\Program Files\Git\ucrt64\bin\git.exe  <=  "git" ls-remote origin refs/heads/main refs/heads/after   never freed 20 of 20
+       20  C:\Program Files\Git\ucrt64\libexec\git-core\git.exe  <=  git remote-https origin https://github.com/<org-a>/<private-repo-1>.git
+C:\Program Files\dotnet\dotnet.exe > C:\Program Files\GitHub CLI\gh.exe  <=  "gh" auth token --user <owner-login>   never freed 1 of 1
+        1  C:\Windows\System32\tzutil.exe  <=  tzutil /g
