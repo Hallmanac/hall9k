@@ -31,6 +31,7 @@ namespace Hall9k.Domain.Infrastructure.Processes;
 public sealed class GitForWindowsLauncher
 {
     private const string GitByName = "git";
+    private const string GitBashPathVariable = "CLAUDE_CODE_GIT_BASH_PATH";
     private static readonly string[] LauncherDirectoryNames = ["cmd", "bin"];
     private static readonly string[] RealGitFlavours = ["ucrt64", "mingw64", "clangarm64"];
 
@@ -83,7 +84,10 @@ public sealed class GitForWindowsLauncher
 
     /// <summary>
     /// Puts the real git's directory into this process's own PATH, so every process it starts
-    /// afterwards (agent sessions, gate shells, gh) inherits it. The daemon calls it once at start-up.
+    /// afterwards (agent sessions, gate shells, gh) inherits it, and names the install's
+    /// <c>bin\bash.exe</c> in <c>CLAUDE_CODE_GIT_BASH_PATH</c> when that is not already set, so
+    /// Claude Code, which would otherwise look for Git Bash beside the first git on PATH, still
+    /// finds it. The daemon calls it once at start-up.
     /// </summary>
     public void ApplyToCurrentProcess()
     {
@@ -98,6 +102,26 @@ public sealed class GitForWindowsLauncher
         {
             Environment.SetEnvironmentVariable("PATH", inserted);
         }
+
+        // Claude Code finds Git Bash from the first git.exe on PATH (two directories up, then
+        // bin\bash.exe) unless this variable names it. With the real git's directory now first,
+        // that guess would land in <flavour>\bin and miss, and every agent session started from
+        // here would lose its Bash tool on an install outside Program Files. An explicit setting
+        // is never overridden.
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(GitBashPathVariable))
+            && GitBashPath(resolved) is { } bash)
+        {
+            Environment.SetEnvironmentVariable(GitBashPathVariable, bash);
+        }
+    }
+
+    /// <summary>The install's <c>bin\bash.exe</c>, found from the launcher's location, or null when there is none.</summary>
+    internal static string? GitBashPath(Resolved resolved)
+    {
+        string? directory = Path.GetDirectoryName(resolved.Launcher);
+        string? root = directory is null ? null : Path.GetDirectoryName(directory);
+        string? bash = root is null ? null : Path.Combine(root, "bin", "bash.exe");
+        return bash is not null && File.Exists(bash) ? bash : null;
     }
 
     internal Resolved? Current()
