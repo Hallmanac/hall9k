@@ -2,6 +2,10 @@ Remote git calls with the project's token in the environment: kernel trace of 20
 (2026-11-11, Windows 11 Pro 26H2, build 26300, Git for Windows 2.56.0 real git, elevated, wpr profile analysis/toke.wprp,
 read with analysis/TokeTrace). The repository is a private one of the owner's; its name is replaced by <org-a>/<private-repo-1>.
 
+macOS: not measured. This run had no macOS machine, so there is no process count for the same 20 + 20 ls-remote calls there.
+The code comment that says git-remote-https starts the same two helper processes (sh and gh) on macOS, without the leak, is
+an assertion from how git's credential helper works, not a measurement. Everything below is Windows.
+
 Harness (not committed; a 20-line console program): in one process, alternate 20 times between two arms, both through
 ExternalProcess.Runner with GitForWindowsLauncher.ApplyToCurrentProcess() applied as the daemon does:
   before: GitRemoteAuthentication.Configure(null)        -> git ls-remote origin refs/heads/main refs/heads/before

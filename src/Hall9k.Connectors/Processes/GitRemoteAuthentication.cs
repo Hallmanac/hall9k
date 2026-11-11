@@ -215,7 +215,7 @@ public static class GitRemoteAuthentication
     /// <list type="bullet">
     /// <item>No source, not a remote call, no token: one run without the keys, as before.</item>
     /// <item>A redirect failure (the keys forbid following one): retried once without the keys.</item>
-    /// <item>An authentication failure: the cached token is dropped and read again once; if there is a fresh one the call is retried with it, and if that fails the same way, or there is none, it runs once more without the keys.</item>
+    /// <item>An authentication failure: the cached token is dropped and read again once; if there is a fresh one the call is retried with it, and if that fails on authentication or a redirect, or there is none, it runs once more without the keys.</item>
     /// </list>
     /// A retried call is one git had already refused, so a push is never repeated after it landed.
     /// </summary>
@@ -260,7 +260,7 @@ public static class GitRemoteAuthentication
 
                 TResult retried = await start(fresh);
                 (int retriedExit, string retriedError) = outcome(retried);
-                return retriedExit != 0 && Classify(retriedError) == FailureKind.Authentication
+                return retriedExit != 0 && Classify(retriedError) is FailureKind.Authentication or FailureKind.Redirect
                     ? await start(null)
                     : retried;
             default:

@@ -1786,8 +1786,9 @@ was five of the seven kernel access tokens each credentialed call kept until reb
   helper as before.
 - **Redirects.** git refuses a redirect under those keys, so a call that needs one (a renamed
   repository) fails and is retried once without the keys, which is the old behaviour. A token git
-  rejects is dropped, read again once and retried; when that fails the same way, or no token can be
-  had, the call runs without the keys.
+  rejects is dropped, read again once and retried; when that fails on authentication or a redirect,
+  or no token can be had, the call runs without the keys. When gh cannot produce the token at all,
+  that is remembered for half a minute, so the calls in between start no extra gh process.
 - **Per call, never ambient.** The token goes into the environment of that git process and nothing
   else: not the daemon's own environment, which every agent session inherits, and not gate commands,
   `gh` or `ssh-keygen`. `GIT_TRACE_CURL`, `GIT_CURL_VERBOSE`, `GIT_TRACE_REDACT`,
