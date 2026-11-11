@@ -129,7 +129,7 @@ public static class ExternalProcess
     /// </summary>
     internal static ProcessStartInfo StartInfoFor(
         string fileName, IReadOnlyList<string> arguments, string workingDirectory,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string>? environment = null, GitRemoteAuthorization? remote = null)
     {
         ProcessStartInfo startInfo = new()
         {
@@ -156,6 +156,14 @@ public static class ExternalProcess
             }
         }
 
+        // After the caller's own environment, so the keys append to whatever GIT_CONFIG_COUNT is
+        // there by now (commit.gpgsign=false stays at its index) instead of being overwritten by it.
+        // Only a git call that reaches a remote is ever handed one; see GitRemoteAuthentication.
+        if (remote is not null)
+        {
+            GitRemoteAuthentication.Apply(startInfo, remote);
+        }
+
         // Last, so the PATH it adjusts is the one the child will really get. On Windows, a plain
         // "git" becomes the real git.exe behind Git for Windows' launcher; elsewhere, or when the
         // first git on PATH is not that launcher, this changes nothing.
@@ -164,12 +172,26 @@ public static class ExternalProcess
         return startInfo;
     }
 
-    private static async Task<ProcessResult> RunAsync(
+    private static Task<ProcessResult> RunAsync(
         string fileName,
         IReadOnlyList<string> arguments,
         string workingDirectory,
         TimeSpan deadline,
         IReadOnlyDictionary<string, string>? environment,
+        CancellationToken cancellationToken) =>
+        GitRemoteAuthentication.RunAsync(
+            fileName, arguments, workingDirectory,
+            remote => RunOnceAsync(fileName, arguments, workingDirectory, deadline, environment, remote, cancellationToken),
+            result => (result.ExitCode, result.StandardError),
+            cancellationToken);
+
+    private static async Task<ProcessResult> RunOnceAsync(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string workingDirectory,
+        TimeSpan deadline,
+        IReadOnlyDictionary<string, string>? environment,
+        GitRemoteAuthorization? remote,
         CancellationToken cancellationToken)
     {
         using CancellationTokenSource deadlineSource = new(deadline);
@@ -177,7 +199,7 @@ public static class ExternalProcess
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadlineSource.Token);
 
         using Process process = new();
-        process.StartInfo = StartInfoFor(fileName, arguments, workingDirectory, environment);
+        process.StartInfo = StartInfoFor(fileName, arguments, workingDirectory, environment, remote);
         process.Start();
 
         // The reads get their own source, and it is linked to the caller's token alone rather
