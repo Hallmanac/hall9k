@@ -386,7 +386,7 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
         task.RetryReceivedFromNodeId = ForeignNoteFixtures.TeammateNode;
         string prompt = AgentPromptBuilder.BuildPrReviewLens(
             task, SomeProject(), "task/1-slug", ReviewLens.Conformance, "develop",
-            localFleet: ForeignNoteFixtures.Fleet());
+            localFleet: ForeignNoteFixtures.Fleet(), diffFilePath: "/runs/run-1/review.diff");
         AssertMatchesGolden("build-pr-review-lens-foreign-retry-reason", prompt);
     }
 
@@ -411,7 +411,8 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
     {
         TaskDetails task = SomePrReviewTask();
         string prompt = AgentPromptBuilder.BuildPrReviewLens(
-            task, SomeProject(), "task/1-slug", ReviewLens.Conformance, "develop");
+            task, SomeProject(), "task/1-slug", ReviewLens.Conformance, "develop",
+            diffFilePath: "/runs/run-1/review.diff");
         AssertMatchesGolden("build-pr-review-lens", prompt);
     }
 

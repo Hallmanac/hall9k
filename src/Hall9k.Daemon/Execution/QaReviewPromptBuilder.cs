@@ -56,7 +56,7 @@ public static class QaReviewPromptBuilder
     {
         ReviewDriveDecision drive = request.Drive ?? ReviewDriveDecision.NoneFor(ReviewPersona.Qa);
         StringBuilder prompt = new();
-        AppendOpening(prompt, request.BaseBranch);
+        AppendOpening(prompt, request.BaseBranch, request.DiffFilePath);
         AppendObjective(prompt, request.Task, request.RunDirectory);
         AppendBlastRadius(prompt);
         AppendChecks(prompt, request.Project, request.BaseBranch, drive, request.RunSkill);
@@ -79,14 +79,22 @@ public static class QaReviewPromptBuilder
         return PromptLineEndings.Finish(prompt);
     }
 
-    private static void AppendOpening(StringBuilder prompt, string baseBranch)
+    private static void AppendOpening(StringBuilder prompt, string baseBranch, string? diffFilePath)
     {
         const string file = $"{TemplateDirectory}/build.md";
         prompt.AppendLine(Fragment(file, "title"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro");
         prompt.AppendLine();
-        AppendFragment(prompt, file, "range", ("BaseRef", baseBranch));
+        if (diffFilePath is null)
+        {
+            AppendFragment(prompt, file, "range", ("BaseRef", baseBranch));
+        }
+        else
+        {
+            AppendFragment(prompt, file, "range-diff-file", ("BaseRef", baseBranch), ("DiffPath", diffFilePath));
+        }
+
         prompt.AppendLine();
         AppendFragment(prompt, file, "where-you-are");
         prompt.AppendLine();

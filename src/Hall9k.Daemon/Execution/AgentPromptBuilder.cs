@@ -2560,7 +2560,8 @@ public static class AgentPromptBuilder
     /// </summary>
     public static string BuildPrReviewLens(
         TaskDetails task, ProjectDetails project, string branch, ReviewLens lens, string baseBranch,
-        TimeSpan? commandTimeout = null, LocalFleet? localFleet = null, string? citedIssuesPath = null)
+        TimeSpan? commandTimeout = null, LocalFleet? localFleet = null, string? citedIssuesPath = null,
+        string? diffFilePath = null)
     {
         // A pr-review task retries through the same TaskDecider.Retry every other task type
         // does — nothing gates it to TaskType.PrReview — so an operator's `h9k task retry
@@ -2587,7 +2588,8 @@ public static class AgentPromptBuilder
                     baseBranch,
                     CheckoutDescription: PromptTemplates.Load(file, "checkout-description"),
                     GatesObserved: false,
-                    DiffIsForeignPullRequest: true),
+                    DiffIsForeignPullRequest: true,
+                    DiffFilePath: diffFilePath),
                 commandTimeout: commandTimeout)
             + "\n\n" + PromptTemplates.Load(file, "foreign-pr-notice")
             + (lens == ReviewLens.Conformance ? PromptTemplates.Load(file, "conformance-basis-addendum") : string.Empty)
@@ -2654,9 +2656,14 @@ public static class AgentPromptBuilder
     /// <c>PrReviewEngine</c> rather than concurrently, so there is no second pass sharing this
     /// worktree's <c>obj/</c>/<c>bin/</c> at the same time — <see cref="AppendReviewMechanics"/>.
     /// </param>
+    /// <param name="DiffFilePath">
+    /// The pull request's diff as the daemon wrote it for a pr-review run (<c>RunPaths.ReviewDiffFile</c>), which a
+    /// foreign pull request's mechanics name as the diff under review in place of a range the session has to compose a
+    /// git command for. Null names the range alone.
+    /// </param>
     public sealed record ReviewMechanicsOverride(
         string BaseBranch, string? ForkPointCommit = null, string? CheckoutDescription = null,
-        bool GatesObserved = true, bool DiffIsForeignPullRequest = false);
+        bool GatesObserved = true, bool DiffIsForeignPullRequest = false, string? DiffFilePath = null);
 
     /// <summary>
     /// The one reviewer a <see cref="ReviewMode.Verify"/> cycle dispatches (task: review cycles
@@ -3831,7 +3838,15 @@ public static class AgentPromptBuilder
             // A pull-request review checkout is a standalone clone with no local branches, so the
             // ordinary range's fallback to a local base ref (shared with the project home's dev/
             // worktree) names a ref that does not exist there.
-            AppendFragment(prompt, file, "foreign-diff-range", ("BaseBranch", baseBranch));
+            if (mechanicsOverride.DiffFilePath is { } diffFilePath)
+            {
+                AppendFragment(
+                    prompt, file, "foreign-diff-file", ("DiffPath", diffFilePath), ("BaseBranch", baseBranch));
+            }
+            else
+            {
+                AppendFragment(prompt, file, "foreign-diff-range", ("BaseBranch", baseBranch));
+            }
         }
         else
         {

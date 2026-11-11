@@ -226,7 +226,8 @@ public sealed class DesignReviewPromptBuilderGoldenTests : IDisposable
     }
 
     private static ReviewPersonaPromptRequest Request(ReviewDriveDecision drive, string? runSkill = null) =>
-        new(SomePrReviewTask(), SomeProject(), "detached", "main", TimeSpan.FromMinutes(20), drive, runSkill);
+        new(SomePrReviewTask(), SomeProject(), "detached", "main", TimeSpan.FromMinutes(20), drive, runSkill,
+            DiffFilePath: "/runs/run-1/review.diff");
 
     private static void AssertMatchesGolden(string name, string actual)
     {

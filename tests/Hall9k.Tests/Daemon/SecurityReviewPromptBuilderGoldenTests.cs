@@ -44,7 +44,8 @@ public sealed class SecurityReviewPromptBuilderGoldenTests : IDisposable
         ProjectDetails project = new() { Name = "hall9k", BaseBranch = "main" };
 
         string prompt = SecurityReviewPromptBuilder.Build(
-            new ReviewPersonaPromptRequest(task, project, "detached", "develop", TimeSpan.FromMinutes(20)));
+            new ReviewPersonaPromptRequest(
+                task, project, "detached", "develop", TimeSpan.FromMinutes(20), DiffFilePath: "/runs/run-1/review.diff"));
 
         AssertMatchesGolden("security-review-persona", prompt);
     }

@@ -43,10 +43,17 @@ namespace Hall9k.Daemon.Review;
 /// for a session that reads them. Null leaves that pointer out of the prompt, which is what a caller that
 /// wrote no such file passes.
 /// </param>
+/// <param name="DiffFilePath">
+/// The absolute path of the pull request's diff as the daemon wrote it before the run's first lens started
+/// (<see cref="Hall9k.Domain.Infrastructure.Storage.RunPaths.ReviewDiffFile"/>), pinned to the commit the review
+/// checkout was cut at. Set for every lens, the adversarial one included, independently of
+/// <paramref name="RunDirectory"/>, which stays null for a lens that reads no cited issues. Null leaves the prompt
+/// naming only the <c>git diff</c> range, which is what a caller that wrote no diff file passes.
+/// </param>
 public sealed record ReviewPersonaPromptRequest(
     TaskDetails Task, ProjectDetails Project, string Branch, string BaseBranch, TimeSpan? CommandTimeout,
     ReviewDriveDecision? Drive = null, string? RunSkill = null, LocalFleet? LocalFleet = null,
-    string? RunDirectory = null);
+    string? RunDirectory = null, string? DiffFilePath = null);
 
 /// <summary>
 /// One agent session a persona's review is made of. Most personas are one session; the engineer's
@@ -513,5 +520,6 @@ public static class ReviewPersonaRegistry
     private static string BuildLens(ReviewPersonaPromptRequest request, ReviewLens lens) =>
         AgentPromptBuilder.BuildPrReviewLens(
             request.Task, request.Project, request.Branch, lens, request.BaseBranch, request.CommandTimeout,
-            request.LocalFleet, citedIssuesPath: request.RunDirectory is { } runDirectory ? RunPaths.CitedIssuesFile(runDirectory) : null);
+            request.LocalFleet, citedIssuesPath: request.RunDirectory is { } runDirectory ? RunPaths.CitedIssuesFile(runDirectory) : null,
+            diffFilePath: request.DiffFilePath);
 }

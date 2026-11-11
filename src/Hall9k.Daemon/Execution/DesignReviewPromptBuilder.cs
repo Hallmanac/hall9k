@@ -50,9 +50,15 @@ public static class DesignReviewPromptBuilder
         prompt.AppendLine();
         PromptTemplates.AppendTemplate(prompt, file, "intro");
         prompt.AppendLine();
+        PromptTemplates.AppendTemplate(prompt, file, "what-you-are-reading");
         PromptTemplates.AppendTemplate(
-            prompt, file, "what-you-are-reading",
-            new Dictionary<string, string> { ["BaseBranch"] = request.BaseBranch });
+            prompt, file, request.DiffFilePath is null ? "change-range" : "change-diff-file",
+            new Dictionary<string, string>
+            {
+                ["BaseBranch"] = request.BaseBranch,
+                ["DiffPath"] = request.DiffFilePath ?? string.Empty,
+            });
+        PromptTemplates.AppendTemplate(prompt, file, "what-you-are-reading-rest");
         prompt.AppendLine();
 
         // Before anything the session is asked to judge: what a human told this run to prioritise

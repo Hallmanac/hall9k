@@ -344,6 +344,14 @@ public static class RunPaths
     public static string CitedIssuesFile(string runDirectory) => Path.Combine(runDirectory, "cited-issues.md");
 
     /// <summary>
+    /// The pull request's diff as the daemon read it for a pr-review run, pinned to the commit the run's review
+    /// checkout was cut at and written before the run's first lens starts, because a lens session cannot run
+    /// <c>gh</c>. One file per run directory, like <see cref="CitedIssuesFile"/>: every lens of one review reads the
+    /// same diff. Not <see cref="PullRequestDiffFile"/>, which is the pre-flight's own file in its own directory.
+    /// </summary>
+    public static string ReviewDiffFile(string runDirectory) => Path.Combine(runDirectory, "review.diff");
+
+    /// <summary>
     /// The report a closeout triage session writes for one set of unresolved review threads (task:
     /// analysis-only closeout), named by a short hash of the set's key and the session id, so each
     /// triage has a file of its own and its permission file can name exactly that path.

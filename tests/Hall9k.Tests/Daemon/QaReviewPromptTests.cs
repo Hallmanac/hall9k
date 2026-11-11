@@ -465,7 +465,7 @@ public sealed class QaReviewPromptTests : IDisposable
         ReviewDriveDecision drive, string? runSkill = null, ProjectDetails? project = null,
         TaskDetails? task = null) =>
         new(task ?? SomeTask(), project ?? SomeProject(), "detached", "main", TimeSpan.FromMinutes(30), drive,
-            runSkill);
+            runSkill, DiffFilePath: "/runs/run-1/review.diff");
 
     internal static TaskDetails SomeTask() => new()
     {
