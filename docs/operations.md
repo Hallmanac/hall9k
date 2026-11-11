@@ -1769,6 +1769,37 @@ fails on clean base, rather than reporting a bare gate failure a second time.
 h9k project set myproject --verify "build=dotnet build" --verify "test=dotnet test" --accept-broken-gate
 ```
 
+### How git reaches GitHub, and where the token travels
+
+A git call the daemon starts that talks to a remote (`fetch`, `push`, `ls-remote`, `clone`, `pull`)
+does not ask your credential helper for a login when the project's `origin` is on
+`https://github.com/`. The daemon reads the token of the project's confirmed GitHub account (the
+same read the `gh` calls use, so `gh auth token` runs once every two minutes, not once per git
+call) and gives it to that one git process through git's per-call environment configuration. The
+helper in your own `~/.gitconfig` (typically `!gh auth git-credential`) is switched off for
+`github.com` alone, so `git-remote-https` never starts `sh` and `gh` for the call. On Windows that
+was five of the seven kernel access tokens each credentialed call kept until reboot.
+
+- **Scoped to github.com.** The keys are `credential.https://github.com.helper` (empty),
+  `http.https://github.com/.extraHeader` (the token) and `http.https://github.com/.followRedirects`
+  (`false`). A GitHub Enterprise host, GitLab, Azure or an ssh remote gets none of them and runs your
+  helper as before.
+- **Redirects.** git refuses a redirect under those keys, so a call that needs one (a renamed
+  repository) fails and is retried once without the keys, which is the old behaviour. A token git
+  rejects is dropped, read again once and retried; when that fails the same way, or no token can be
+  had, the call runs without the keys.
+- **Per call, never ambient.** The token goes into the environment of that git process and nothing
+  else: not the daemon's own environment, which every agent session inherits, and not gate commands,
+  `gh` or `ssh-keygen`. `GIT_TRACE_CURL`, `GIT_CURL_VERBOSE`, `GIT_TRACE_REDACT`,
+  `GIT_TRACE2_CONFIG_PARAMS` and `GIT_TRACE2_ENV_VARS` are removed from these calls, because each can
+  write the header to a log. A `trace2.configParams` setting in your own global git config is not
+  reached by that; do not set it to match `http.*`.
+- **A full crash dump of `h9kd` can now contain a GitHub token.** The token is held in the daemon's
+  memory (the two-minute cache) and, for the length of a call, in the environment block of the git
+  process it started. A crash dump taken of either is as sensitive as `gh auth token`'s output:
+  keep them where you would keep that. The h9k CLI does the same for the ledger and message calls it
+  makes through the shared code, for as long as that command runs.
+
 ## What "needs you" means
 
 The **needs-you** section of `h9k status` is the whole point of the pane. What identifies a row
