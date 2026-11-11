@@ -59,7 +59,3 @@ context: |-
   Out of scope (the review declined them): the CLI store's last-wins source at
   `src/Hall9k.Cli/Infrastructure/CliStore.cs:41`, the 404 case with no fallback, and pruning the
   source's dictionaries.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-11-11 22:50:23Z
