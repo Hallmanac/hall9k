@@ -240,7 +240,31 @@ public sealed class ProjectGitHubClient(
                 : null;
     }
 
-    private async Task<string> TokenAsync(string login, string workingDirectory, CancellationToken cancellationToken)
+    /// <summary>
+    /// Forgets the keyring-resolved token cached for <paramref name="login"/>, so the next
+    /// <see cref="TokenAsync"/> asks gh again. For a caller that was told the token it holds is no
+    /// longer accepted (git's own authentication failure on a remote call). An ambient
+    /// <c>GH_TOKEN</c>/<c>GITHUB_TOKEN</c> is never cached, so a read after this returns the same
+    /// value for it.
+    /// </summary>
+    public void InvalidateToken(string login)
+    {
+        lock (tokenCacheGate)
+        {
+            tokenCache.Remove(login);
+        }
+    }
+
+    /// <summary>
+    /// The token <see cref="RunAsync"/> pins as <c>GH_TOKEN</c>, public so the one other thing that
+    /// needs a project's GitHub token (git's remote calls, through
+    /// <see cref="ProjectGitRemoteTokenSource"/>) reads it through this same cache, never a second
+    /// reader of its own: a client shared by those calls starts <c>gh auth token</c> once per
+    /// <see cref="TokenCacheTtl"/>, not once per git call. A failed read throws
+    /// <see cref="DomainValidationException"/> naming gh's standard <em>error</em>; gh's standard
+    /// output carries the token and is never put in a message.
+    /// </summary>
+    public async Task<string> TokenAsync(string login, string workingDirectory, CancellationToken cancellationToken)
     {
         if (AmbientToken() is { } ambient)
         {

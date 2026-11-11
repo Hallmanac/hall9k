@@ -1,3 +1,5 @@
+using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx;
 using Marten;
@@ -10,6 +12,12 @@ namespace Hall9k.Cli.Infrastructure;
 /// </summary>
 public static class CliStore
 {
+    /// <summary>
+    /// The one client every remote git call in this process reads its token through, so its cache
+    /// holds and <c>gh auth token</c> starts once per process, not once per git call.
+    /// </summary>
+    private static readonly ProjectGitHubClient GitHubClient = new();
+
     public static DocumentStore Open() => Open(CliConfig.ConnectionString, AutoCreate.CreateOnly);
 
     /// <summary>
@@ -18,9 +26,19 @@ public static class CliStore
     /// <see cref="AutoCreate.CreateOnly"/> — <c>ToolDoctor</c>'s read is the first such caller: it
     /// must never create schema, so it opens with <see cref="AutoCreate.None"/>.
     /// </summary>
-    public static DocumentStore Open(string connectionString, AutoCreate autoCreate) => DocumentStore.For(opts =>
+    public static DocumentStore Open(string connectionString, AutoCreate autoCreate)
     {
-        opts.Connection(connectionString);
-        opts.ConfigureHall9k(autoCreate);
-    });
+        DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(connectionString);
+            opts.ConfigureHall9k(autoCreate);
+        });
+
+        // The ledger and message calls a command makes through the shared connector code reach
+        // github.com the same way the daemon's do: the project's own token on that one git call,
+        // never the owner's credential helper starting sh and gh for it. A source whose store
+        // has since been disposed answers null, and the call runs as it always has.
+        GitRemoteAuthentication.Configure(new ProjectGitRemoteTokenSource(store, GitHubClient));
+        return store;
+    }
 }
