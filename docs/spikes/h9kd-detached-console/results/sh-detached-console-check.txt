@@ -1,0 +1,10 @@
+Observed 2026-11-11 about 10:08 EST. A stand-in (probe standin --flags detached) was started with Start-Process -WindowStyle Hidden, so it
+has a console of its own (host 41788). It started sh.exe -c "sleep 5" with DETACHED_PROCESS. Two seconds later `probe console <standin pid>`:
+
+CHAIN console pid=9312 ppid=39304 console=NEW console (host pid 41788) :: probe.exe :: probe.exe standin --flags detached ...
+CHAIN console pid=41788 ppid=9312 console=NEW console (host pid 9312) :: conhost.exe
+CHAIN console pid=13464 ppid=9312 console=NEW console (host pid 41788) :: sh.exe :: sh.exe -c "sleep 5"
+CHAIN console pid=18152 ppid=13464 console=NEW console (host pid 41788) :: sleep.exe :: sleep.exe 5
+
+sh.exe (13464) was created with DETACHED_PROCESS and reports its parent's console host 41788: MSYS2 re-attaches to the parent's console.
+(The "NEW console" label in this one-off command has no launcher host to compare with; host 41788 is the stand-in's own conhost.)
