@@ -15,8 +15,11 @@ namespace Hall9k.Tests.Connectors;
 /// (the keys take whatever URL scope the authorization names, and production's is always
 /// https://github.com/). What these pin is what only git can answer: that a redirect never carries
 /// the header to the second server, that the retry after it succeeds, and that an authentication
-/// failure re-reads the token once.
+/// failure re-reads the token once. Every test starts real git processes and listens on real local
+/// sockets, so the class sits in the same fence as the other tests that spawn processes.
 /// </summary>
+[Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class GitRemoteAuthenticationLocalServerTests : IDisposable
 {
     private const string Token = "ghp_REDIRECTPROBE0123456789";
@@ -61,28 +64,19 @@ public sealed class GitRemoteAuthenticationLocalServerTests : IDisposable
         second.Requests.Should().OnlyContain(
             request => request.Authorization == null, "the second server never sees the token");
         source.Invalidations.Should().Be(0, "a redirect is not a rejected token");
+        // This is the test host's environment, not h9kd's after startup (the daemon's composition
+        // root only sets the static source, and writes no variable); what it pins is that a call
+        // carrying the token writes nothing to the environment of the process that made it.
         ProcessEnvironment().Should().Equal(environmentBefore, "nothing here writes to this process's own environment");
-        result.StandardOutput.Should().NotContain(Token);
-        result.StandardError.Should().NotContain(Token).And.NotContain(Basic(Token));
-    }
-
-    [Fact]
-    public async Task This_process_environment_holds_no_extra_header_key_and_no_token_it_did_not_inherit()
-    {
-        using RecordingServer second = RecordingServer.Advertising();
-        using RecordingServer first = RecordingServer.RedirectingTo(second);
-        string repository = await InitRepositoryAsync(first);
-        using IDisposable scope = GitRemoteAuthentication.UseForCurrentFlow(
-            new TokenSequence(Token) with { ScopeUrl = first.BaseUrl });
-
-        await ExternalProcess.Runner("git", ["ls-remote", "origin"], repository, CancellationToken.None);
-
-        foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        foreach (KeyValuePair<string, string> entry in ProcessEnvironment())
         {
             string text = $"{entry.Key}={entry.Value}";
             text.Should().NotContain("extraHeader", because: "no key naming it is ever set here");
             text.Should().NotContain(Token).And.NotContain(Basic(Token));
         }
+
+        result.StandardOutput.Should().NotContain(Token);
+        result.StandardError.Should().NotContain(Token).And.NotContain(Basic(Token));
     }
 
     [Fact]

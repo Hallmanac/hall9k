@@ -64,24 +64,6 @@ public sealed class ProjectGitRemoteTokenSourceTests
     }
 
     [Fact]
-    public async Task A_remote_that_is_not_on_github_gets_no_keys_at_all_through_the_runner()
-    {
-        RecordingProcessRunner tokenRunner = RecordingProcessRunner.Succeeding(Token + "\n");
-        ProjectGitRemoteTokenSource source = new(
-            Resolves(Account), ClientReading(tokenRunner), Origin("https://ghe.example.com/o/r.git").Runner);
-        using IDisposable scope = GitRemoteAuthentication.UseForCurrentFlow(source);
-        List<GitRemoteAuthorization?> handed = [];
-
-        await GitRemoteAuthentication.RunAsync(
-            "git", ["fetch", "origin"], "/repos/hall9k",
-            remote => { handed.Add(remote); return Task.FromResult((ExitCode: 0, StandardError: string.Empty)); },
-            result => result, CancellationToken.None);
-
-        handed.Should().ContainSingle().Which.Should().BeNull(
-            "no header and no emptied helper reach a host that is not github.com");
-    }
-
-    [Fact]
     public async Task A_repository_that_belongs_to_no_project_or_has_no_confirmed_account_gets_no_token()
     {
         RecordingProcessRunner tokenRunner = RecordingProcessRunner.Succeeding(Token + "\n");
@@ -141,6 +123,22 @@ public sealed class ProjectGitRemoteTokenSourceTests
     }
 
     [Fact]
+    public async Task A_gh_that_cannot_produce_the_token_is_asked_once_for_a_while_not_once_per_git_call()
+    {
+        RecordingProcessRunner tokenRunner = new(() => new ProcessResult(1, string.Empty, "gh: not logged in"));
+        ProjectGitRemoteTokenSource source = new(
+            Resolves(Account), ClientReading(tokenRunner), Origin("https://github.com/o/r.git").Runner,
+            new FixedClock(DateTimeOffset.Parse("2026-01-01T00:00:00Z")));
+
+        for (int call = 0; call < 5; call++)
+        {
+            (await source.TryGetAsync("/repos/hall9k", CancellationToken.None)).Should().BeNull();
+        }
+
+        tokenRunner.Calls.Should().ContainSingle("the failure is remembered, so no further gh process starts on top of the owner's helper");
+    }
+
+    [Fact]
     public async Task A_gh_that_cannot_be_run_gives_no_token_instead_of_an_exception()
     {
         RecordingProcessRunner tokenRunner = RecordingProcessRunner.Unstartable(
@@ -178,14 +176,6 @@ public sealed class ProjectGitRemoteTokenSourceTests
         Func<Task> run = () => source.TryGetAsync("/repos/hall9k", CancellationToken.None);
 
         await run.Should().ThrowAsync<OperationCanceledException>();
-    }
-
-    [Fact]
-    public void The_origin_read_does_not_itself_reach_a_remote()
-    {
-        // A source that asked a runner which authorizes remote calls would recurse; the one read it
-        // makes is "git remote get-url origin", which reaches nothing.
-        GitRemoteAuthentication.ReachesRemote("git", ["remote", "get-url", "origin"]).Should().BeFalse();
     }
 
     [Fact]

@@ -46,21 +46,40 @@ public sealed class ProjectGitRemoteTokenSource(
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
     private readonly object gate = new();
     private readonly Dictionary<string, (string? Login, DateTimeOffset ExpiresAt)> resolutions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> tokenFailures = new(StringComparer.Ordinal);
 
     public async Task<GitRemoteAuthorization?> TryGetAsync(string workingDirectory, CancellationToken cancellationToken)
     {
         try
         {
             string? login = await ResolveLoginAsync(workingDirectory, cancellationToken);
-            return login is null
-                ? null
-                : new GitRemoteAuthorization(await client.TokenAsync(login, workingDirectory, cancellationToken));
+            if (login is null || TokenRecentlyFailed(login))
+            {
+                return null;
+            }
+
+            try
+            {
+                return new GitRemoteAuthorization(await client.TokenAsync(login, workingDirectory, cancellationToken));
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // gh cannot produce this account's token (logged out, or confirmed through a
+                // GH_TOKEN the daemon no longer has). Remembered for NegativeTtl, so while that holds
+                // a remote git call costs no extra gh process on top of the owner's helper.
+                lock (gate)
+                {
+                    tokenFailures[login] = clock.GetUtcNow() + NegativeTtl;
+                }
+
+                return null;
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            // No token can be had (gh failed, the database was unreachable): the call runs the way
-            // it always has. The message is deliberately not kept: it is the only thing that could
-            // carry gh's output, and there is nothing for a caller to do with it.
+            // No token can be had (the database was unreachable): the call runs the way it always
+            // has. The message is deliberately not kept: it is the only thing that could carry gh's
+            // output, and there is nothing for a caller to do with it.
             return null;
         }
     }
@@ -77,7 +96,21 @@ public sealed class ProjectGitRemoteTokenSource(
 
         if (login is not null)
         {
+            lock (gate)
+            {
+                tokenFailures.Remove(login);
+            }
+
             client.InvalidateToken(login);
+        }
+    }
+
+    private bool TokenRecentlyFailed(string login)
+    {
+        DateTimeOffset now = clock.GetUtcNow();
+        lock (gate)
+        {
+            return tokenFailures.TryGetValue(login, out DateTimeOffset until) && until > now;
         }
     }
 

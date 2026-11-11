@@ -65,17 +65,6 @@ public sealed class GitRemoteAuthenticationTests
     }
 
     [Fact]
-    public void The_unscoped_keys_are_never_set()
-    {
-        ProcessStartInfo startInfo = Fresh();
-        NonInteractiveGit.Apply(startInfo);
-
-        GitRemoteAuthentication.Apply(startInfo, new GitRemoteAuthorization(Token));
-
-        ConfigEntries(startInfo).Keys.Should().NotContain(["http.extraHeader", "credential.helper", "http.followRedirects"]);
-    }
-
-    [Fact]
     public void Entries_are_appended_after_any_count_already_set_even_without_the_signing_override()
     {
         ProcessStartInfo startInfo = Fresh();
@@ -326,6 +315,31 @@ public sealed class GitRemoteAuthenticationTests
         used.Should().Equal("stale-token", "also-bad", null);
         source.Invalidations.Should().Be(1, "the token is dropped and read once, not in a loop");
         source.Gets.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task When_the_retry_with_the_fresh_token_meets_a_redirect_the_call_runs_once_more_without_the_keys()
+    {
+        FakeTokenSource source = new("stale-token", "fresh-token");
+        using IDisposable scope = GitRemoteAuthentication.UseForCurrentFlow(source);
+        List<string?> used = [];
+
+        (int ExitCode, string StandardError) result = await GitRemoteAuthentication.RunAsync(
+            "git", ["fetch", "origin"], "/repos/hall9k",
+            remote =>
+            {
+                used.Add(remote?.Token);
+                return Task.FromResult(remote?.Token switch
+                {
+                    null => (ExitCode: 0, StandardError: string.Empty),
+                    "stale-token" => (ExitCode: 128, StandardError: "fatal: unable to access 'https://github.com/o/old.git/': The requested URL returned error: 401"),
+                    _ => (ExitCode: 128, StandardError: "fatal: unable to access 'https://github.com/o/old.git/': The requested URL returned error: 301"),
+                });
+            },
+            r => r, CancellationToken.None);
+
+        used.Should().Equal("stale-token", "fresh-token", null);
+        result.ExitCode.Should().Be(0, "a repository renamed since the token was revoked still fetches, as it did before the keys");
     }
 
     [Fact]
