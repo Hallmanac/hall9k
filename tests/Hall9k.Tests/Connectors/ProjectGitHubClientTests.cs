@@ -37,6 +37,8 @@ public sealed class ProjectGitHubClientTests
         await client.RunAsync(Account, "/repos/hall9k", ["repo", "view"], CancellationToken.None);
 
         tokenRunner.Calls.Single().Arguments.Should().ContainInOrder("auth", "token", "--user", "hallmanac");
+        tokenRunner.Calls.Single().Arguments.Should().ContainInOrder(
+            ["--hostname", "github.com"], "a GH_HOST in h9kd's environment must not change which host's token is read");
         ghRunner.Calls.Single().Environment["GH_TOKEN"].Should().Be("token-for-hallmanac");
         ghRunner.Calls.Single().Arguments.Should().ContainInOrder("repo", "view");
     }
@@ -52,6 +54,25 @@ public sealed class ProjectGitHubClientTests
 
         (await run.Should().ThrowAsync<DomainValidationException>()).WithMessage("*gh auth token --user hallmanac*");
         ghRunner.Calls.Should().BeEmpty("a token this install could not produce is never presented to a real command");
+    }
+
+    [Fact]
+    public async Task Both_failure_messages_of_the_token_read_quote_the_command_as_it_is_run()
+    {
+        const string asRun = "*(gh auth token --user hallmanac --hostname github.com)*";
+        ProjectGitHubClient failing = new(
+            RecordingEnvironmentProcessRunner.Succeeding("{}").Runner,
+            RecordingProcessRunner.Failing("gh: no oauth token found for 'hallmanac'").Runner, NoAmbientToken);
+        ProjectGitHubClient unstartable = new(
+            RecordingEnvironmentProcessRunner.Succeeding("{}").Runner,
+            RecordingProcessRunner.Unstartable(new System.ComponentModel.Win32Exception("gh was not found")).Runner,
+            NoAmbientToken);
+
+        Func<Task> fail = () => failing.TokenAsync("hallmanac", "/repos/hall9k", CancellationToken.None);
+        Func<Task> notRun = () => unstartable.TokenAsync("hallmanac", "/repos/hall9k", CancellationToken.None);
+
+        (await fail.Should().ThrowAsync<DomainValidationException>()).WithMessage(asRun);
+        (await notRun.Should().ThrowAsync<DomainValidationException>()).WithMessage(asRun);
     }
 
     /// <summary>
@@ -140,6 +161,8 @@ public sealed class ProjectGitHubClientTests
         await bound("gh", ["repo", "view"], "/repos/hall9k", CancellationToken.None);
 
         tokenRunner.Calls.Single().Arguments.Should().ContainInOrder("auth", "token", "--user", "hallmanac");
+        tokenRunner.Calls.Single().Arguments.Should().ContainInOrder(
+            ["--hostname", "github.com"], "a GH_HOST in h9kd's environment must not change which host's token is read");
         ghRunner.Calls.Single().Environment["GH_TOKEN"].Should().Be("token-for-hallmanac");
     }
 
