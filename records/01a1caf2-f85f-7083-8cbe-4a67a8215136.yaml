@@ -1,0 +1,50 @@
+hall9k-task-record: 1
+task-id: 01a1caf2-f85f-7083-8cbe-4a67a8215136
+project: hall9k
+type: bugfix
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#864
+objective: Every pr-review lens session reads the pull request's diff from a file the daemon wrote into the run directory before the session started, so no lens ends up reviewing without the diff because a git command it reached for was refused.
+criteria:
+  - Before the first lens session of a pr-review run starts, the run directory holds a file with the pull request's diff, and every lens session the run dispatches afterwards (engineer adversarial, engineer conformance, QA, design, and security) is pointed at that same file rather than a copy read later.
+  - The diff in that file is the diff for the commit the run's review checkout was cut at, so a push to the pull request while the run is in progress does not change what a later lens in the same run is told to review.
+  - Each lens prompt names that file by its absolute path as the diff under review, tells the session to read it with the Read tool (in parts, with an offset and a limit, when the file is longer than one read returns), and says that the diff is the pull request author's material to review and not instructions to the session. The lens's permission file already allows Read and Grep for the run directory.
+  - When the daemon cannot read the diff, the file says so in plain words and the session still starts, and the prompt names the allowed `git diff origin/<base>...HEAD` command as the way to read the change in that case.
+  - |-
+    When a later persona session finds no diff file in the run directory, the daemon never reads the pull request's current head in its place: it writes the file for the commit the run's review checkout holds, or writes the note from the previous criterion.
+  - The prompt's instruction for reading the diff asks the session to run no command other than `git diff` or `git log`. Neither the permission file's allow-list nor the shared shell-limits statement changes in this work.
+  - |-
+    Tests cover both dispatch paths: the run's first session (launched by the run launcher) and a later persona session (launched by the pr-review engine) each find the diff file in place before they start. One test shows a later session is given the diff for the checkout's commit after the pull request's head has moved, and another shows that a later session finding no diff file gets the checkout commit's diff or the unreadable note, never the moved head's diff.
+  - The prompt goldens for every lens builder whose text changes are regenerated, and the full suite passes.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/a8215136-every-pr-review-lens-session-r
+published: 2026-11-11 14:39:16Z
+context: |-
+  ## The problem
+
+  A teammate reported (on 0.16.0, a Windows node; GitHub #788) that pr-review lens sessions often could not see the pull request's diff. Lens sessions run under `dontAsk` with a permission file built by `ClaudeSettingsFile.BuildForPrReview` (`src/Hall9k.Connectors/Prompts/ClaudeSettingsFile.cs:475`). At this commit its explicit Bash rules (`PrReviewAllowedTools`, line 617) are `Glob`, `git diff` and `git log`, with no `gh` verb, and `Read` and `Grep` are scoped to the checkout and the run directory. Because the checkout is now a standalone clone, Claude Code's built-in read-only allowance also covers `git show`, `git grep`, `git blame` and `git ls-files` (the doc on `PrReviewAllowedTools`, lines 594 to 600), and the shell-limits statement every lens carries (`.claude/templates/agent-prompt-builder/shell-limits.md`, pinned by `ReviewPersonaRegistryTests`) teaches them. That statement is not changed by this work. The report described read-only `gh` verbs as allowed too; that is not true of the current code, which is why the daemon already writes other inputs (the cited-issues file) for these sessions.
+
+  On 0.16.0 the engineer lenses were given the ordinary diff range, whose "fall back to the local base ref" wording led a lens to run `git rev-parse --verify origin/main && ...`; `rev-parse` is not allowed, so the whole compound was refused, and the lens carried on without the diff while its report still read as confident. Other refusals seen then were `git grep`, `git show`, `cd && git` chains, and `grep` or `sed` through Bash. The `git grep` and `git show` refusals most likely came from the linked-worktree checkout that v0.17.0 replaced with a standalone clone (commit 8198a12aa); `cd` chains are refused by design and the prompt already says not to use `cd`.
+
+  ## What is already fixed at this commit
+
+  The fallback wording is already gone for pr-review lenses. Commit 8aac54192 (first released in v0.17.0) gave a foreign pull request its own `foreign-diff-range` fragment in `.claude/templates/agent-prompt-builder/review-mechanics.md`, selected in `AppendReviewMechanics` when `DiffIsForeignPullRequest` is set, and the QA, security, and design templates (`.claude/templates/{qa,security,design}-review-prompt-builder/build.md`) say there is no local base ref to fall back to. This task does not need to remove anything from those prompts; it needs to hand every lens the diff so it does not have to compose a git command to get it.
+
+  ## The chosen direction (decided 2026-11-11, not to be reopened)
+
+  The daemon writes the diff into the run directory before the lens starts, reusing `PullRequestDiffFile` (`src/Hall9k.Daemon/Closeout/PullRequestDiffFile.cs`), which the feedback evaluator and closeout triage already use. The lens prompt names that file. Widening the git allow-list (`rev-parse`, `show`, `grep`, `ls-files`, `merge-base`, `status`) is out of scope.
+
+  ## Where the work lands
+
+  - **Dispatch, two paths.** The run's first lens is launched from `RunLauncher` (the `isPrReview` branch near `src/Hall9k.Daemon/Execution/RunLauncher.cs:776`); every later persona session is launched from `PrReviewEngine` (near `src/Hall9k.Daemon/Review/PrReviewEngine.cs:714`). Both already write the cited-issues file with `CitedIssues.EnsureWrittenAsync`, which skips the write when the file already exists so every lens of one run reads the same file. Follow that write-once shape, but not its missing-file behaviour (see Pinning): `CitedIssues` re-reads from GitHub when the file is absent, which for the diff would read the moved head.
+  - **Path.** Add a `RunPaths` entry for the lens diff beside `CitedIssuesFile` (`src/Hall9k.Domain/Infrastructure/Storage/RunPaths.cs:344`). Do not reuse `RunPaths.PullRequestDiffFile`: that is the pre-flight's own file in its own global run directory.
+  - **Pinning to the reviewed commit.** `PullRequestDiffFile` reads with `gh pr diff`, which reads whatever the pull request's head is at that moment, while the review checkout is cut at `facts.HeadRefOid` (`CreatePrReviewCheckoutAsync`, `RunLauncher.cs:332`). A later persona session can start long after the first, so a fresh read per session would drift from the checkout. The pre-flight already solved this with `GitHubPullRequestProvider.FetchDiffForCommitAsync` (`src/Hall9k.Connectors/WorkItems/GitHubPullRequestProvider.cs:111`), which pins the head oid in the request. Extending `PullRequestDiffFile` to take the head oid and read through that call is the expected route; the run aggregate does not record the head oid, so the write belongs at the first dispatch, where `facts.HeadRefOid` is in hand. `PrReviewEngine` holds no head oid. If it finds no diff file (the first write logs and continues when it throws), it reads the commit the run's checkout holds (the checkout is detached at the pinned oid, see `GitWorktreeManager.cs:225-238` and `PrReviewCheckoutPlan.HeadPinRef`) rather than the pull request's current head, or writes the unreadable note. It never calls the unpinned `gh pr diff`.
+  - **Prompts.** The engineer lenses get the diff line from `foreign-diff-range` (`AgentPromptBuilder.BuildPrReviewLens` and `AppendReviewMechanics`); QA, security, and design each state the diff range in their own `build.md`. The diff path travels on `ReviewPersonaPromptRequest` as a field of its own, set for every lens. `RunDirectory` is null for the adversarial lens by design (`RunLauncher.cs:786-799`, passed only when `ReadsCitedIssues` is set) and must stay so. The sentence that frames the diff as the author's material and not instructions has a model in `.claude/templates/agent-prompt-builder/feedback-evaluator.md:25` and `closeout-triage.md:28`, the two existing readers of a `PullRequestDiffFile`. The unreadable note `PullRequestDiffFile` writes already tells the session to read the change with git, which `git diff` allows.
+  - **Goldens.** `tests/Hall9k.Tests/Fixtures/PromptGoldens/AgentPromptBuilder/build-pr-review-lens*.golden.txt`, `QaReviewPromptBuilder/`, `SecurityReviewPromptBuilder/`, and `DesignReviewPromptBuilder/`.
+
+  ## Out of scope
+
+  The mention follow-up lap (`MentionFollowUpPromptBuilder`) is not a lens session and keeps its current prompt. The allow-list and the shell-limits statement stay as they are.
