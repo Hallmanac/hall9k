@@ -397,7 +397,11 @@ session that cannot start, errors, ends with no result, runs past `ChallengeTime
 report, or writes one whose closing block is not readable records a failure from a closed list instead, and the
 draft can be challenged again by repeating the verb. A session still running when the daemon restarts is stopped (by the process identity written beside its report) and
 recorded as failed on the next start, and never dispatched again, and a dispatch another node made and never recorded is
-ended here once it has stood past the foreign-session ceiling. A challenge changes nothing about the draft: the session is
+ended here once it has stood past the foreign-session ceiling and then stayed standing through the settle period
+(`ForeignSessionSettlePeriod`, ten minutes), so a node back from sleep gives replication time to deliver an outcome
+recorded while it was away. A plan's refinement session from another node is ended the same way. Whichever arrives
+first, the dispatching node's own outcome wins over such an expiry, and an expiry for a session that has already ended,
+or that a later session has replaced, changes nothing. A challenge changes nothing about the draft: the session is
 refused `h9k task publish`, `revise`, `assign`, `queue`, and `challenge`, and nothing in the daemon applies a
 verdict. `h9k task show` prints the latest challenge (requested, running, failed with its reason, or the verdict
 with its counts, its model and effort, the report's path on the node that holds it, and whether the draft was
