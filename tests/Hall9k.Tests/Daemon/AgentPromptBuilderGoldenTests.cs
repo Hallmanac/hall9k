@@ -4,10 +4,12 @@ using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Epic;
+using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -655,6 +657,21 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
                         new SolutionMemberTask(
                             Guid.Parse("01a09285-0000-7259-a883-c5ebe5482d03"), "shop-web", "Show the cart badge", TaskState.Abandoned),
                     ],
+                }));
+
+    [Fact]
+    public void BuildPlanRefinement_of_a_feedback_step_offers_no_split_and_matches_its_golden() =>
+        AssertMatchesGolden(
+            "build-plan-refinement-feedback-step",
+            AgentPromptBuilder.BuildPlanRefinement(
+                SomeDraftToChallenge(), SomeProject(),
+                SomeRefinementFacts(RefinementPurpose.FeedbackRefine, new CheckoutRefresh(true, "is up to date with origin/main."), null) with
+                {
+                    FeedbackStep = new FeedbackStepPromptFacts(new InjectedTaskNotes(
+                        [new InjectedTaskNote(
+                            Guid.Parse("01a199f6-f4c3-75bb-b84a-493f0b340ae2"), false, "The API now returns pages.",
+                            LessonProvenanceMark.AgentOnThisNode)],
+                        LeftOut: 0, HeldByMark: [])),
                 }));
 
     private static PlanDiscoveryPromptFacts SomeDiscoveryFacts(

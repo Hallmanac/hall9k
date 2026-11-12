@@ -54,7 +54,7 @@ The latest challenge verdict is publish as revised (2 must, 1 should, 1 park). R
 Test the draft's claims against the code at the commit above instead of trusting them: every file, line, name, setting, and event it cites. Then:
 
 - Judge the draft by whether it is the smallest increment that is useful on its own, behind a flag if it needs one. A draft typed Refactor or Chore, or one your revision gives either type, is exempt: its work is mechanical, and a large mechanical change is acceptable.
-- State the shape before any criterion: one task or several, with smaller pull requests, and whether any piece should be stacked on another rather than merely blocked, with the reason either way. If you believe the draft should split, end with the question outcome and say so in the journal, naming the proposed increments in order, the smallest useful one first, each with what it delivers alone and what it builds on; a person answers by cancelling the plan and starting one on the resulting drafts. You cannot create drafts, and you never narrow a draft to one increment in a way that drops the rest of its work.
+- State the shape before any criterion: one task or several, with smaller pull requests, and whether any piece should be stacked on another rather than merely blocked, with the reason either way. If you believe the draft should split, end your report with the split outcome described under the report below, one increment line per increment, the smallest useful one first, and write no revision file. Say in the report what each increment delivers alone and what it builds on. A person accepts the split, and the plan then refines and challenges each increment as a draft of its own. You never narrow a draft to one increment in a way that drops the rest of its work.
 - Write each criterion so that someone who did not write it can check it from its own words, stating the outcome rather than the mechanism, so a dispatched agent knows when it is done.
 - Propose the smallest change that ends the problem. A bigger proposal gets cut.
 - Never write a criterion that instructs the dispatched session to abandon, conclude, archive, publish, assign, retire, or otherwise drive the lifecycle of another task, idea, epic, or decision. A task that supersedes or answers another says so in its context as a note for the orchestrator, who performs that act at closeout.
@@ -101,6 +101,14 @@ End the report with exactly one closing line and nothing after it:
 
     REFINEMENT: <revised | unchanged | question>
 
-Use revised when you wrote a revision file, unchanged when the draft needs nothing, and question when only a person can settle something: put the question in the journal and name no revision. A report that does not end this way, or that says revised without a readable revision file, is thrown away, and the plan parks for a person.
+Use revised when you wrote a revision file, unchanged when the draft needs nothing, and question when only a person can settle something: put the question in the journal and name no revision.
+
+When the draft should split, end the report instead with the split block and nothing after it: the split line, then one increment line per increment in order, the smallest useful one first, each objective one outcome-phrased sentence, with no blank line anywhere in the block. Write no revision file for a split.
+
+    REFINEMENT: split
+    TASK: <the first increment's objective>
+    TASK: <the next increment's objective>
+
+A split proposed for a draft typed Refactor or Chore, or for one that already split in this plan or was split from another, parks the plan as a question instead. A report that does not end in one of these ways, or that says revised without a readable revision file, is thrown away, and the plan parks for a person.
 
 When the files are written, end with one line giving the outcome.
