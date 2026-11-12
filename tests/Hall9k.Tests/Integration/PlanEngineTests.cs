@@ -3,6 +3,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
+using Hall9k.Daemon.Challenge;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Plan;
 using Hall9k.Domain.Features.Node;
@@ -243,7 +244,7 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
     }
 
     private PlanEngine NewEngine(IExecutor executor, FakeProcessManager processes, IPlanTaskCommands commands, Action<DaemonOptions>? tweak = null,
-        ReadingCheckoutLeases? leases = null, TimeProvider? clock = null)
+        ReadingCheckoutLeases? leases = null, TimeProvider? clock = null, RunningChallengeSessions? challengesRunning = null)
     {
         DaemonOptions options = new()
         {
@@ -256,7 +257,8 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
             (_, _, _, _) => Task.FromResult(new ProcessResult(0, "0123abc\n", string.Empty)),
             leases ?? new ReadingCheckoutLeases(),
             commands, new LaunchHoldEngine(postgres.Store, NullLogger<LaunchHoldEngine>.Instance),
-            new DaemonConnection(postgres.ConnectionString), Options.Create(options), NullLogger<PlanEngine>.Instance, clock: clock);
+            new DaemonConnection(postgres.ConnectionString), Options.Create(options), NullLogger<PlanEngine>.Instance, clock: clock,
+            challengesRunning: challengesRunning);
         _engines.Add(engine);
         return engine;
     }
@@ -852,6 +854,64 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
     }
 
     [Fact]
+    public async Task Another_nodes_expiry_for_a_challenge_still_running_here_does_not_park_the_plan_and_the_sessions_verdict_moves_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Guid projectId = await SeedProjectAsync(cts.Token);
+        Guid draft = await SeedDraftAsync(projectId, cts.Token);
+        Guid planId = await StartPlanAsync(projectId, cts.Token, PlanPhase.Challenge, noExistingItem: true, drafts: draft);
+        FakeProcessManager processes = new();
+        FakeCommands commands = NewCommands();
+        RunningChallengeSessions challengesRunning = new();
+        PlanEngine engine = NewEngine(
+            new ScriptedRefinement(processes, UnchangedReport), processes, commands, challengesRunning: challengesRunning);
+        await engine.PollOnceAsync(cts.Token);
+
+        Guid challengeSession = await AppendChallengeDispatchAsync(draft, cts.Token);
+        challengesRunning.Add(challengeSession);
+        await AppendChallengeOutcomeAsync(
+            draft, ChallengeVerdict.Unknown, cts.Token, failure: ChallengeFailureReason.DispatchExpired, dispatchedSession: challengeSession);
+        await engine.PollOnceAsync(cts.Token);
+
+        PlanDetails waiting = await PlanAsync(planId, cts.Token);
+        waiting.IsParked.Should().BeFalse("this node is still running the session the expiry names");
+        waiting.Draft(draft)!.ChallengeRequestedAt.Should().NotBeNull("the plan still waits for the session's own outcome");
+
+        // The challenge engine records the verdict before it lets go of the session.
+        await AppendChallengeOutcomeAsync(draft, ChallengeVerdict.PublishAsWritten, cts.Token, dispatchedSession: challengeSession);
+        challengesRunning.Remove(challengeSession);
+        await engine.PollOnceAsync(cts.Token);
+
+        (await StreamAsync(planId, cts.Token)).OfType<PlanDraftMoved>().Should().Contain(moved => moved.DraftId == draft && moved.Ready);
+        (await StreamAsync(planId, cts.Token)).OfType<PlanParked>().Should().BeEmpty();
+        commands.Calls.Should().Equal($"publish {draft}");
+    }
+
+    [Fact]
+    public async Task Another_nodes_expiry_for_a_challenge_this_node_dispatched_but_no_longer_runs_parks_the_plan()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Guid projectId = await SeedProjectAsync(cts.Token);
+        Guid draft = await SeedDraftAsync(projectId, cts.Token);
+        Guid planId = await StartPlanAsync(projectId, cts.Token, PlanPhase.Challenge, drafts: draft);
+        FakeProcessManager processes = new();
+        RunningChallengeSessions challengesRunning = new();
+        PlanEngine engine = NewEngine(
+            new ScriptedRefinement(processes, UnchangedReport), processes, NewCommands(), challengesRunning: challengesRunning);
+        await engine.PollOnceAsync(cts.Token);
+
+        // Dispatched here and then lost, as after a restart: nothing here runs the session, so it cannot hold the plan.
+        Guid challengeSession = await AppendChallengeDispatchAsync(draft, cts.Token);
+        challengesRunning.Add(challengeSession);
+        challengesRunning.Remove(challengeSession);
+        await AppendChallengeOutcomeAsync(
+            draft, ChallengeVerdict.Unknown, cts.Token, failure: ChallengeFailureReason.DispatchExpired, dispatchedSession: challengeSession);
+        await engine.PollOnceAsync(cts.Token);
+
+        (await ParkedAsync(planId, draft, PlanParkReason.ChallengeFailed, cts.Token)).Should().BeTrue();
+    }
+
+    [Fact]
     public async Task A_refused_publish_parks_and_a_draft_that_reads_published_counts_as_published_however_the_step_ended()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
@@ -1285,6 +1345,16 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
         session.Events.Append(draft, new TaskRevised(
             draft, Optional<string>.Of("A person changed it"), default, default, default, default, default, Now, _node.OwnerId));
         await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<Guid> AppendChallengeDispatchAsync(Guid draft, CancellationToken cancellationToken)
+    {
+        Guid sessionId = DomainId.New();
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        session.Events.Append(draft, new DraftChallengeDispatched(
+            draft, sessionId, _node.NodeId, DateTimeOffset.UtcNow, AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High));
+        await session.SaveChangesAsync(cancellationToken);
+        return sessionId;
     }
 
     private async Task AppendChallengeOutcomeAsync(
