@@ -945,7 +945,9 @@ public sealed class DaemonOptions
     /// <summary>
     /// How long a challenge or refinement dispatch of another node must stay standing, past
     /// <see cref="ForeignPublicationCeiling"/>, before this node ends it with <c>DispatchExpired</c>: the first sweep
-    /// that finds it overdue only notes the time, and a later sweep at least this long after ends it. A node waking from
+    /// that finds it overdue only notes the time, and a later sweep at least this long after ends it, counting only time the
+    /// node was awake (<see cref="Execution.ForeignDispatchSettle"/>), so a node that sleeps through it still waits it out
+    /// after waking. A node waking from
     /// suspension sees every dispatch made before it slept as overdue before its message sweep has delivered their
     /// outcomes, so the wait spans many of that sweep's idle intervals (<see cref="MessageIdlePollMaxSeconds"/>) and
     /// leaves room for a replication read that fails right after waking. Origin incident (2026-11-12): a node resumed,

@@ -93,8 +93,8 @@ public sealed class PlanEngine(
     private readonly CancellationTokenSource _stopping = new();
     private readonly ConcurrentDictionary<Guid, RunningSession> _sessions = [];
     private readonly Dictionary<Guid, string> _reportedGate = [];
-    private readonly ForeignDispatchSettle _foreignSettle = new(options.Value.ForeignSessionSettlePeriod);
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly ForeignDispatchSettle _foreignSettle = new(options.Value.ForeignSessionSettlePeriod, clock ?? TimeProvider.System);
 
     /// <summary>The start of the spend period last confirmed spent, or null; see <see cref="LaunchGateAsync"/>. In memory, like <see cref="_reportedGate"/>.</summary>
     private DateTimeOffset? _spendExhaustedSincePeriodStart;
@@ -1813,7 +1813,7 @@ public sealed class PlanEngine(
             }
             else if (task.RunningRefinementDispatchedAt is { } dispatchedAt
                 && _clock.GetUtcNow() - dispatchedAt > _options.ForeignPublicationCeiling
-                && _foreignSettle.HasSettled(sessionId, _clock.GetUtcNow()))
+                && _foreignSettle.HasSettled(sessionId))
             {
                 logger.LogWarning(
                     "Draft {TaskId}: refinement session {SessionId} dispatched by node {Node} at {DispatchedAt:u} has stood longer than {Ceiling} with no outcome; ending it here",
