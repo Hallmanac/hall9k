@@ -73,14 +73,15 @@ public sealed class DraftChallengeEngine(
     ReadingCheckoutLeases checkoutLeases,
     IOptions<DaemonOptions> options,
     ILogger<DraftChallengeEngine> logger,
-    TimeProvider? clock = null)
+    TimeProvider? clock = null,
+    RunningChallengeSessions? running = null)
 {
     /// <summary>How long the shutdown path gets to record an outcome: it runs while the daemon is stopping.</summary>
     private static readonly TimeSpan ShutdownRecordTimeout = TimeSpan.FromSeconds(5);
 
     private readonly DaemonOptions _options = options.Value;
     private readonly SemaphoreSlim _oneAtATime = new(1, 1);
-    private readonly HashSet<Guid> _running = [];
+    private readonly RunningChallengeSessions _running = running ?? new();
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly ForeignDispatchSettle _foreignSettle = new(options.Value.ForeignSessionSettlePeriod, clock ?? TimeProvider.System);
 
