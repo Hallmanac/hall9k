@@ -81,8 +81,8 @@ public sealed class DraftChallengeEngine(
     private readonly DaemonOptions _options = options.Value;
     private readonly SemaphoreSlim _oneAtATime = new(1, 1);
     private readonly HashSet<Guid> _running = [];
-    private readonly ForeignDispatchSettle _foreignSettle = new(options.Value.ForeignSessionSettlePeriod);
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly ForeignDispatchSettle _foreignSettle = new(options.Value.ForeignSessionSettlePeriod, clock ?? TimeProvider.System);
 
     /// <summary>What one request came to, for the sweep's tally.</summary>
     private enum Attempt
@@ -208,7 +208,7 @@ public sealed class DraftChallengeEngine(
             }
             else if (task.RunningChallengeDispatchedAt is { } dispatchedAt
                 && _clock.GetUtcNow() - dispatchedAt > _options.ForeignPublicationCeiling
-                && _foreignSettle.HasSettled(sessionId, _clock.GetUtcNow()))
+                && _foreignSettle.HasSettled(sessionId))
             {
                 logger.LogWarning(
                     "Task {TaskId}: challenge session {SessionId} dispatched by node {Node} at {DispatchedAt:u} has stood longer than {Ceiling} with no outcome; ending it here",
