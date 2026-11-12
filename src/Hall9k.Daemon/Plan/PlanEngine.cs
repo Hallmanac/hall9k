@@ -77,7 +77,8 @@ public sealed class PlanEngine(
     IOptions<DaemonOptions> options,
     ILogger<PlanEngine> logger,
     LocalFleetProvider? fleets = null,
-    TimeProvider? clock = null) : IDisposable
+    TimeProvider? clock = null,
+    RunningChallengeSessions? challengesRunning = null) : IDisposable
 {
     /// <summary>How long the shutdown path gets to record an outcome: it runs while the daemon is stopping.</summary>
     private static readonly TimeSpan ShutdownRecordTimeout = TimeSpan.FromSeconds(5);
@@ -94,6 +95,7 @@ public sealed class PlanEngine(
     private readonly ConcurrentDictionary<Guid, RunningSession> _sessions = [];
     private readonly Dictionary<Guid, string> _reportedGate = [];
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly RunningChallengeSessions _challengesRunning = challengesRunning ?? new();
     private readonly ForeignDispatchSettle _foreignSettle = new(options.Value.ForeignSessionSettlePeriod, clock ?? TimeProvider.System);
 
     /// <summary>The start of the spend period last confirmed spent, or null; see <see cref="LaunchGateAsync"/>. In memory, like <see cref="_reportedGate"/>.</summary>
@@ -226,6 +228,16 @@ public sealed class PlanEngine(
     }
 
     /// <summary>
+    /// Whether the outcome is another node's ceiling expiry for a challenge session this node is still running, which
+    /// the plan waits past for the session's own outcome rather than parking on.
+    /// </summary>
+    private bool IsExpiryOfChallengeRunningHere(DraftChallengeRecorded outcome, IReadOnlySet<Guid> runningHere) =>
+        outcome.Failure == ChallengeFailureReason.DispatchExpired
+        && outcome.NodeId == node.NodeId
+        && outcome.SessionId is { } sessionId
+        && runningHere.Contains(sessionId);
+
+    /// <summary>
     /// Takes one step for one plan, or reports there is none. Every call reads the plan and its drafts fresh, so the
     /// decision is over the record and a step that lost a race with a person's command is simply decided again.
     /// </summary>
@@ -250,6 +262,9 @@ public sealed class PlanEngine(
             return await StepDiscoveryAsync(session, fence, plan, now, cancellationToken);
         }
 
+        // Taken before the drafts are read: the challenge engine records a session's outcome before it lets go of the
+        // session, so a session missing here has an outcome the read below already sees.
+        IReadOnlySet<Guid> challengesRunningHere = _challengesRunning.Snapshot();
         IReadOnlyList<TaskDetails> loaded = await session.LoadManyAsync<TaskDetails>(
             cancellationToken, [.. plan.Drafts.Select(draft => draft.DraftId)]);
         Dictionary<Guid, TaskDetails> tasks = loaded.ToDictionary(task => task.Id);
@@ -280,6 +295,7 @@ public sealed class PlanEngine(
 
         // A challenge the plan requested has an outcome: the verdict decides where the draft goes next. Absorbed even
         // while the plan is parked, because a challenge already running finishes and its outcome is the plan's to record.
+        // Another node's ceiling expiry for a session still running here is not one: the session's own outcome follows it.
         foreach (PlanDraftState draft in plan.Drafts.Where(draft => draft.ChallengeRequestedAt is not null && !draft.IsClosed))
         {
             if (tasks.TryGetValue(draft.DraftId, out TaskDetails? task)
@@ -287,7 +303,8 @@ public sealed class PlanEngine(
                 && !task.ChallengeRequested
                 && task.RunningChallengeSessionId is null
                 && task.LatestChallengeOutcome is { } outcome
-                && outcome.RecordedAt >= requestedAt)
+                && outcome.RecordedAt >= requestedAt
+                && !IsExpiryOfChallengeRunningHere(outcome, challengesRunningHere))
             {
                 return await SavePlanAsync(
                     session, fence, PlanDecider.AfterChallenge(
