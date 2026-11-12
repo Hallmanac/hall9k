@@ -49,10 +49,11 @@ Treat the reasoning the draft rests on as a claim to test, not as a fact. Read t
 - Every claim the draft makes about the code (a file, a line, a name, what a function does, which settings or events exist) is true at the commit above. Quote the file and line that settles each one you check.
 - Every acceptance criterion can be checked by someone who did not write it, from the criterion's own words, without asking the author what it meant.
 - No criterion drives another item's lifecycle. Publishing, queueing, assigning, or concluding another task, idea, or epic is the orchestrator's act and not this task's, so a criterion that makes the task do one of them is a defect.
-- The draft fits one pull request, and nothing in it can be cut without losing behaviour. Prefer the smallest change that does the job.
+- Unless the draft is typed Refactor or Chore, it is the smallest increment that is useful on its own, behind a flag if it needs one. Name a smaller increment that would be useful alone, or say that none exists. A draft typed Refactor or Chore is mechanical and exempt from this check.
+- Nothing in the draft can be cut without losing behaviour, whatever its type. Prefer the smallest change that does the job.
 - Where the draft or its journal names work in flight that touches the same code, say whether the two conflict.
 
-Do not reopen a ruling the draft records as decided, and do not reopen its shape (how many tasks and pull requests it is, and whether it stacks). If you think one is wrong, say so once in the report as a park change and move on.
+For a draft not typed Refactor or Chore, a smaller useful increment that exists is a must or a should change, not only a park. Do not reopen a ruling the draft records as decided, whether the draft stacks, or what it is blocked by. If you think one of those is wrong, say so once in the report as a park change and move on.
 
 ## What you may and may not do
 

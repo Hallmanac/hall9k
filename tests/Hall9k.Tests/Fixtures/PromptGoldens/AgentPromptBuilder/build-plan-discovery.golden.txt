@@ -37,6 +37,8 @@ Test the idea's claims against the code at the commit above instead of trusting 
 
 - Say what the idea is, in plain words, and whether it becomes one task, several, a ruling, or nothing.
 - State the shape before any task: one task or several, with smaller pull requests, and whether any piece should be stacked on another rather than merely blocked, with the reason either way.
+- Propose the tasks as increments, in order. The first task is the smallest increment that is useful on its own, behind a flag if it needs one, and each later task builds on the ones before it. For each task, say in the report what it delivers alone and what it builds on.
+- A task whose work is purely mechanical, of the kind typed Refactor or Chore (a rename, a move, a dependency bump, a cleanup that changes no behaviour), is exempt from the increment rule however large it is. Say so in the report for that task.
 - For a hard-to-reverse direction (architecture, design, strategy, infrastructure, an integration pattern), give a recommendation, the strongest case against it, the conditions under which that case wins, and what you still propose after weighing it. If you cannot find a real case against it, say so.
 - Name every design answer you give do-now, fold-in, or park.
 - Propose the smallest change that ends the problem. A bigger proposal gets cut.
@@ -58,7 +60,7 @@ Test the idea's claims against the code at the commit above instead of trusting 
 
 Write your report at `/home/agent/.hall9k/runs/01a09285-6a21-7259-a883-c5ebe5482c3e/discovery-report.md`. Open it with a plain-language recap of what the idea is for, then one acted-out scenario of the world after it ships. Only then move into the analysis: what you checked against the code, the shape, the recommendation and its strongest counter-case where the direction is hard to reverse, each design answer with its priority, and what is open.
 
-End the report with a closing block and nothing after it: one answer line, and for a pursue one task line for each task you propose, each a single outcome-phrased sentence that stands on its own.
+End the report with a closing block and nothing after it: one answer line, and for a pursue one task line for each task you propose, in the order the report proposes them with the smallest useful increment first, each still a single outcome-phrased sentence that stands on its own.
 
     DISCOVERY: pursue
     TASK: <the first task's objective>
