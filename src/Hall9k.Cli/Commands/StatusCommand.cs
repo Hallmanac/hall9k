@@ -1416,9 +1416,12 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
 
             foreach (PlanDraftState draft in plan.Drafts.Where(draft => draft.IsParked))
             {
+                string answers = draft.ParkReason == PlanParkReason.SplitProposed
+                    ? $"h9k plan split accept {shortId}, or h9k plan resume {shortId} to keep it as one task"
+                    : $"h9k plan resume {shortId}";
                 AnsiConsole.MarkupLine(
                     $"[red bold]Needs you[/] plan {shortId} parked on draft {TaskListCommand.ShortId(draft.DraftId)}: "
-                    + $"{draft.ParkReason.Description.EscapeMarkup()} — h9k plan show {shortId}, then h9k plan resume {shortId}");
+                    + $"{draft.ParkReason.Description.EscapeMarkup()} — h9k plan show {shortId}, then {answers}");
                 printed++;
             }
         }

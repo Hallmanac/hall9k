@@ -2376,7 +2376,10 @@ public static class CliCommandTree
                 + "independently challenged (the same request, session, verdict, and failure list as h9k task challenge), applies "
                 + "what the verdict accepts, and publishes the drafts with the same behaviour as h9k task publish --no-queue when "
                 + "every one is ready. It parks for a person, for a reason from a closed list, when it cannot finish; h9k plan "
-                + "show says why and h9k plan resume answers. A plan creates no run, lease, branch, or worktree, its sessions "
+                + "show says why and h9k plan resume answers. A refinement session that judges a draft should split ends with the split "
+                + "outcome, its increments in order, and the plan parks showing them: h9k plan split accept cuts them as stacked drafts "
+                + "of the same plan, each refined and challenged on its own. A lineage splits once per plan, and a draft typed Refactor or "
+                + "Chore never splits; either one parks as a question instead. A plan creates no run, lease, branch, or worktree, its sessions "
                 + "hold no slot against the node's or the project's run ceiling, and nothing about it leaves the node.");
             plan.AddCommand<PlanStartCommand>("start")
                 .WithDescription(
@@ -2405,7 +2408,7 @@ public static class CliCommandTree
                 .WithDescription(
                     "One plan: its state and, for each draft, its phase (refinement, challenge, or published), its round, its latest "
                     + "outcome, and where its latest report is. A parked plan prints the draft, the reason from the closed list "
-                    + "(rounds exhausted, question, verdict not applied, draft changed, revision refused, session failed, challenge "
+                    + "(rounds exhausted, question, split proposed, verdict not applied, draft changed, revision refused, session failed, challenge "
                     + "failed, publish refused, or, in discovery, gate), the way forward, and where to read the rest, because the record holds nothing a "
                     + "session wrote. While the plan is live it also says whether the daemon is running and why no session or "
                     + "challenge is starting (this node's launch hold, a spent spend budget, or a project at max parallel tasks 0), "
@@ -2432,8 +2435,8 @@ public static class CliCommandTree
                     "Answer discovery's gate by pursuing the idea. Reads the report from the idea's workspace now, so an edit you made to "
                     + "it counts, and in one save cuts one draft per TASK line of its closing block (each is what h9k task add "
                     + "--from-idea <idea> --objective \"<objective>\" would create on the plan's project, with a context that also names "
-                    + "the idea and the report's file name) and moves the plan to refinement. The plan's drafts are fixed from there and it runs a plan's "
-                    + "ordinary path to Published. Refused, with nothing cut and the plan still at the gate, when the plan is not at "
+                    + "the idea and the report's file name) and moves the plan to refinement, and it then runs a plan's ordinary path to "
+                    + "Published. The only drafts the plan gains after that are the ones h9k plan split accept cuts. Refused, with nothing cut and the plan still at the gate, when the plan is not at "
                     + "the gate, the report is missing or unreadable or says stop, the idea is no longer Captured or has moved to "
                     + "another project, the project is archived or scheduled for purge, or, on a project whose publish asks for a "
                     + "tracker attestation, neither --no-existing-item nor --untracked is given. --epic-title puts every draft in "
@@ -2442,6 +2445,33 @@ public static class CliCommandTree
                     + "solution that is closed refuses the pursue, with nothing cut. Refused inside a dispatched session.")
                 .WithExample("plan", "pursue", "5e9a13c2")
                 .WithExample("plan", "pursue", "5e9a13c2", "--epic-title", "\"Sharper discovery\"", "--no-existing-item");
+            plan.AddBranch("split", split =>
+            {
+                split.SetDescription(
+                    "Answer a refinement session's proposed split. A session that judges its draft should become smaller increments "
+                    + "ends its report with the split outcome and the increments in order, smallest useful one first, and writes no "
+                    + "revision; the plan parks on the draft (split proposed) and h9k plan show lists the increments. Accept the split "
+                    + "with h9k plan split accept, or keep the draft as one task by recording that decision in its journal.md and "
+                    + "running h9k plan resume. A draft splits once per plan, counting the drafts split from it, and a draft typed "
+                    + "Refactor or Chore, or one in a task's feedback step, never splits: such a split parks as a question.");
+                split.AddCommand<PlanSplitAcceptCommand>("accept")
+                    .WithDescription(
+                        "Accept the split a refinement session proposed. Reads the session's report now, so an edit you made to its "
+                        + "closing block counts, and in one save makes the draft's objective the first increment and cuts one new draft "
+                        + "per later increment in the same project: each has the original's type, epic, and context (with a note "
+                        + "naming the draft it was split from), names the original's idea as its source and is recorded on that idea "
+                        + "as a task cut from it (as h9k task add --from-idea does), and is blocked by and stacked on the increment "
+                        + "before it. The plan lists the new drafts after the ones it carried and the daemon refines and challenges "
+                        + "each, the original included, as it does a draft newly cut into a plan. Tasks blocked by the original are "
+                        + "not re-pointed. Refused, with nothing recorded, when the plan is not live, no draft is parked on a split, "
+                        + "the report no longer reads as one, --draft names a draft not parked on a split, more than one draft is "
+                        + "and --draft is not given, the original's idea can no longer have a task cut from it, or, on a project "
+                        + "whose publish asks for a tracker attestation, the new drafts' attestation would be refused at publish "
+                        + "(neither --no-existing-item nor --untracked given, and none recorded on the plan). Of two accepts at once, "
+                        + "one cuts and the other is refused. Refused inside a dispatched session.")
+                    .WithExample("plan", "split", "accept", "5e9a13c2")
+                    .WithExample("plan", "split", "accept", "5e9a13c2", "--draft", "28b19893", "--no-existing-item");
+            });
             plan.AddCommand<PlanStopCommand>("stop")
                 .WithDescription(
                     "Answer discovery's gate by not pursuing the idea. Accepted only at the gate. Ends the plan as Stopped, a normal "

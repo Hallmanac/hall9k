@@ -20,8 +20,12 @@ namespace Hall9k.Cli.Commands;
 /// <param name="ResumeLine">The line to paste to question the discovery session, or null when there is no session to resume.</param>
 internal sealed record DiscoveryShowFacts(string? IdeaNote, string? ReportPath, DiscoveryReading? Reading, string? ResumeLine);
 
-/// <summary>What <c>h9k plan show</c> knows beyond the plan's own record: whether the daemon is up, and why a live plan is not starting sessions.</summary>
-internal sealed record PlanShowFacts(bool DaemonRunning, string? LaunchGate, DiscoveryShowFacts? Discovery = null);
+/// <summary>
+/// What <c>h9k plan show</c> knows beyond the plan's own record: whether the daemon is up, why a live plan is not starting sessions,
+/// and, for each draft parked on a proposed split, what its session's report reads as now.
+/// </summary>
+internal sealed record PlanShowFacts(
+    bool DaemonRunning, string? LaunchGate, DiscoveryShowFacts? Discovery = null, IReadOnlyDictionary<Guid, RefinementSplitReading>? Splits = null);
 
 /// <summary>
 /// The text of <c>h9k plan show</c>, as Spectre markup lines, composed from the plan's record and the drafts it names. Pure
@@ -95,7 +99,7 @@ internal static class PlanShowComposer
             : "  drafts:");
         foreach (PlanDraftState draft in plan.Drafts)
         {
-            lines.AddRange(DraftLines(plan, draft, tasks.GetValueOrDefault(draft.DraftId), roundCap));
+            lines.AddRange(DraftLines(plan, draft, tasks.GetValueOrDefault(draft.DraftId), roundCap, facts.Splits?.GetValueOrDefault(draft.DraftId)));
         }
 
         if (plan.IsLive && plan.Drafts.Any(draft => draft.Round > 0))
@@ -118,6 +122,12 @@ internal static class PlanShowComposer
             lines.Add(string.Empty);
             lines.Add(
                 $"[dim]Next:[/] h9k plan resume {shortId} [dim]runs discovery again; h9k plan cancel {shortId} --reason \"<why>\" ends the plan[/]");
+        }
+        else if (plan.IsLive && plan.Drafts.Any(draft => draft.ParkReason == PlanParkReason.SplitProposed))
+        {
+            lines.Add(string.Empty);
+            lines.Add($"[dim]Next:[/] h9k plan split accept {shortId} [dim]cuts the proposed increments as stacked drafts; or record in the draft's "
+                + $"journal.md that it stays one task, then[/] h9k plan resume {shortId}[dim]; h9k plan cancel {shortId} --reason \"<why>\" ends the plan[/]");
         }
         else if (plan.IsLive && plan.IsParked)
         {
@@ -194,7 +204,8 @@ internal static class PlanShowComposer
         }
     }
 
-    private static IEnumerable<string> DraftLines(PlanDetails plan, PlanDraftState draft, TaskDetails? task, int roundCap)
+    private static IEnumerable<string> DraftLines(
+        PlanDetails plan, PlanDraftState draft, TaskDetails? task, int roundCap, RefinementSplitReading? split)
     {
         string id = TaskListCommand.ShortId(draft.DraftId);
         string objective = task is null
@@ -235,6 +246,39 @@ internal static class PlanShowComposer
             {
                 yield return $"      [dim]read: {where.EscapeMarkup()}[/]";
             }
+
+            foreach (string line in SplitLines(draft, split))
+            {
+                yield return line;
+            }
+        }
+    }
+
+    /// <summary>The increments a draft parked on a proposed split names, in order, as its report reads now; or why it names none.</summary>
+    private static IEnumerable<string> SplitLines(PlanDraftState draft, RefinementSplitReading? split)
+    {
+        if (draft.ParkReason != PlanParkReason.SplitProposed || split is null)
+        {
+            yield break;
+        }
+
+        if (split.Missing)
+        {
+            yield return "      [yellow]the report is not there[/] [dim](h9k plan split accept reads the increments from it, so restore it or keep the draft as one task)[/]";
+            yield break;
+        }
+
+        if (split.Increments is not { } increments)
+        {
+            yield return "      [yellow]the report no longer ends with a split[/] [dim](its closing block must be one split outcome line followed "
+                + "directly by two or more increment lines, with no blank line between them; h9k plan split accept reads it as it is then)[/]";
+            yield break;
+        }
+
+        yield return $"      proposed increments, in order ({increments.Count}):";
+        for (int index = 0; index < increments.Count; index++)
+        {
+            yield return $"        {index + 1}. {ExternalText.OneLineMarkup(increments[index])}";
         }
     }
 

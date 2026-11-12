@@ -213,7 +213,7 @@ public sealed class PlanPursueCommand : Hall9kAsyncCommand<PlanPursueCommand.Set
         }
 
         AnsiConsole.MarkupLine(
-            "[dim]  The plan's drafts are fixed from here. The daemon refines each, has it challenged, and publishes them when every one "
+            "[dim]  The daemon refines each, has it challenged, and publishes them when every one "
             + "is ready; the idea stays Captured, and concluding it stays yours. Read where it stands with:[/] "
             + $"h9k plan show {shortPlan}");
         if (DaemonProcess.Probe() is null)

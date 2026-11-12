@@ -8,6 +8,7 @@ using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Storage;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -44,13 +45,31 @@ public sealed class PlanShowCommand : Hall9kAsyncCommand<PlanShowCommand.Setting
         DiscoveryShowFacts? discovery = await ReadDiscoveryAsync(session, plan, project, cancellationToken);
         foreach (string line in PlanShowComposer.Compose(
             plan, project, drafts.ToDictionary(task => task.Id),
-            new PlanShowFacts(DaemonProcess.Probe() is not null, gate, discovery),
+            new PlanShowFacts(DaemonProcess.Probe() is not null, gate, discovery, await ReadSplitsAsync(plan, cancellationToken)),
             plan.IsFeedbackStep ? PlanRoundCap.FeedbackStep : PlanRoundCap.Default))
         {
             AnsiConsole.MarkupLine(line);
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The increments each draft parked on a proposed split names, read from its session's report now, so a person's edit shows
+    /// here as it will to <c>h9k plan split accept</c>. The record holds none of them.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<Guid, RefinementSplitReading>> ReadSplitsAsync(
+        PlanDetails plan, CancellationToken cancellationToken)
+    {
+        Dictionary<Guid, RefinementSplitReading> splits = [];
+        foreach (PlanDraftState draft in plan.Drafts.Where(draft => draft.ParkReason == PlanParkReason.SplitProposed))
+        {
+            splits[draft.DraftId] = draft.LatestSessionId is { } sessionId
+                ? await RefinementSplitReport.ReadFileAsync(RunPaths.RefinementReportFile(sessionId), cancellationToken)
+                : new RefinementSplitReading(Missing: true, null);
+        }
+
+        return splits;
     }
 
     /// <summary>
