@@ -54,8 +54,9 @@ public static partial class DiscoveryReport
     [GeneratedRegex(@"^(?:(?:[-*+]|\d+[.)])\s+)?([*_`]*)(DISCOVERY|TASK)[*_`]*\s*:[*_`]*\s*(.*)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MarkerLine();
 
+    /// <summary>A code fence line, which a closing block's reader skips when it ends the file.</summary>
     [GeneratedRegex(@"^`{3,}[\w+-]*$", RegexOptions.CultureInvariant)]
-    private static partial Regex FenceLine();
+    internal static partial Regex FenceLine();
 
     /// <summary>Reads a report file from its end. Missing and unreadable are told apart, because <c>h9k plan show</c> says which.</summary>
     public static async Task<DiscoveryReading> ReadFileAsync(string path, CancellationToken cancellationToken)
@@ -132,6 +133,19 @@ public static partial class DiscoveryReport
     }
 
     /// <summary>
+    /// The objective a closing block's <c>TASK:</c> line states, read by this report's own rules (the same decoration forgiven,
+    /// the same wrapper closed), so a refinement report's increment lines read exactly as a discovery report's task lines do.
+    /// Null when <paramref name="line"/> is not a <c>TASK:</c> line; an empty string when it is one with a blank objective.
+    /// </summary>
+    internal static string? TaskObjectiveOf(string line)
+    {
+        Match match = MarkerLine().Match(line.Trim());
+        return match.Success && match.Groups[2].Value.Equals("TASK", StringComparison.OrdinalIgnoreCase)
+            ? CleanObjective(CloseWrapper(match.Groups[1].Value, match.Groups[3].Value))
+            : null;
+    }
+
+    /// <summary>
     /// A line a person wrapped whole in emphasis or backticks (<c>`TASK: do it.`</c>) opened the wrapper before the marker and
     /// closes it at the end of the text, where it would otherwise read as part of the objective. Dropped only when the text holds
     /// an odd number of the wrapper, so a wrapper the text balances for itself (<c>**TASK:** **do it**</c>) is left alone.
@@ -157,7 +171,7 @@ public static partial class DiscoveryReport
     }
 
     /// <summary>Emphasis, backticks, and a trailing period are not text; what is left is the answer line's content.</summary>
-    private static string StripDecoration(string value)
+    internal static string StripDecoration(string value)
     {
         string current = value.Trim();
         while (true)
@@ -203,7 +217,8 @@ public static partial class DiscoveryReport
         }
     }
 
-    private static async Task<string> ReadTailAsync(string path, CancellationToken cancellationToken)
+    /// <summary>The last <see cref="MaxTailBytes"/> of a report file, where its closing block is.</summary>
+    internal static async Task<string> ReadTailAsync(string path, CancellationToken cancellationToken)
     {
         await using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
         if (stream.Length > MaxTailBytes)

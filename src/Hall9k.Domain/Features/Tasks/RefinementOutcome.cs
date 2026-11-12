@@ -5,7 +5,7 @@ namespace Hall9k.Domain.Features.Tasks;
 
 /// <summary>
 /// What a plan's refinement session concluded, from the one outcome its report names: it revised the draft (and wrote
-/// the revision beside the report), left it unchanged, or ended with a question only a person can settle.
+/// the revision beside the report), left it unchanged, ended with a question only a person can settle, or proposed a split.
 /// <see cref="Unknown"/> is no readable outcome, which a failed session records.
 /// </summary>
 [JsonConverter(typeof(RefinementOutcomeJsonConverter))]
@@ -17,6 +17,13 @@ public sealed record RefinementOutcome
 
     /// <summary>A feedback step's refinement concluded the task should not run at all: the notes its blockers left remove its reason to exist. Only that session's prompt offers it.</summary>
     public static readonly RefinementOutcome ShouldNotRun = new("ShouldNotRun", "should-not-run");
+
+    /// <summary>
+    /// The session proposed splitting the draft into increments, named in order on the lines after its closing line
+    /// (<see cref="Plan.RefinementSplitReport"/>). Read only from that whole block, never from the word alone, so
+    /// <see cref="TryParseWord"/> does not know it. Only an ordinary plan's prompt offers it.
+    /// </summary>
+    public static readonly RefinementOutcome Split = new("Split", "split");
 
     /// <summary>No readable outcome. Serializes as an empty string.</summary>
     public static readonly RefinementOutcome Unknown = new(string.Empty, "no outcome");
@@ -42,10 +49,14 @@ public sealed record RefinementOutcome
         "Unchanged" => Unchanged,
         "Question" => Question,
         "ShouldNotRun" => ShouldNotRun,
+        "Split" => Split,
         _ => Unknown,
     };
 
-    /// <summary>Reads the word of a report's closing line, ignoring case; anything else is not an outcome.</summary>
+    /// <summary>
+    /// Reads the word of a report's closing line, ignoring case; anything else is not an outcome. A split is not read here: a
+    /// split line is an outcome only with the increment lines after it.
+    /// </summary>
     public static bool TryParseWord(string? word, out RefinementOutcome outcome)
     {
         outcome = word?.Trim().ToLowerInvariant() switch

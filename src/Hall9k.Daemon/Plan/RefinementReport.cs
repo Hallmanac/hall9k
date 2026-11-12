@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Hall9k.Daemon.Challenge;
+using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Tasks;
 
 namespace Hall9k.Daemon.Plan;
@@ -17,11 +18,16 @@ namespace Hall9k.Daemon.Plan;
 /// closing run and so counts for nothing. The same decoration the challenge contract forgives is forgiven here: a list
 /// marker, emphasis, backticks, and a trailing period.
 /// </para>
+/// <para>
+/// The one exception to the last line being the marker is a split: <c>REFINEMENT: split</c> followed directly by two or more
+/// <c>TASK:</c> lines, read whole by <see cref="RefinementSplitReport"/>. The word split on its own, with no increments after it,
+/// is unreadable.
+/// </para>
 /// </summary>
 public static partial class RefinementReport
 {
     /// <summary>The marker the closing line starts with.</summary>
-    public const string OutcomeMarker = "REFINEMENT:";
+    public const string OutcomeMarker = RefinementSplitReport.OutcomeMarker;
 
     [GeneratedRegex(@"^(?:(?:[-*+]|\d+[.)])\s+)?[*_`]*REFINEMENT[*_`]*\s*:[*_`]*\s*(.*)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MarkerLine();
@@ -44,6 +50,11 @@ public static partial class RefinementReport
     /// <summary>The one outcome the closing line of <paramref name="report"/> names, or null when it is not a readable one.</summary>
     public static RefinementOutcome? TryRead(string report)
     {
+        if (RefinementSplitReport.TryRead(report) is not null)
+        {
+            return RefinementOutcome.Split;
+        }
+
         string[] lines = report.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
         List<string> markers = [];
         for (int index = lines.Length - 1; index >= 0; index--)
