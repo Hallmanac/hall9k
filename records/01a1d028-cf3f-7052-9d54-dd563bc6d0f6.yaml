@@ -1,0 +1,88 @@
+hall9k-task-record: 1
+task-id: 01a1d028-cf3f-7052-9d54-dd563bc6d0f6
+project: hall9k
+type: bugfix
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#875
+objective: On the node that dispatched a plan's challenge, another node's ceiling expiry for that challenge no longer parks the plan while this node is still running the session, so the plan takes the session's own verdict when it lands.
+criteria:
+  - A plan on this node has requested a challenge of a draft, and this node's challenge engine has dispatched session S (S's DraftChallengeDispatched is on the draft's stream) and is still running it. A DraftChallengeRecorded with failure DispatchExpired for S, recorded under this node's id as another node writes it, then lands on the draft. A plan sweep that runs while S is still running does not park the plan, and the plan's record of the draft still holds the challenge as requested. When S's verdict is recorded afterwards, the next plan sweep records the same step for the draft that the same verdict records without the expiry; for publish as written, that is a PlanDraftMoved that marks the draft ready. An integration test covers this and fails without the change, because the first sweep parks the plan with ChallengeFailed.
+  - When the same expiry lands and this node is not running S (it never dispatched S, or S's session is no longer running on this node, as after a restart), the next plan sweep parks the plan with ChallengeFailed, as it does at a8cfd74dd. An integration test covers the case where this node dispatched S but no longer runs it, so a session that died cannot hold a plan waiting forever.
+dependencies: [01a1cfe6-1188-74e9-a49e-88dfe8516528]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/3bc6d0f6-on-the-node-that-dispatched-a
+published: 2026-11-12 14:42:27Z
+context: |-
+  ## Where this came from
+
+  A review of another task's diff (01a1cfe6, which makes the dispatching node's own challenge or refinement outcome
+  win over another node's foreign-session ceiling expiry on the task stream, and adds a settle period before a sweep
+  records such an expiry) reported that the plan stream still parks on the expiry. This task is the part of that report
+  that holds at a8cfd74dd. Part of the report does not hold, and is recorded below so the build does not chase it.
+
+  ## The defect, at a8cfd74dd
+
+  A plan is a fact about one node: every plan event is node-scoped and never replicates
+  (`src/Hall9k.Domain/Infrastructure/Persistence/EventScopeRegistry.cs`, the Hall9k.Domain.Features.Plan block). So the
+  only plan that can go wrong is the one on node A, which requested the challenge and whose challenge engine runs
+  session S.
+
+  - Another node B records `DraftChallengeRecorded` with `ChallengeFailureReason.DispatchExpired` for S once S's dispatch
+    has stood past `ForeignPublicationCeiling` (one hour by default) by B's clock
+    (`src/Hall9k.Daemon/Challenge/DraftChallengeEngine.cs`, the foreign branch of `RecoverAsync`). It records it under
+    the dispatching node's id, so on A the expiry carries A's own node id and is told apart only by its failure.
+  - A live A ends its own session within `ChallengeTimeout` (30 minutes), so B's expiry reaches A before S's verdict
+    only when A's clock stood still or ran slow relative to B's: A suspended while S ran, then woke and pulled B's
+    expiry before S finished. When it does, the expiry applies to the task (S is the running session), which clears
+    `RunningChallengeSessionId`.
+  - The absorption loop in `src/Hall9k.Daemon/Plan/PlanEngine.cs` `StepAsync` (lines 280 to 296) takes any latest
+    challenge outcome recorded at or after the plan's request once no challenge is running. It takes the expiry, and
+    `PlanDecider.AfterChallenge` parks a non-verdict as `ChallengeFailed`
+    (`src/Hall9k.Domain/Features/Plan/Handlers/PlanDecider.cs`). `PlanDraftState.Apply(PlanParked)` clears
+    `ChallengeRequestedAt`, so when S's verdict lands moments later the loop never looks at it again. The plan stays
+    parked until a person resumes it, and the task shows a verdict the plan ignored.
+
+  This reproduces on main alone: at a8cfd74dd the challenge appliers have no guard, so S's verdict also lands as the
+  latest outcome after the expiry. It does not depend on 01a1cfe6's change. It is blocked by that task, not stacked on
+  it, because both edit `PlanEngine.cs` and `PlanEngineTests`, and 01a1cfe6 changes when a foreign expiry is recorded
+  and how those tests run sweeps, so building on main after it merges avoids writing tests against behavior about to
+  move.
+
+  ## What the report claimed that does not hold
+
+  - "The plan ends up parked on every node" and "the replicated park clears the plan's RunningSessionId": plan events do
+    not replicate, so B holds no plan for the draft and parks nothing.
+  - The refinement path: on B, `RecordEndAsync` finds no plan through `PlanOfAsync`, so the expiry is task-only. On A,
+    the plan's draft keeps `RunningSessionId` = R, `PlanDecider.NextStep` returns `AwaitSession` without reading the
+    task, and A's own `RecordEndAsync` for R still matches the plan and moves it through `AfterRefinement`. Nothing on
+    the refinement side needs to change.
+
+  ## The smallest change
+
+  Only the absorption loop needs a rule: a `DispatchExpired` outcome recorded under this node's id, for a session this
+  node's challenge engine is still running, is not absorbed; the loop waits for that session's own outcome. Every other
+  outcome is absorbed as today. How the plan engine learns that the challenge engine still runs S is the build's choice.
+  Both engines are singletons (`src/Hall9k.Daemon/Program.cs`), and the challenge engine keeps its live sessions in
+  `_running`, a `HashSet<Guid>` read and written only on its own sweep today, so any read from the plan engine's sweep
+  needs to be thread-safe. The challenge engine records a session's outcome before removing it from `_running` (the
+  `finally` in `DispatchAsync`), which is what lets the plan see the verdict before it sees the session gone.
+
+  That order only helps a reader that asks about the running set before it reads the outcome. The step loads the
+  drafts' task documents at its top (`StepAsync`, the `LoadManyAsync<TaskDetails>` call before the absorption loop), so
+  the plan engine should take the challenge engine's running set before that load, or, when the outcome it holds is an
+  expiry for a session it then finds not running, read the task again and decide on what it holds then. Otherwise the
+  plan can read the expiry, the challenge engine can record the verdict and remove the session, and the plan can find
+  the session gone and park on the expiry it read first. The plan's save is fenced on the plan stream only, so the
+  task's newer event does not stop that park.
+
+  ## Notes
+
+  - No docs change is expected: docs/cli.md already describes the foreign-session ceiling, and 01a1cfe6 adds that the
+    dispatching node's outcome wins over an expiry, which this task makes true for the plan as well.
+  - Tests go in `tests/Hall9k.Tests/Integration/PlanEngineTests.cs`. Those tests record challenge outcomes by appending
+    `DraftChallengeRecorded` directly and run no challenge engine, so whatever seam tells the plan engine that S is still
+    running on this node must be one a test can set without spawning a session. A test should append S's
+    `DraftChallengeDispatched` before its outcomes, because after 01a1cfe6 an outcome for a session with no matching
+    dispatch changes nothing on the task.
