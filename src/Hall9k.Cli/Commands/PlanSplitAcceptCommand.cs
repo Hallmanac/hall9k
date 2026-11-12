@@ -26,8 +26,9 @@ namespace Hall9k.Cli.Commands;
 /// Accept the split a refinement session proposed for a draft of a plan: read the session's report now, so a person's edit to its
 /// closing block counts, and in one save make the original draft's objective the first increment and cut one new draft per later
 /// increment, each blocked by and stacked on the one before it. Each new draft is what <c>h9k task add --from-idea</c> would create
-/// from the original's idea, with the original's type, epic, and context, and the plan carries it through refinement and challenge
-/// like a draft newly cut into it. The plan stream's version is the fence that makes two accepts at once cut one set of drafts.
+/// from the original's idea, with the original's type, epic, context, and human gate (and its scope, when that is private), and the
+/// original's own context gains a note naming the drafts that now carry the rest of the feature. The plan carries each through
+/// refinement and challenge like a draft newly cut into it. The plan stream's version is the fence that makes two accepts at once cut one set of drafts.
 /// </summary>
 public sealed class PlanSplitAcceptCommand : Hall9kAsyncCommand<PlanSplitAcceptCommand.Settings>
 {
@@ -102,11 +103,12 @@ public sealed class PlanSplitAcceptCommand : Hall9kAsyncCommand<PlanSplitAcceptC
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
+        Guid[] taskIds = [.. increments.Skip(1).Select(_ => DomainId.New())];
         TaskRevised firstIncrement = TaskDecider.Revise(
             original,
             Optional<string>.Of(increments[0]),
             Optional<IReadOnlyList<string>>.None,
-            Optional<string>.None,
+            Optional<string>.Of(FirstIncrementContextOf(original, increments.Count, taskIds)),
             Optional<IReadOnlyList<Guid>>.None,
             Optional<TaskType>.None,
             Optional<AgentModel>.None,
@@ -124,14 +126,21 @@ public sealed class PlanSplitAcceptCommand : Hall9kAsyncCommand<PlanSplitAcceptC
         Guid previous = original.Id;
         for (int index = 1; index < increments.Count; index++)
         {
-            Guid taskId = DomainId.New();
+            Guid taskId = taskIds[index - 1];
             IdeaTaskCut? cut = idea is null
                 ? null
                 : IdeaDecider.CutTask(idea, taskId, increments[index], now, context.OwnerId);
             TaskAdded added = TaskDecider.Add(
                 taskId, project.Id, cut?.Objective ?? increments[index], acceptanceCriteria: [], original.Type,
                 ContextOf(original, index, increments.Count, previous), original.Constraints, externalReference: null, now, context.OwnerId,
-                model: null, blockedBy: [previous], sourceIdeaId: original.SourceIdeaId, epicId: original.EpicId, stackedOnTaskId: previous);
+                model: null, blockedBy: [previous], sourceIdeaId: original.SourceIdeaId, epicId: original.EpicId, stackedOnTaskId: previous,
+                // The feature's hold travels with every increment, so no part of it opens a pull request the owner meant to review.
+                humanGate: original.HumanGate,
+                // The copy carries the original's words, so it must not travel further than they were allowed to: a private draft
+                // splits into private drafts. Any other scope starts at fleet, the resting scope for a fresh draft, as an evolve does.
+                initialScope: original.Scope == ReplicationScope.Private
+                    ? ReplicationScope.Private
+                    : null);
 
             // The attestation, asked of each draft the way its publish would ask it, so a combination the publish would refuse is
             // refused here, before anything is cut.
@@ -232,6 +241,22 @@ public sealed class PlanSplitAcceptCommand : Hall9kAsyncCommand<PlanSplitAcceptC
         string note = $"This task is increment {index + 1} of {count}, split from draft {DomainId.Short(original.Id)} by its refinement "
             + $"session, and builds on {DomainId.Short(buildsOn)}. The context above is the original draft's, written for the whole "
             + "feature; this task delivers only its own increment.";
+        return original.AgentContext is { } own && own.IsNotBlank()
+            ? $"{own.TrimEnd()}\n\n{note}"
+            : note;
+    }
+
+    /// <summary>
+    /// The original draft's context once it carries only the first increment: its own, and a note that the rest of the feature now
+    /// belongs to the drafts named, so its next refinement narrows its criteria to this increment instead of keeping the whole
+    /// feature or proposing the split again. Only ids are written: a draft's context replicates to every node.
+    /// </summary>
+    private static string FirstIncrementContextOf(TaskAggregate original, int count, IReadOnlyList<Guid> rest)
+    {
+        string note = $"This task is increment 1 of {count}, split by its refinement session; drafts "
+            + $"{string.Join(", ", rest.Select(DomainId.Short))} now carry the rest of the feature, in that order. The acceptance criteria "
+            + "and context above were written for the whole feature; this task delivers only its own increment, so narrow its criteria to "
+            + "that increment and leave the rest to those drafts.";
         return original.AgentContext is { } own && own.IsNotBlank()
             ? $"{own.TrimEnd()}\n\n{note}"
             : note;
