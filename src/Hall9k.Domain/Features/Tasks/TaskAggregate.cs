@@ -2766,9 +2766,23 @@ public sealed class TaskAggregate
 
     public void Apply(DraftChallengeRecorded @event)
     {
+        bool expiry = @event.Failure == ChallengeFailureReason.DispatchExpired;
+        if (!DraftSessionOutcomeRule.Applies(
+            @event.SessionId, expiry, RunningChallengeSessionId, LatestChallengeOutcome?.SessionId,
+            LatestChallengeOutcome?.Failure == ChallengeFailureReason.DispatchExpired))
+        {
+            return;
+        }
+
         ChallengeRequested = false;
         RunningChallengeSessionId = null;
         LatestChallengeOutcome = @event;
+        if (expiry)
+        {
+            // The expired session read nothing this node knows of, so the revision facts wait for its own outcome.
+            return;
+        }
+
         if (@event.IsVerdict)
         {
             LatestChallengeVerdict = @event;
@@ -2805,10 +2819,10 @@ public sealed class TaskAggregate
 
     public void Apply(DraftRefinementRecorded @event)
     {
-        // An outcome for a session that is not the one running arrived late: its dispatch was already ended (the foreign-session
-        // ceiling expired it) and another has been dispatched since. It says nothing about the running session, so it must not
-        // erase that session's standing or the revision facts that session's draft check reads.
-        if (@event.SessionId is { } recordedSession && RunningRefinementSessionId is { } runningSession && recordedSession != runningSession)
+        bool expiry = @event.Failure == RefinementFailureReason.DispatchExpired;
+        if (!DraftSessionOutcomeRule.Applies(
+            @event.SessionId, expiry, RunningRefinementSessionId, LatestRefinementOutcome?.SessionId,
+            LatestRefinementOutcome?.Failure == RefinementFailureReason.DispatchExpired))
         {
             return;
         }
@@ -2816,6 +2830,11 @@ public sealed class TaskAggregate
         RunningRefinementSessionId = null;
         LatestRefinementOutcome = @event;
         JudgedSinceChallengeVerdict |= ChallengeGate.JudgedTheVerdict(@event, LatestChallengeVerdict);
+        if (expiry)
+        {
+            // The expired session read nothing this node knows of, so the revision facts wait for its own outcome.
+            return;
+        }
 
         // The session read the draft as it stood at dispatch and its own revision does not count, so what a person changed
         // while it ran is the one thing left that no session has read. A dispatch refused before any session ran read

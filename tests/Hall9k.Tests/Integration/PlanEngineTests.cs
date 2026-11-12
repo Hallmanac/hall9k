@@ -705,15 +705,16 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
         PlanEngine engine = NewEngine(new ScriptedRefinement(processes, UnchangedReport), processes, commands);
         await engine.PollOnceAsync(cts.Token);
 
+        Guid challengeSession = DomainId.New();
         await using (IDocumentSession session = postgres.Store.LightweightSession())
         {
             session.Events.Append(draft, new DraftChallengeDispatched(
-                draft, DomainId.New(), _node.NodeId, Now, AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High));
+                draft, challengeSession, _node.NodeId, Now, AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High));
             await session.SaveChangesAsync(cts.Token);
         }
 
         await ReviseObjectiveAsync(draft, cts.Token);
-        await AppendChallengeOutcomeAsync(draft, ChallengeVerdict.PublishAsWritten, cts.Token);
+        await AppendChallengeOutcomeAsync(draft, ChallengeVerdict.PublishAsWritten, cts.Token, dispatchedSession: challengeSession);
         await SweepUntilAsync(engine, () => ParkedAsync(planId, draft, PlanParkReason.DraftChanged, cts.Token), cts.Token);
 
         commands.Calls.Should().BeEmpty("the verdict judged the text as it stood at dispatch");
@@ -1245,11 +1246,20 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
     }
 
     private async Task AppendChallengeOutcomeAsync(
-        Guid draft, ChallengeVerdict verdict, CancellationToken cancellationToken, int must = 0, ChallengeFailureReason? failure = null)
+        Guid draft, ChallengeVerdict verdict, CancellationToken cancellationToken, int must = 0, ChallengeFailureReason? failure = null,
+        Guid? dispatchedSession = null)
     {
+        // An outcome applies only to the session the draft holds as running, so one with no dispatch named gets its own.
+        Guid sessionId = dispatchedSession ?? DomainId.New();
         await using IDocumentSession session = postgres.Store.LightweightSession();
+        if (dispatchedSession is null)
+        {
+            session.Events.Append(draft, new DraftChallengeDispatched(
+                draft, sessionId, _node.NodeId, DateTimeOffset.UtcNow, AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High));
+        }
+
         session.Events.Append(draft, new DraftChallengeRecorded(
-            draft, DomainId.New(), _node.NodeId, verdict, failure ?? ChallengeFailureReason.Unknown, must, 0, 0,
+            draft, sessionId, _node.NodeId, verdict, failure ?? ChallengeFailureReason.Unknown, must, 0, 0,
             AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High, DateTimeOffset.UtcNow.AddSeconds(5)));
         await session.SaveChangesAsync(cancellationToken);
     }

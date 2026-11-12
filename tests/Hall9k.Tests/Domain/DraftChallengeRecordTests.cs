@@ -97,15 +97,16 @@ public sealed class DraftChallengeRecordTests
         TaskDetailsProjection projection = new();
         TaskDetails view = projection.Create(new FakeEvent<TaskAdded>(
             new TaskAdded(taskId, DomainId.New(), "Ship it", ["it ships"], TaskType.Feature, null, null, null, Now, Guid.NewGuid())));
+        Guid session = DomainId.New();
         DraftChallengeRecorded verdict = new(
-            taskId, DomainId.New(), nodeId, ChallengeVerdict.PublishAsRevised, ChallengeFailureReason.Unknown, 1, 0, 0,
+            taskId, session, nodeId, ChallengeVerdict.PublishAsRevised, ChallengeFailureReason.Unknown, 1, 0, 0,
             AgentModel.ChallengeDefault, AgentEffort.High, Now);
         TaskRevised EffortOnly() => new(
             taskId, default, default, default, default, default, default, Now, Guid.NewGuid(),
             Effort: Optional<AgentEffort>.Of(AgentEffort.High));
 
         projection.Apply(new FakeEvent<DraftChallengeDispatched>(
-            new DraftChallengeDispatched(taskId, DomainId.New(), nodeId, Now, AgentModel.ChallengeDefault, AgentEffort.High)), view);
+            new DraftChallengeDispatched(taskId, session, nodeId, Now, AgentModel.ChallengeDefault, AgentEffort.High)), view);
         projection.Apply(new FakeEvent<TaskRevised>(EffortOnly()), view);
         projection.Apply(new FakeEvent<DraftChallengeRecorded>(verdict), view);
         view.RevisedSinceChallengeVerdict.Should().BeFalse("an effort change is not a revision of the text");
@@ -114,14 +115,14 @@ public sealed class DraftChallengeRecordTests
         view.RevisedSinceChallengeVerdict.Should().BeTrue("a revision of the text after a verdict");
 
         projection.Apply(new FakeEvent<DraftChallengeDispatched>(
-            new DraftChallengeDispatched(taskId, DomainId.New(), nodeId, Now, AgentModel.ChallengeDefault, AgentEffort.High)), view);
+            new DraftChallengeDispatched(taskId, session, nodeId, Now, AgentModel.ChallengeDefault, AgentEffort.High)), view);
         projection.Apply(new FakeEvent<TaskRevised>(EffortOnly() with { Objective = Optional<string>.Of("Ship it, revised again") }), view);
         projection.Apply(new FakeEvent<DraftChallengeRecorded>(verdict), view);
         view.LatestChallengeVerdictJudgedOlderDraft.Should().BeTrue("the verdict judged the text as it stood at dispatch");
         view.RevisedSinceChallengeVerdict.Should().BeFalse("that revision came before the verdict existed");
 
         projection.Apply(new FakeEvent<DraftChallengeDispatched>(
-            new DraftChallengeDispatched(taskId, DomainId.New(), nodeId, Now, AgentModel.ChallengeDefault, AgentEffort.High)), view);
+            new DraftChallengeDispatched(taskId, session, nodeId, Now, AgentModel.ChallengeDefault, AgentEffort.High)), view);
         projection.Apply(new FakeEvent<DraftChallengeRecorded>(verdict), view);
         view.RevisedSinceChallengeVerdict.Should().BeFalse();
         view.LatestChallengeVerdictJudgedOlderDraft.Should().BeFalse();

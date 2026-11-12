@@ -2059,6 +2059,15 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
 
     public void Apply(IEvent<DraftChallengeRecorded> @event, TaskDetails view)
     {
+        // The same rule as TaskAggregate.Apply(DraftChallengeRecorded): see DraftSessionOutcomeRule.
+        bool expiry = @event.Data.Failure == ChallengeFailureReason.DispatchExpired;
+        if (!DraftSessionOutcomeRule.Applies(
+            @event.Data.SessionId, expiry, view.RunningChallengeSessionId, view.LatestChallengeOutcome?.SessionId,
+            view.LatestChallengeOutcome?.Failure == ChallengeFailureReason.DispatchExpired))
+        {
+            return;
+        }
+
         view.ChallengeRequested = false;
         view.ChallengeRequestedAt = null;
         view.RunningChallengeSessionId = null;
@@ -2067,6 +2076,11 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.RunningChallengeModel = null;
         view.RunningChallengeEffort = null;
         view.LatestChallengeOutcome = @event.Data;
+        if (expiry)
+        {
+            return;
+        }
+
         if (@event.Data.IsVerdict)
         {
             view.LatestChallengeVerdict = @event.Data;
@@ -2095,10 +2109,11 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
 
     public void Apply(IEvent<DraftRefinementRecorded> @event, TaskDetails view)
     {
-        // The same guard as TaskAggregate.Apply(DraftRefinementRecorded): a late outcome for a session that is no longer the
-        // running one leaves the running session's standing alone.
-        if (@event.Data.SessionId is { } recordedSession && view.RunningRefinementSessionId is { } runningSession
-            && recordedSession != runningSession)
+        // The same rule as TaskAggregate.Apply(DraftRefinementRecorded): see DraftSessionOutcomeRule.
+        bool expiry = @event.Data.Failure == RefinementFailureReason.DispatchExpired;
+        if (!DraftSessionOutcomeRule.Applies(
+            @event.Data.SessionId, expiry, view.RunningRefinementSessionId, view.LatestRefinementOutcome?.SessionId,
+            view.LatestRefinementOutcome?.Failure == RefinementFailureReason.DispatchExpired))
         {
             return;
         }
@@ -2110,6 +2125,10 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.RunningRefinementEffort = null;
         view.LatestRefinementOutcome = @event.Data;
         view.JudgedSinceChallengeVerdict |= ChallengeGate.JudgedTheVerdict(@event.Data, view.LatestChallengeVerdict);
+        if (expiry)
+        {
+            return;
+        }
 
         // A dispatch refused before any session ran read nothing, so it leaves a revision no session has read standing.
         if (@event.Data.SessionId is not null)

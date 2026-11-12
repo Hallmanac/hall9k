@@ -871,8 +871,11 @@ public sealed class FeedbackStepEngineTests(PostgresFixture postgres) : IClassFi
             return;
         }
 
+        Guid challenge = DomainId.New();
+        session.Events.Append(taskId, new DraftChallengeDispatched(
+            taskId, challenge, _node.NodeId, DateTimeOffset.UtcNow, AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High));
         session.Events.Append(taskId, new DraftChallengeRecorded(
-            taskId, DomainId.New(), _node.NodeId, verdict, ChallengeFailureReason.Unknown, must, 0, 0,
+            taskId, challenge, _node.NodeId, verdict, ChallengeFailureReason.Unknown, must, 0, 0,
             AgentModel.FromInput(AgentModel.ChallengeDefault), AgentEffort.High, DateTimeOffset.UtcNow.AddSeconds(5)));
         await session.SaveChangesAsync(cancellationToken);
     }

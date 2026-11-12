@@ -257,8 +257,11 @@ public sealed class DraftChallengeCommandTests : IClassFixture<PostgresFixture>,
         Guid withVerdict = await SeedDraftAsync(cts.Token);
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
+            Guid challenge = DomainId.New();
+            session.Events.Append(withVerdict, new DraftChallengeDispatched(
+                withVerdict, challenge, _me.NodeId, Now, AgentModel.ChallengeDefault, AgentEffort.High));
             session.Events.Append(withVerdict, new DraftChallengeRecorded(
-                withVerdict, DomainId.New(), _me.NodeId, ChallengeVerdict.PublishAsWritten, ChallengeFailureReason.Unknown,
+                withVerdict, challenge, _me.NodeId, ChallengeVerdict.PublishAsWritten, ChallengeFailureReason.Unknown,
                 0, 0, 1, AgentModel.ChallengeDefault, AgentEffort.High, Now));
             await session.SaveChangesAsync(cts.Token);
         }
