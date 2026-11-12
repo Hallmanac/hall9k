@@ -92,6 +92,11 @@ internal static class PromptContractTokens
         Hall9k.Domain.Features.Tasks.Notes.NotePromotionAnswer.NoneMarker,
         Hall9k.Connectors.Prompts.PrSummaryParser.Marker,
         Hall9k.Connectors.Prompts.PrSummaryParser.TitlePrefix,
+        // A plan's report grammar: the refinement outcome line, and discovery's answer and task lines, which a refinement
+        // report's split also uses for its increments. Each prompt injects them through a placeholder.
+        Hall9k.Daemon.Plan.RefinementReport.OutcomeMarker,
+        Hall9k.Domain.Features.Plan.DiscoveryReport.DecisionMarker,
+        Hall9k.Domain.Features.Plan.DiscoveryReport.TaskMarker,
         // The CLI's own command-name registrations (Hall9k.Cli.Infrastructure.CliCommandTree),
         // matched by Spectre.Console.Cli's router when the agent runs them — not restated from a
         // shared constant because Hall9k.Daemon does not reference Hall9k.Cli (see AGENTS.md's own

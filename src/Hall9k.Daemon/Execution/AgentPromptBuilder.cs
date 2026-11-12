@@ -4856,6 +4856,10 @@ public static class AgentPromptBuilder
         // Both lists below exist so a revision can choose a dependency edge, and their rules tell the session it may set one. A feedback
         // step's revision may set none (FeedbackRevisionRules refuses it whole), so its session is shown neither list or its rules.
         bool mayNameDependencies = facts.FeedbackStep is null;
+
+        // A feedback step's sessions are the only ones that refine for the feedback step or judge a verdict.
+        bool feedbackStep = facts.FeedbackStep is not null
+            || facts.Purpose == RefinementPurpose.FeedbackRefine || facts.Purpose == RefinementPurpose.JudgeVerdict;
         if (mayNameDependencies && facts.OtherDrafts is { Count: > 0 } siblings)
         {
             prompt.AppendLine();
@@ -4937,7 +4941,11 @@ public static class AgentPromptBuilder
         }
         else
         {
-            AppendFragment(prompt, file, "job", ("QuestionPlace", questionPlace));
+            // A feedback step's plan never offers a split (PlanDecider.MaySplit), so its session is sent to the question outcome.
+            string splitShape = feedbackStep
+                ? Fragment(file, "job-split-feedback", ("QuestionPlace", questionPlace))
+                : Fragment(file, "job-split");
+            AppendFragment(prompt, file, "job", ("SplitShape", splitShape));
         }
 
         if (facts.FeedbackStep is not null && facts.Purpose == RefinementPurpose.FeedbackRefine)
@@ -4969,10 +4977,12 @@ public static class AgentPromptBuilder
         prompt.AppendLine(Fragment(file, "report-heading"));
         prompt.AppendLine();
         AppendFragment(
-            prompt, file, facts.FeedbackStep is null ? "report" : "report-feedback",
+            prompt, file, feedbackStep ? "report-feedback" : "report",
             ("ReportPath", OneLine(facts.ReportPath)),
             ("RevisionPath", OneLine(facts.RevisionPath)),
             ("OutcomeMarker", Plan.RefinementReport.OutcomeMarker),
+            ("SplitWord", RefinementOutcome.Split.Word),
+            ("IncrementMarker", RefinementSplitReport.IncrementMarker),
             ("QuestionPlace", questionPlace));
         prompt.AppendLine();
         AppendFragment(prompt, file, "closing");
