@@ -1,0 +1,108 @@
+hall9k-task-record: 1
+task-id: 01a1cfe6-1188-74e9-a49e-88dfe8516528
+project: hall9k
+type: bugfix
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#874
+objective: Another node's foreign-session ceiling expiry never replaces a challenge or refinement outcome that the dispatching node recorded, and a node whose replication is behind does not record such an expiry on the first sweep that finds the dispatch overdue.
+criteria:
+  - |-
+    When a draft's stream holds challenge session S's dispatch, a verdict for S recorded by the node that dispatched it, and another node's DispatchExpired failure for S, in either order, TaskAggregate and TaskDetails end exactly as the same stream without the expiry would leave them. That covers the latest challenge outcome, the latest verdict, the running session's standing, RevisedSinceChallengeVerdict, LatestChallengeVerdictJudgedOlderDraft, and RevisedSinceLastDraftSession. So `h9k task show` prints no failed challenge line for S, and TaskDetails shows no challenge running with the verdict as the latest outcome, which is the fact the plan loop absorbs. The publish gate reads the verdict in both orderings; that part is a regression guard, because a failure already never replaces the latest verdict. A DB-free test applies the following to both the aggregate and the projection and compares each result against the same stream without the expiry: (a) dispatched S, a person's revision, the verdict, a second revision, then the expiry; (b) dispatched S, a person's revision, the expiry, then the verdict. Both orderings fail without the change.
+  - The same holds for a refinement session R. When R's dispatch, an outcome for R recorded by the node that dispatched it, and another node's DispatchExpired failure for R are all on the stream, in either order, TaskAggregate and TaskDetails end exactly as the same stream without the expiry would leave them. That covers the latest refinement outcome, the running session's standing, RevisedSinceLastDraftSession, RevisedWhileRefinementRan, and JudgedSinceChallengeVerdict. A DB-free test covers both orderings on the aggregate and the projection, each with a person's revision made while R ran, and fails without the change.
+  - A DispatchExpired failure recorded for a challenge or refinement session S changes nothing on the draft when it arrives after a later session T of the same kind was dispatched, whether T is still running or has already recorded its outcome. The same is true of the dispatching node's own outcome for S when it arrives after T was dispatched on a node that had expired S. "Nothing" covers T's standing (session id, node, dispatch time, model and effort), the latest outcome, the latest verdict, ChallengeRequested, and the revision facts. A DB-free test covers both kinds, on the aggregate and the projection, with T running and with T recorded. The challenge cases, and the refinement cases with T already recorded, fail without the change.
+  - |-
+    Neither DraftChallengeEngine nor PlanEngine ends another node's dispatch on the first sweep that finds it past the foreign-session ceiling. It ends one only if the dispatch is still standing when a later sweep of the same engine runs at least a settle period after the first. With default options the settle period is at least five minutes, so it spans several of the message sweep's idle intervals (MessageIdlePollMaxSeconds), and a replication read that fails right after a node wakes still leaves later attempts inside the period. An integration test per engine does the following on one engine instance: seed an overdue foreign dispatch, run a sweep that records nothing, append the dispatching node's outcome, run a second sweep after the settle period has passed, and find no DispatchExpired on the stream. Without the change, the first sweep records one.
+  - A dispatch from a node that never records an outcome is still ended once it has stood past the ceiling and stayed standing through the settle period. The existing tests for this, Another_nodes_dispatch_stands_until_the_foreign_ceiling_and_is_then_ended_so_the_draft_can_be_challenged_again in DraftChallengeEngineTests and Another_nodes_refinement_dispatch_stands_until_the_foreign_ceiling_and_is_then_ended_on_the_task in PlanEngineTests, still pass, changed only to run both sweeps on one engine instance and to account for the settle period.
+  - docs/cli.md, where it says a dispatch another node made is ended past the foreign-session ceiling, also says the dispatch is ended only after the settle period and that the dispatching node's own outcome wins over an expiry. If the settle period is a new daemon option, the options table in docs/operations.md has a row for it.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/e8516528-another-node-s-foreign-session
+published: 2026-11-12 13:33:25Z
+context: |-
+  ## What happened
+
+  On 2026-11-12 one node dispatched a plan's challenge session on a draft at 11:45:28 UTC, and in the same second the
+  refinement session of a sibling draft. The challenge recorded a verdict at 11:48 and the refinement recorded Revised at
+  11:50. Both drafts were revised, published, and finished. At 13:10 UTC a second node of the same owner recorded
+  DispatchExpired for both sessions. Those records reached the first node at 13:14, and its feed told the operator to
+  challenge again. `h9k task show` on the first draft now prints a failed challenge beside the verdict, and on the sibling
+  it prints "Refinement not applied" with the same reason. The first node had received nothing from the second between
+  11:23 and 13:14, and the expiries name sessions dispatched just before that silence began. The likely reading is that the
+  second node was suspended or offline from about 11:46, resumed at about 13:10, and swept before its inbox delivered
+  outcomes that had been recorded long before. That is inferred: the second node's own store and log were not read.
+
+  The revision after the verdict is not the cause. Revisions only set RevisedWhileChallengeRan when a session is running
+  (`src/Hall9k.Domain/Features/Tasks/TaskAggregate.cs`, the `RevisedWhileChallengeRan |=` line in the TaskRevised apply).
+  The sweep reads TaskDetails.RunningChallengeSessionId, which a recorded outcome clears, so the expiring node had the
+  dispatch and not the outcome. The sweep can never skip a verdict it has not yet received, so the fix has two halves.
+
+  ## Where the code is (at a8cfd74dd)
+
+  - The sweeps: `src/Hall9k.Daemon/Challenge/DraftChallengeEngine.cs` `RecoverAsync` (the `else if` foreign branch, about
+    line 205) and `src/Hall9k.Daemon/Plan/PlanEngine.cs` `RecoverAsync` (the same branch for refinement, about line 1778).
+    Both compare `DateTimeOffset.UtcNow - dispatchedAt` against `_options.ForeignPublicationCeiling`. The expiry is
+    recorded under the dispatching node's id, so a receiver can tell an expiry only by its `Failure` being `DispatchExpired`.
+    Both engines are singletons (`src/Hall9k.Daemon/Program.cs`), so in-memory state survives between sweeps.
+  - The appliers: `TaskAggregate.Apply(DraftChallengeRecorded)` and `Apply(DraftRefinementRecorded)`, and their
+    counterparts in `src/Hall9k.Domain/Features/Tasks/Projections/TaskDetails.cs`. They keep only the running session and
+    the latest outcome, not a per-session history. The refinement appliers already ignore an outcome for a session other
+    than the running one while that one runs. The challenge appliers have no guard. Every challenge outcome clears
+    ChallengeRequested and RevisedWhileChallengeRan; a refinement outcome with a session id rewrites
+    RevisedSinceLastDraftSession from RevisedWhileRefinementRan.
+  - What reads the latest outcome: `ChallengeGate.Shortfall`, `PlanEngine` (the loop that absorbs a challenge outcome when
+    no challenge is running and its `RecordedAt` is at or after the plan's request), and `TaskShowCommand` (the challenge
+    and refinement blocks).
+  - The message sweep's idle cadence is `MessageIdlePollMinSeconds` and `MessageIdlePollMaxSeconds` in
+    `src/Hall9k.Daemon/DaemonOptions.cs` (30 and 45 seconds by default). The replication read is
+    `src/Hall9k.Daemon/Messaging/MessageSweepEngine.cs`; each per-project step catches its failure, logs, and retries on
+    the next sweep, so a sweep is an attempt and not a guaranteed read. `HeldTailSettleWindow` in the same file is a
+    precedent for deriving a wait from `MessageIdlePollMaxSeconds`.
+
+  ## The smallest shape
+
+  One task, one pull request, no stacking. The applier half fixes what every node shows; the sweep half keeps the expiry
+  out of the ledger and the feed in the common case. Neither alone ends the incident.
+
+  On the applier side, take one rule for both outcome types. It needs no per-session history:
+
+  - An outcome for the running session applies, as today.
+  - While a different session is running, an outcome for another session changes nothing.
+  - With nothing running, a DispatchExpired outcome changes nothing.
+  - With nothing running, a non-expiry outcome carrying a session id applies only when the latest outcome is that same
+    session's DispatchExpired. Otherwise it changes nothing.
+  - An outcome with no session id (refused before a spawn) applies as today.
+
+  "Changes nothing" means nothing at all, including ChallengeRequested, so a stale expiry cannot drop a pending request.
+  A plan runs rounds, so an expiry for an old session S routinely arrives after a later session T has recorded its outcome;
+  a rule keyed on "the latest outcome's session" alone would let it replace T's outcome, which is why the rule is phrased
+  as above.
+
+  A DispatchExpired outcome that does apply ends the session's standing and becomes the latest outcome, but changes no
+  revision fact (it leaves RevisedWhileChallengeRan, RevisedWhileRefinementRan, and RevisedSinceLastDraftSession alone).
+  An expired session read nothing, which is how a dispatch refused before a spawn is already treated. With that, both
+  arrival orders end in the same state for every fact the readers use, which matters because the expiring node itself
+  receives the verdict after its own expiry. One interleaving cannot converge and need not: if a person on the expiring
+  node revises the draft between the expiry and the verdict's arrival, each node's revision facts follow its own stream
+  order.
+
+  On the sweep side, the smallest change is in-memory. Each engine remembers when it first saw each foreign session
+  overdue, ends the session only on a sweep at least the settle period later, and forgets sessions that are no longer
+  running. A restart starts the count over, which is the safe direction. The settle period's margin (at least five minutes
+  by default) is a property of the default options, not a floor the code enforces, so a test can shorten it. Either a new
+  daemon option or a value derived from MessageIdlePollMaxSeconds is acceptable.
+
+  Testing note: both engines read `DateTimeOffset.UtcNow` directly, and the existing foreign-ceiling tests build a fresh
+  engine for each sweep, so in-memory state would not carry between them. The new and changed tests need both sweeps on
+  one engine instance, and either a clock seam (`tests/Hall9k.Tests/Fakes/ManualTimeProvider.cs` exists) or a settle
+  period short enough to wait out.
+
+  One gap is accepted: a node suspended again during the settle period, or whose message sweep keeps failing for longer
+  than it, can still expire on waking. The applier rule still corrects what every node shows, but the feed would carry the
+  line. Making the sweep wait for a completed replication read of the dispatching node is the stronger fence, but it
+  would couple the engines to the message sweep and cost more than the incident justifies.
+
+  Out of scope: the publication session's own foreign ceiling (the same option, a different engine), and changing the feed
+  so it describes events against stream state. Documents already projected with the stale failure keep it until
+  something rebuilds them; a rebuild is not required here.
