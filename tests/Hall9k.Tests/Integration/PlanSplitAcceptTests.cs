@@ -8,11 +8,14 @@ using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
 using Marten;
@@ -206,6 +209,8 @@ public sealed class PlanSplitAcceptTests : IClassFixture<PostgresFixture>, IAsyn
         TaskDetails first = await TaskAsync(original, cts.Token);
         first.Objective.Should().Be("Read the flag");
         first.State.Should().Be(TaskState.Draft);
+        first.AgentContext.Should().StartWith(before.AgentContext!.TrimEnd())
+            .And.Contain("increment 1 of 3").And.Contain($"{DomainId.Short(second)}, {DomainId.Short(third)}");
 
         TaskDetails secondTask = await TaskAsync(second, cts.Token);
         TaskDetails thirdTask = await TaskAsync(third, cts.Token);
@@ -227,6 +232,31 @@ public sealed class PlanSplitAcceptTests : IClassFixture<PostgresFixture>, IAsyn
         (await RunCliAsync(cts.Token, "plan", "split", "accept", planId.ToString()))
             .Should().BeOfType<DomainConflictException>().Which.Message.Should().Contain("nothing to accept");
         (await PlanAsync(planId, cts.Token)).Drafts.Should().HaveCount(4);
+    }
+
+    [Fact]
+    public async Task The_new_drafts_keep_a_private_originals_scope_and_its_human_gate()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (Guid planId, _, Guid original, _, _) = await ParkedOnSplitAsync(cts.Token);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(original, token: cts.Token))!;
+            session.Events.Append(original, new TaskScopeSet(original, ReplicationScope.Private, Now, _me.OwnerId));
+            session.Events.Append(original, TaskDecider.Revise(
+                task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None, Optional<IReadOnlyList<Guid>>.None,
+                Optional<TaskType>.None, Optional<AgentModel>.None, Now, _me.OwnerId, humanGate: Optional<bool>.Of(true)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        (await RunCliAsync(cts.Token, "plan", "split", "accept", planId.ToString())).Should().BeNull();
+
+        PlanDetails plan = await PlanAsync(planId, cts.Token);
+        foreach (Guid cut in plan.Drafts.Skip(2).Select(draft => draft.DraftId))
+        {
+            TaskDetails added = await TaskAsync(cut, cts.Token);
+            (added.Scope, added.HumanGate).Should().Be((ReplicationScope.Private, true), "an increment carries the original's words and its hold");
+        }
     }
 
     [Fact]
