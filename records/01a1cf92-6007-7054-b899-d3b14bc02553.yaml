@@ -1,0 +1,41 @@
+hall9k-task-record: 1
+task-id: 01a1cf92-6007-7054-b899-d3b14bc02553
+project: hall9k
+type: bugfix
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#870
+objective: GitRemoteAuthenticationLocalServerTests' redirect test passes whatever other tests in the same test host do to unrelated process environment variables, while still proving the call writes no git configuration key, header key, or token into the test host's own environment.
+criteria:
+  - The redirect test (A_redirect_never_carries_the_token_to_the_second_server_and_the_retry_without_it_succeeds) no longer compares the whole process environment before and after the call, so a test in another collection that sets or clears an unrelated variable such as HALL9K_TEST_PUBLICATION_JIRA_TOKEN while it runs cannot fail it.
+  - The redirect test still fails if, after the call, any test host environment variable whose name starts with GIT_ (which includes GIT_CONFIG_COUNT and every GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n entry) differs from what it was before the call (added, removed, or changed), or if any process environment entry's name or value contains extraHeader, the token, or the token's Basic encoding.
+  - The code comment above those assertions describes what they now pin, and names no whole-environment guarantee the test no longer makes.
+  - |-
+    The change touches only tests/Hall9k.Tests/Connectors/GitRemoteAuthenticationLocalServerTests.cs: no product code, no change to RenderSweepTests, no change to any xUnit collection or parallelization setting, and no change to DaemonGitRemoteAuthenticationTests.
+  - dotnet test --filter "FullyQualifiedName~GitRemoteAuthenticationLocalServerTests" passes.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/4bc02553-gitremoteauthenticationlocalse
+published: 2026-11-12 11:51:44Z
+context: |-
+  ## What failed
+
+  On the Mac host gate on 2026-11-12, the redirect test failed both gate attempts with "Expected ProcessEnvironment() to be equal to {...} because nothing here writes to this process's own environment, but found additional keys {"HALL9K_TEST_PUBLICATION_JIRA_TOKEN"}". The defect is in the test, not the product, and it fails the host gate for unrelated tasks.
+
+  ## Why, at ee555e7ae
+
+  - `tests/Hall9k.Tests/Connectors/GitRemoteAuthenticationLocalServerTests.cs:54` snapshots the whole process environment through `ProcessEnvironment()` (line 165), and line 70 asserts the whole environment is equal afterwards. Both arrived in ddb42c07d.
+  - The class is `[Collection("RealProcessSpawn")]` (line 21). `tests/Hall9k.Tests/Integration/RenderSweepTests.cs` has no collection attribute (its own class collection, `[Trait("Category", "RequiresDocker")]` at line 64), sets `HALL9K_TEST_PUBLICATION_JIRA_TOKEN` at line 1424 and clears it in `Dispose` at line 77. The two run in parallel, so the whole-environment equality races with any test that touches the environment.
+  - The product never writes the process environment: `GitRemoteAuthentication.Apply` (`src/Hall9k.Connectors/Processes/GitRemoteAuthentication.cs`, around lines 181 to 215) and `NonInteractiveGit.Apply` (`src/Hall9k.Connectors/Processes/NonInteractiveGit.cs`, lines 31 to 49) change the child's `ProcessStartInfo.Environment` only. They set `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, set `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR` and `GIT_TERMINAL_PROMPT` (NonInteractiveGit.cs:33-35), and remove the five trace variables listed at GitRemoteAuthentication.cs:90-93 (lines 211 to 214). Every variable a regression could write to the host is therefore named `GIT_`.
+  - No test in `tests/` sets a `GIT_` variable on the process (they all write to a child's `StartInfo.Environment`), so a before/after comparison restricted to `GIT_` names does not race.
+  - The gate's own environment has carried `GIT_CONFIG_COUNT=1` (see `tests/Hall9k.Tests/Connectors/NonInteractiveGitTests.cs:23`), so the assertion must compare before with after; it must not assert that no `GIT_CONFIG_*` key is present.
+
+  ## The smallest fix
+
+  Replace the line 70 equality with a before/after comparison restricted to variables whose names start with `GIT_`. Keep the existing scan loop at lines 71 to 76, which already fails on any entry naming `extraHeader` or containing the token or its Basic encoding. Update the comment at lines 67 to 69 to match.
+
+  ## Out of scope
+
+  - Serializing collections, or changing RenderSweepTests.
+  - `tests/Hall9k.Tests/Daemon/DaemonGitRemoteAuthenticationTests.cs`: it scans the environment (lines 44 to 51) rather than comparing it whole, so it does not carry this race.
