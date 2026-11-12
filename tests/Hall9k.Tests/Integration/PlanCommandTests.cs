@@ -320,7 +320,7 @@ public sealed class PlanCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
 
         string file = Path.Combine(_checkout, "refinement-revision.md");
         await File.WriteAllTextAsync(file, "---\nobjective: As the session wrote it\n---\nContext.\n", cts.Token);
-        using (EnvironmentVariableScope.Set((TaskRevised.RefinementSessionEnvironmentVariable, session.ToString())))
+        using (PlanHandoffEnvironment.OverrideForTests(TaskRevised.RefinementSessionEnvironmentVariable, session.ToString()))
         {
             (await RunCliAsync(cts.Token, "task", "revise", draft.ToString(), "--file", file)).Should().BeNull();
         }
@@ -339,7 +339,7 @@ public sealed class PlanCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         await File.WriteAllTextAsync(file, "---\nobjective: A second time\n---\nContext.\n", cts.Token);
 
         Exception? refused;
-        using (EnvironmentVariableScope.Set((TaskRevised.RefinementSessionEnvironmentVariable, session.ToString())))
+        using (PlanHandoffEnvironment.OverrideForTests(TaskRevised.RefinementSessionEnvironmentVariable, session.ToString()))
         {
             refused = await RunCliAsync(cts.Token, "task", "revise", draft.ToString(), "--file", file);
         }
@@ -367,7 +367,7 @@ public sealed class PlanCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         }
 
         Exception? refused;
-        using (EnvironmentVariableScope.Set((TaskRevised.RefinementSessionEnvironmentVariable, session.ToString())))
+        using (PlanHandoffEnvironment.OverrideForTests(TaskRevised.RefinementSessionEnvironmentVariable, session.ToString()))
         {
             refused = await RunCliAsync(cts.Token, "task", "revise", draft.ToString(), "--file", file);
         }
@@ -385,7 +385,7 @@ public sealed class PlanCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         (await RunCliAsync(cts.Token, "task", "revise", draft.ToString(), "--objective", "A person's wording")).Should().BeNull();
 
         Exception? refused;
-        using (EnvironmentVariableScope.Set((TaskPublished.PlanPublishEnvironmentVariable, "1")))
+        using (PlanHandoffEnvironment.OverrideForTests(TaskPublished.PlanPublishEnvironmentVariable, "1"))
         {
             refused = await RunCliAsync(cts.Token, "task", "publish", draft.ToString(), "--no-queue");
         }
