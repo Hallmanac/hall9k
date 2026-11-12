@@ -406,7 +406,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         // Set only by the daemon's own revise for a plan's refinement session: the revision is applied to the draft that
         // session read or not at all, and the check below and the append at the end are one fenced step.
         Guid? refinementSession = Guid.TryParse(
-            Environment.GetEnvironmentVariable(TaskRevised.RefinementSessionEnvironmentVariable), out Guid parsedSession)
+            PlanHandoffEnvironment.Read(TaskRevised.RefinementSessionEnvironmentVariable), out Guid parsedSession)
             ? parsedSession
             : null;
         // A feedback step override is fenced the same way: whether it is still allowed depends on whether the task has been

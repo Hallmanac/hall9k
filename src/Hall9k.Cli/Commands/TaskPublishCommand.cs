@@ -155,7 +155,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
 
         // Set only by the daemon's own publish for a plan. The plan checked that no person revised the draft since a session
         // read it, but a revision can land after that check, so the publish asks again here, against the version it is fenced on.
-        bool byPlan = Environment.GetEnvironmentVariable(TaskPublished.PlanPublishEnvironmentVariable).IsNotBlank();
+        bool byPlan = PlanHandoffEnvironment.Read(TaskPublished.PlanPublishEnvironmentVariable).IsNotBlank();
         if (byPlan && task.State == TaskState.Draft && task.RevisedSinceLastDraftSession)
         {
             throw new DomainConflictException(
