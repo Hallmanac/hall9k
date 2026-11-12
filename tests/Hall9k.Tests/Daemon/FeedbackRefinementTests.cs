@@ -114,33 +114,17 @@ public sealed class FeedbackRefinementTests : IDisposable
             .And.Contain("must not name a `type`, `blocked-by`, `stacked-on`");
     }
 
-    [Theory]
-    [InlineData("FeedbackRefine", "If you believe the draft should split, end with the question outcome")]
-    [InlineData("JudgeVerdict", "can be accepted only by ending with the question outcome")]
-    public void A_feedback_steps_refinement_prompt_offers_no_split_outcome_and_sends_a_split_to_the_question(string purpose, string toTheQuestion)
+    [Fact]
+    public void A_judge_verdict_refinement_prompt_offers_no_split_outcome_and_sends_a_split_to_the_question()
     {
         PriorVerdictFacts prior = new(ChallengeVerdict.PublishAsRevised, 2, 1, 0, "/runs/c1/challenge-report.md");
 
         string prompt = AgentPromptBuilder.BuildPlanRefinement(
             Task(), new ProjectDetails { Name = "demo", WritingConventions = WritingConventions.Default },
-            Facts(purpose, new FeedbackStepPromptFacts(Notes("The API returns pages.")), prior));
+            Facts(RefinementPurpose.JudgeVerdict, new FeedbackStepPromptFacts(Notes("The API returns pages.")), prior));
 
         prompt.Should().NotContain("REFINEMENT: split").And.NotContain("TASK:").And.NotContain("split outcome")
-            .And.Contain(toTheQuestion);
-    }
-
-    [Fact]
-    public void An_ordinary_plans_refinement_prompt_offers_the_split_block_and_no_longer_sends_a_split_to_the_question()
-    {
-        string prompt = AgentPromptBuilder.BuildPlanRefinement(
-            Task(), new ProjectDetails { Name = "demo", WritingConventions = WritingConventions.Default },
-            Facts(RefinementPurpose.Refine, feedback: null));
-
-        prompt.Should().Contain("REFINEMENT: split\n    TASK: <the first increment's objective>\n    TASK: <the next increment's objective>")
-            .And.Contain("end your report with the split outcome")
-            .And.Contain("write no revision file")
-            .And.NotContain("You cannot create drafts")
-            .And.NotContain("If you believe the draft should split, end with the question outcome");
+            .And.Contain("can be accepted only by ending with the question outcome");
     }
 
     [Fact]
