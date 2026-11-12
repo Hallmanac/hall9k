@@ -51,7 +51,7 @@ public sealed class GitRemoteAuthenticationLocalServerTests : IDisposable
         string repository = await InitRepositoryAsync(first);
         TokenSequence source = new(Token);
         using IDisposable scope = GitRemoteAuthentication.UseForCurrentFlow(source with { ScopeUrl = first.BaseUrl });
-        Dictionary<string, string> environmentBefore = ProcessEnvironment();
+        Dictionary<string, string> gitEnvironmentBefore = GitEnvironment();
 
         ProcessResult result = await ExternalProcess.Runner(
             "git", ["ls-remote", "origin"], repository, CancellationToken.None);
@@ -64,10 +64,13 @@ public sealed class GitRemoteAuthenticationLocalServerTests : IDisposable
         second.Requests.Should().OnlyContain(
             request => request.Authorization == null, "the second server never sees the token");
         source.Invalidations.Should().Be(0, "a redirect is not a rejected token");
-        // This is the test host's environment around one call; what it pins is that a call carrying
-        // the token writes nothing to the environment of the process that made it. The daemon's own
-        // startup is pinned by DaemonGitRemoteAuthenticationTests.
-        ProcessEnvironment().Should().Equal(environmentBefore, "nothing here writes to this process's own environment");
+        // This is the test host's environment around one call. Every variable the call sets or
+        // removes on its child is named GIT_, so the call must leave the host's GIT_ variables as it
+        // found them, and no entry may name extraHeader or carry the token. Other variables are left
+        // out because tests in other collections change them in parallel. The daemon's own startup
+        // is pinned by DaemonGitRemoteAuthenticationTests.
+        GitEnvironment().Should().Equal(
+            gitEnvironmentBefore, "the call sets its git keys on the child, never on this process");
         foreach (KeyValuePair<string, string> entry in ProcessEnvironment())
         {
             string text = $"{entry.Key}={entry.Value}";
@@ -165,6 +168,11 @@ public sealed class GitRemoteAuthenticationLocalServerTests : IDisposable
     private static Dictionary<string, string> ProcessEnvironment() =>
         Environment.GetEnvironmentVariables().Cast<DictionaryEntry>()
             .ToDictionary(entry => (string)entry.Key, entry => (string?)entry.Value ?? string.Empty);
+
+    private static Dictionary<string, string> GitEnvironment() =>
+        ProcessEnvironment()
+            .Where(entry => entry.Key.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase))
+            .ToDictionary();
 
     /// <summary>
     /// Hands out the given tokens in order, then none. Carries the URL scope as a property so a
