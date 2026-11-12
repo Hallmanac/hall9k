@@ -80,6 +80,54 @@ public sealed class ForeignExpiryOutcomeTests
     }
 
     [Fact]
+    public void A_revision_made_after_another_nodes_challenge_expiry_stays_unread_by_the_late_verdict()
+    {
+        object[] withExpiry = [ChallengeDispatched(_session, _dispatchingNode), ChallengeExpiry(_session), PersonRevised(), Verdict(_session)];
+        object[] without = [ChallengeDispatched(_session, _dispatchingNode), PersonRevised(), Verdict(_session)];
+
+        AssertSameEnd(withExpiry, without);
+        (TaskAggregate aggregate, TaskDetails view) = Replay(withExpiry);
+        aggregate.RevisedSinceLastDraftSession.Should().BeTrue("the verdict never read a revision made while its session was awaited");
+        view.RevisedSinceLastDraftSession.Should().BeTrue();
+        aggregate.LatestChallengeVerdictJudgedOlderDraft.Should().BeTrue();
+        view.LatestChallengeVerdictJudgedOlderDraft.Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_revision_made_after_another_nodes_refinement_expiry_stays_unread_by_the_late_outcome()
+    {
+        object[] withExpiry =
+        [
+            .. VerdictStanding(), RefinementDispatched(_session, _dispatchingNode), RefinementExpiry(_session), PersonRevised(),
+            SessionRevised(_session), RefinementOutcome(_session),
+        ];
+        object[] without =
+        [
+            .. VerdictStanding(), RefinementDispatched(_session, _dispatchingNode), PersonRevised(), SessionRevised(_session),
+            RefinementOutcome(_session),
+        ];
+
+        AssertSameEnd(withExpiry, without);
+        (TaskAggregate aggregate, TaskDetails view) = Replay(withExpiry);
+        aggregate.RevisedSinceLastDraftSession.Should().BeTrue("the session never read a revision made while it was awaited");
+        view.RevisedSinceLastDraftSession.Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_challenge_request_filed_after_another_nodes_expiry_survives_the_late_verdict()
+    {
+        object[] withExpiry = [ChallengeDispatched(_session, _dispatchingNode), ChallengeExpiry(_session), ChallengeRequested(), Verdict(_session)];
+        object[] dispatchingNodesOrder = [ChallengeDispatched(_session, _dispatchingNode), Verdict(_session), ChallengeExpiry(_session), ChallengeRequested()];
+
+        AssertSameEnd(withExpiry, dispatchingNodesOrder);
+        (TaskAggregate aggregate, TaskDetails view) = Replay(withExpiry);
+        aggregate.ChallengeRequested.Should().BeTrue("the request is for a later session, not the one the verdict names");
+        view.ChallengeRequested.Should().BeTrue();
+        view.ChallengeRequestedAt.Should().Be(ChallengeRequested().RequestedAt);
+        aggregate.LatestChallengeOutcome.Should().Be(Verdict(_session));
+    }
+
+    [Fact]
     public void A_challenge_expiry_that_lands_while_a_later_challenge_runs_changes_nothing()
     {
         object[] stream =

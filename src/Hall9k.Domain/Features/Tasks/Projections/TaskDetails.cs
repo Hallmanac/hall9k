@@ -908,12 +908,19 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     {
         if (@event.Data.ChangesWhatChallengeReads())
         {
+            // The same awaited-session rule as TaskAggregate.Apply(TaskRevised): see DraftSessionOutcomeRule.AwaitedSession.
+            Guid? awaitedChallenge = DraftSessionOutcomeRule.AwaitedSession(
+                view.RunningChallengeSessionId, view.LatestChallengeOutcome?.SessionId,
+                view.LatestChallengeOutcome?.Failure == ChallengeFailureReason.DispatchExpired);
+            Guid? awaitedRefinement = DraftSessionOutcomeRule.AwaitedSession(
+                view.RunningRefinementSessionId, view.LatestRefinementOutcome?.SessionId,
+                view.LatestRefinementOutcome?.Failure == RefinementFailureReason.DispatchExpired);
             view.RevisedSinceChallengeVerdict |= view.LatestChallengeVerdict is not null;
-            view.RevisedWhileChallengeRan |= view.RunningChallengeSessionId is not null;
+            view.RevisedWhileChallengeRan |= awaitedChallenge is not null;
 
-            if (@event.Data.RefinementSessionId is null || @event.Data.RefinementSessionId != view.RunningRefinementSessionId)
+            if (@event.Data.RefinementSessionId is null || @event.Data.RefinementSessionId != awaitedRefinement)
             {
-                view.RevisedWhileRefinementRan |= view.RunningRefinementSessionId is not null;
+                view.RevisedWhileRefinementRan |= awaitedRefinement is not null;
                 view.RevisedSinceLastDraftSession = true;
             }
         }
@@ -2068,8 +2075,13 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
             return;
         }
 
-        view.ChallengeRequested = false;
-        view.ChallengeRequestedAt = null;
+        // An outcome arriving after another node's expiry ended its session leaves a request filed since then standing.
+        if (@event.Data.SessionId is null || view.RunningChallengeSessionId is not null)
+        {
+            view.ChallengeRequested = false;
+            view.ChallengeRequestedAt = null;
+        }
+
         view.RunningChallengeSessionId = null;
         view.RunningChallengeNodeId = null;
         view.RunningChallengeDispatchedAt = null;

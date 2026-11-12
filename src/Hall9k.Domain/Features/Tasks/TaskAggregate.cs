@@ -1467,13 +1467,21 @@ public sealed class TaskAggregate
     {
         if (@event.ChangesWhatChallengeReads())
         {
+            // A session another node's expiry ended is still awaited: its own outcome applies when it arrives, so a
+            // revision made meanwhile is one it never read, the same as a revision made while it ran.
+            Guid? awaitedChallenge = DraftSessionOutcomeRule.AwaitedSession(
+                RunningChallengeSessionId, LatestChallengeOutcome?.SessionId,
+                LatestChallengeOutcome?.Failure == ChallengeFailureReason.DispatchExpired);
+            Guid? awaitedRefinement = DraftSessionOutcomeRule.AwaitedSession(
+                RunningRefinementSessionId, LatestRefinementOutcome?.SessionId,
+                LatestRefinementOutcome?.Failure == RefinementFailureReason.DispatchExpired);
             RevisedSinceChallengeVerdict |= LatestChallengeVerdict is not null;
-            RevisedWhileChallengeRan |= RunningChallengeSessionId is not null;
+            RevisedWhileChallengeRan |= awaitedChallenge is not null;
 
             // A revision made on a running session's behalf is the session's own work, not a change it never read.
-            if (@event.RefinementSessionId is null || @event.RefinementSessionId != RunningRefinementSessionId)
+            if (@event.RefinementSessionId is null || @event.RefinementSessionId != awaitedRefinement)
             {
-                RevisedWhileRefinementRan |= RunningRefinementSessionId is not null;
+                RevisedWhileRefinementRan |= awaitedRefinement is not null;
                 RevisedSinceLastDraftSession = true;
             }
         }
@@ -2774,7 +2782,13 @@ public sealed class TaskAggregate
             return;
         }
 
-        ChallengeRequested = false;
+        // An outcome arriving after another node's expiry ended its session leaves a request filed since then standing:
+        // that request is for a later session, and this outcome says nothing about it.
+        if (@event.SessionId is null || RunningChallengeSessionId is not null)
+        {
+            ChallengeRequested = false;
+        }
+
         RunningChallengeSessionId = null;
         LatestChallengeOutcome = @event;
         if (expiry)
