@@ -76,7 +76,8 @@ public sealed class PlanEngine(
     DaemonConnection connection,
     IOptions<DaemonOptions> options,
     ILogger<PlanEngine> logger,
-    LocalFleetProvider? fleets = null) : IDisposable
+    LocalFleetProvider? fleets = null,
+    TimeProvider? clock = null) : IDisposable
 {
     /// <summary>How long the shutdown path gets to record an outcome: it runs while the daemon is stopping.</summary>
     private static readonly TimeSpan ShutdownRecordTimeout = TimeSpan.FromSeconds(5);
@@ -92,6 +93,8 @@ public sealed class PlanEngine(
     private readonly CancellationTokenSource _stopping = new();
     private readonly ConcurrentDictionary<Guid, RunningSession> _sessions = [];
     private readonly Dictionary<Guid, string> _reportedGate = [];
+    private readonly ForeignDispatchSettle _foreignSettle = new(options.Value.ForeignSessionSettlePeriod);
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
 
     /// <summary>The start of the spend period last confirmed spent, or null; see <see cref="LaunchGateAsync"/>. In memory, like <see cref="_reportedGate"/>.</summary>
     private DateTimeOffset? _spendExhaustedSincePeriodStart;
@@ -1767,6 +1770,7 @@ public sealed class PlanEngine(
                 .ToListAsync(cancellationToken);
         }
 
+        _foreignSettle.KeepOnly(running.Select(task => task.RunningRefinementSessionId).OfType<Guid>().ToHashSet());
         int recovered = 0;
         int expired = 0;
         foreach (TaskDetails task in running)
@@ -1808,7 +1812,8 @@ public sealed class PlanEngine(
                 recovered++;
             }
             else if (task.RunningRefinementDispatchedAt is { } dispatchedAt
-                && DateTimeOffset.UtcNow - dispatchedAt > _options.ForeignPublicationCeiling)
+                && _clock.GetUtcNow() - dispatchedAt > _options.ForeignPublicationCeiling
+                && _foreignSettle.HasSettled(sessionId, _clock.GetUtcNow()))
             {
                 logger.LogWarning(
                     "Draft {TaskId}: refinement session {SessionId} dispatched by node {Node} at {DispatchedAt:u} has stood longer than {Ceiling} with no outcome; ending it here",
@@ -1818,6 +1823,7 @@ public sealed class PlanEngine(
                         task.Id, sessionId, RefinementPurpose.Unknown, model, effort, RefinementOutcome.Unknown,
                         RefinementFailureReason.DispatchExpired, null, task.RunningRefinementNodeId),
                     cancellationToken);
+                _foreignSettle.Forget(sessionId);
                 expired++;
             }
         }

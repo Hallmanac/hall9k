@@ -243,7 +243,7 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
     }
 
     private PlanEngine NewEngine(IExecutor executor, FakeProcessManager processes, IPlanTaskCommands commands, Action<DaemonOptions>? tweak = null,
-        ReadingCheckoutLeases? leases = null)
+        ReadingCheckoutLeases? leases = null, TimeProvider? clock = null)
     {
         DaemonOptions options = new()
         {
@@ -256,7 +256,7 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
             (_, _, _, _) => Task.FromResult(new ProcessResult(0, "0123abc\n", string.Empty)),
             leases ?? new ReadingCheckoutLeases(),
             commands, new LaunchHoldEngine(postgres.Store, NullLogger<LaunchHoldEngine>.Instance),
-            new DaemonConnection(postgres.ConnectionString), Options.Create(options), NullLogger<PlanEngine>.Instance);
+            new DaemonConnection(postgres.ConnectionString), Options.Create(options), NullLogger<PlanEngine>.Instance, clock: clock);
         _engines.Add(engine);
         return engine;
     }
@@ -1209,25 +1209,67 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
         Guid projectId = await SeedProjectAsync(cts.Token);
         Guid draft = await SeedDraftAsync(projectId, cts.Token);
         Guid otherNode = DomainId.New();
+        SettableClock clock = new(DateTimeOffset.UtcNow);
         await using (IDocumentSession session = postgres.Store.LightweightSession())
         {
             session.Events.Append(draft, new DraftRefinementDispatched(
-                draft, DomainId.New(), otherNode, DateTimeOffset.UtcNow.AddHours(-2), AgentModel.FromInput(AgentModel.ChallengeDefault),
+                draft, DomainId.New(), otherNode, clock.GetUtcNow().AddMinutes(-30), AgentModel.FromInput(AgentModel.ChallengeDefault),
                 AgentEffort.High, RefinementPurpose.Refine));
             await session.SaveChangesAsync(cts.Token);
         }
 
         FakeProcessManager processes = new();
-        (await NewEngine(new ScriptedRefinement(processes, UnchangedReport), processes, NewCommands(), o => o.ForeignPublicationCeiling = TimeSpan.FromHours(3))
-            .PollOnceAsync(cts.Token)).Expired.Should().Be(0);
+        PlanEngine engine = NewEngine(new ScriptedRefinement(processes, UnchangedReport), processes, NewCommands(), clock: clock);
+        (await engine.PollOnceAsync(cts.Token)).Expired.Should().Be(0, "inside the ceiling the other node is still the one to finish it");
 
-        PlanSweepResult expired = await NewEngine(new ScriptedRefinement(processes, UnchangedReport), processes, NewCommands())
-            .PollOnceAsync(cts.Token);
+        clock.Advance(TimeSpan.FromMinutes(40));
+        (await engine.PollOnceAsync(cts.Token)).Expired.Should().Be(0, "the first sweep that finds it overdue only starts the settle period");
+
+        clock.Advance(new DaemonOptions().ForeignSessionSettlePeriod);
+        PlanSweepResult expired = await engine.PollOnceAsync(cts.Token);
 
         expired.Expired.Should().Be(1);
         DraftRefinementRecorded ended = (await StreamAsync(draft, cts.Token)).OfType<DraftRefinementRecorded>().Should().ContainSingle().Subject;
         ended.Failure.Should().Be(RefinementFailureReason.DispatchExpired);
         ended.NodeId.Should().Be(otherNode, "the report, if any, is on the node that ran the session");
+    }
+
+    [Fact]
+    public async Task An_overdue_refinement_dispatch_whose_outcome_arrives_within_the_settle_period_is_never_expired()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Guid projectId = await SeedProjectAsync(cts.Token);
+        Guid draft = await SeedDraftAsync(projectId, cts.Token);
+        Guid otherNode = DomainId.New();
+        Guid sessionId = DomainId.New();
+        AgentModel model = AgentModel.FromInput(AgentModel.ChallengeDefault);
+        SettableClock clock = new(DateTimeOffset.UtcNow);
+        await using (IDocumentSession session = postgres.Store.LightweightSession())
+        {
+            session.Events.Append(draft, new DraftRefinementDispatched(
+                draft, sessionId, otherNode, clock.GetUtcNow().AddHours(-2), model, AgentEffort.High, RefinementPurpose.Refine));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeProcessManager processes = new();
+        PlanEngine engine = NewEngine(new ScriptedRefinement(processes, UnchangedReport), processes, NewCommands(), clock: clock);
+        (await engine.PollOnceAsync(cts.Token)).Expired.Should().Be(0, "a node just back from suspension may not have its inbox yet");
+        (await StreamAsync(draft, cts.Token)).OfType<DraftRefinementRecorded>().Should().BeEmpty();
+
+        // The dispatching node's outcome, recorded long ago, arrives through replication.
+        await using (IDocumentSession session = postgres.Store.LightweightSession())
+        {
+            session.Events.Append(draft, new DraftRefinementRecorded(
+                draft, sessionId, otherNode, RefinementOutcome.Unchanged, RefinementFailureReason.Unknown, RefinementPurpose.Refine, model,
+                AgentEffort.High, clock.GetUtcNow().AddHours(-1.9)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        clock.Advance(new DaemonOptions().ForeignSessionSettlePeriod + TimeSpan.FromMinutes(1));
+        (await engine.PollOnceAsync(cts.Token)).Expired.Should().Be(0);
+
+        (await StreamAsync(draft, cts.Token)).OfType<DraftRefinementRecorded>()
+            .Should().ContainSingle().Which.Failure.Should().Be(RefinementFailureReason.Unknown);
     }
 
     private async Task AppendToNodeAsync(object @event, CancellationToken cancellationToken)

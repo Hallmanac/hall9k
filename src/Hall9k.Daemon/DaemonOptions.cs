@@ -943,6 +943,17 @@ public sealed class DaemonOptions
     public TimeSpan ForeignPublicationCeiling { get; set; } = ForeignSessionCeiling.Default;
 
     /// <summary>
+    /// How long a challenge or refinement dispatch of another node must stay standing, past
+    /// <see cref="ForeignPublicationCeiling"/>, before this node ends it with <c>DispatchExpired</c>: the first sweep
+    /// that finds it overdue only notes the time, and a later sweep at least this long after ends it. A node waking from
+    /// suspension sees every dispatch made before it slept as overdue before its message sweep has delivered their
+    /// outcomes, so the wait spans many of that sweep's idle intervals (<see cref="MessageIdlePollMaxSeconds"/>) and
+    /// leaves room for a replication read that fails right after waking. Origin incident (2026-11-12): a node resumed,
+    /// swept, and expired a challenge and a refinement whose outcomes had been recorded more than an hour earlier.
+    /// </summary>
+    public TimeSpan ForeignSessionSettlePeriod { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
     /// How often the daemon retries a Jira write stuck on a rejected credential (Brian's design,
     /// 2026-08-28). There is no doorbell for "the connection was just fixed" — nothing on this
     /// machine observes that moment — so a patient poll is the whole mechanism, the same
