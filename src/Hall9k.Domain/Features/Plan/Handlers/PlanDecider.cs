@@ -199,11 +199,19 @@ public static class PlanDecider
     /// What a refinement session's report led to, once its revision (if any) was applied. A session that asked a
     /// question parks the plan; one told to apply a verdict that changed nothing parks it too. A session told to answer a
     /// do not publish verdict goes on to a new challenge even when it changed nothing, because it may have answered in the
-    /// journal that a must is wrong, and a new challenge reads the journal; the round cap bounds the loop.
+    /// journal that a must is wrong, and a new challenge reads the journal; the round cap bounds the loop. A proposed split
+    /// parks for a person to accept it when the draft may split (<see cref="MaySplit"/>), and as a question when it may not.
+    /// <paramref name="draftType"/> is the draft's type as the session left it; unknown, a split cannot be judged allowed.
     /// </summary>
     public static IReadOnlyList<object> AfterRefinement(
-        PlanAggregate plan, PlanDraftState draft, RefinementPurpose purpose, RefinementOutcome outcome, Guid sessionId, DateTimeOffset now)
+        PlanAggregate plan, PlanDraftState draft, RefinementPurpose purpose, RefinementOutcome outcome, Guid sessionId, DateTimeOffset now,
+        TaskType? draftType = null)
     {
+        if (outcome == RefinementOutcome.Split)
+        {
+            return [Park(plan, draft.DraftId, MaySplit(plan, draft, draftType) ? PlanParkReason.SplitProposed : PlanParkReason.Question, sessionId, now)];
+        }
+
         if (outcome == RefinementOutcome.Question)
         {
             return [Park(plan, draft.DraftId, PlanParkReason.Question, sessionId, now)];
@@ -241,6 +249,78 @@ public static class PlanDecider
                 plan, draft, PlanPhase.Challenge, draft.Round + 1, outcomeToRecord, RefinementPurpose.Unknown, ready: false,
                 sessionId, now),
         ];
+    }
+
+    /// <summary>
+    /// Whether a split a refinement session proposed for the draft may be offered to a person to accept. Not in a feedback step,
+    /// whose prompt never offers one; not for a draft typed Refactor or Chore, whose work is mechanical and exempt from the
+    /// increment rule; and not for a draft that was the original or a new draft of a split already accepted in this plan, because
+    /// a lineage splits once per plan. Each of those parks as a question instead.
+    /// </summary>
+    public static bool MaySplit(PlanAggregate plan, PlanDraftState draft, TaskType? draftType) =>
+        !plan.IsFeedbackStep && !draft.HasSplit && draftType is not null && draftType != TaskType.Refactor && draftType != TaskType.Chore;
+
+    /// <summary>
+    /// The draft <c>h9k plan split accept</c> acts on: the one named by <paramref name="draftId"/>, or the only draft parked on a
+    /// proposed split. Refused, naming where the plan stands and what to run instead, for a plan that is not live, a named draft
+    /// that is not parked on a split, a plan with no such draft, or one with more than one when none is named.
+    /// </summary>
+    public static PlanDraftState SplitToAccept(PlanAggregate plan, Guid? draftId)
+    {
+        string shortPlan = DomainId.Short(plan.Id);
+        if (!plan.IsLive)
+        {
+            throw new DomainConflictException(
+                $"Plan {plan.Id} is {plan.State.Value}, so there is no split to accept. A split is accepted only on a live plan parked on one; "
+                + $"h9k plan show {shortPlan} says how it ended.");
+        }
+
+        PlanDraftState[] parked = [.. plan.Drafts.Where(draft => draft.ParkReason == PlanParkReason.SplitProposed)];
+        if (draftId is { } named)
+        {
+            return parked.FirstOrDefault(draft => draft.DraftId == named)
+                ?? throw new DomainConflictException(
+                    $"Draft {DomainId.Short(named)} is not parked on a proposed split in plan {shortPlan}"
+                    + (parked.Length == 0
+                        ? ", and no draft of it is"
+                        : $"; {string.Join(", ", parked.Select(draft => DomainId.Short(draft.DraftId)))} {(parked.Length == 1 ? "is" : "are")}")
+                    + $". h9k plan show {shortPlan} says where each draft stands.");
+        }
+
+        return parked switch
+        {
+            [var only] => only,
+            [] => throw new DomainConflictException(
+                $"No draft of plan {shortPlan} is parked on a proposed split, so there is nothing to accept. A split is accepted once a "
+                + $"refinement session proposes one and the plan parks on it; h9k plan show {shortPlan} says where the plan stands."),
+            _ => throw new DomainValidationException(
+                $"{parked.Length} drafts of plan {shortPlan} are parked on a proposed split "
+                + $"({string.Join(", ", parked.Select(draft => DomainId.Short(draft.DraftId)))}), so name the one to accept: "
+                + $"h9k plan split accept {shortPlan} --draft <draft>."),
+        };
+    }
+
+    /// <summary>
+    /// <c>h9k plan split accept</c>: the draft parked on a proposed split now carries the first increment, and the drafts the
+    /// command cut in the same save carry the rest, in order. Refused unless the draft is still parked on the split and has not
+    /// split before. The stream's version the caller appends against is what lets only one of two accepts at once land.
+    /// </summary>
+    public static PlanSplitAccepted AcceptSplit(
+        PlanAggregate plan, Guid originalDraftId, IReadOnlyList<Guid> newDraftIds, bool noExistingItemAttested, bool untrackedAttested,
+        Guid ownerId, DateTimeOffset now)
+    {
+        PlanDraftState draft = SplitToAccept(plan, originalDraftId);
+        if (draft.HasSplit)
+        {
+            throw new DomainBusinessRuleException(
+                $"Draft {DomainId.Short(draft.DraftId)} has already split once in plan {DomainId.Short(plan.Id)}, and a draft splits once "
+                + "per plan. Record in its journal.md whether to keep it as one task, then h9k plan resume.");
+        }
+
+        return newDraftIds.Count == 0
+            ? throw new DomainValidationException("A split cuts at least one new draft; the report proposed one increment, which is no split.")
+            : new PlanSplitAccepted(
+                plan.Id, plan.ProjectId, draft.DraftId, newDraftIds, noExistingItemAttested, untrackedAttested, ownerId, now);
     }
 
     /// <summary>

@@ -57,6 +57,12 @@ public sealed class PlanDraftState
 
     public bool Abandoned { get; set; }
 
+    /// <summary>
+    /// Whether this draft was the original or one of the new drafts of a split accepted in this plan. A lineage splits once per
+    /// plan, so a later split proposal for it parks as a question instead.
+    /// </summary>
+    public bool HasSplit { get; set; }
+
     /// <summary>Published or abandoned: nothing more is done for it.</summary>
     public bool IsClosed => Published || Abandoned;
 
@@ -137,8 +143,36 @@ public sealed class PlanDraftState
             _ when @event.Reason == PlanParkReason.SessionFailed => PlanOutcome.SessionFailed,
             _ when @event.Reason == PlanParkReason.ChallengeFailed => PlanOutcome.ChallengeFailed,
             _ when @event.Reason == PlanParkReason.Question => PlanOutcome.Question,
+            _ when @event.Reason == PlanParkReason.SplitProposed => PlanOutcome.SplitProposed,
             _ => Outcome,
         };
+    }
+
+    /// <summary>
+    /// The draft whose split was accepted now carries the first increment, and is taken through refinement and challenge as a
+    /// draft newly cut into the plan is: the accept answers its park, and its rounds start again.
+    /// </summary>
+    public void ApplySplitOriginal()
+    {
+        Phase = PlanPhase.Refinement;
+        Round = 0;
+        Outcome = PlanOutcome.None;
+        Purpose = RefinementPurpose.Refine;
+        Ready = false;
+        ExtraRounds = 0;
+        ParkReason = PlanParkReason.Unknown;
+        RunningSessionId = null;
+        ChallengeRequestedAt = null;
+        ResumedFromPark = false;
+        HasSplit = true;
+    }
+
+    /// <summary>A draft a split cut, which starts at refinement and may not split again in this plan.</summary>
+    public static PlanDraftState StartSplit(Guid draftId)
+    {
+        PlanDraftState draft = Start(draftId, PlanPhase.Refinement);
+        draft.HasSplit = true;
+        return draft;
     }
 
     /// <summary>A resume answers the park; a draft that parked on rounds exhausted is granted one more round.</summary>

@@ -590,6 +590,27 @@ public sealed class PlanEngineTests(PostgresFixture postgres) : IClassFixture<Po
     }
 
     [Fact]
+    public async Task A_split_parks_the_plan_on_the_draft_as_split_proposed_and_applies_no_revision()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Guid projectId = await SeedProjectAsync(cts.Token);
+        Guid draft = await SeedDraftAsync(projectId, cts.Token);
+        Guid planId = await StartPlanAsync(projectId, cts.Token, drafts: draft);
+        FakeProcessManager processes = new();
+        FakeCommands commands = NewCommands();
+        PlanEngine engine = NewEngine(
+            new ScriptedRefinement(processes, "Two increments.\n\nREFINEMENT: split\nTASK: Read the flag\nTASK: Act on the flag\n"),
+            processes, commands);
+
+        await engine.PollOnceAsync(cts.Token);
+        await EventuallyAsync(() => ParkedAsync(planId, draft, PlanParkReason.SplitProposed, cts.Token), cts.Token);
+
+        commands.Calls.Should().BeEmpty("a split applies no revision");
+        DraftRefinementRecorded recorded = (await StreamAsync(draft, cts.Token)).OfType<DraftRefinementRecorded>().Should().ContainSingle().Subject;
+        (recorded.Outcome, recorded.Failure).Should().Be((RefinementOutcome.Split, RefinementFailureReason.Unknown));
+    }
+
+    [Fact]
     public async Task A_question_parks_the_plan_and_nothing_starts_until_a_resume_which_runs_the_session_again()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));

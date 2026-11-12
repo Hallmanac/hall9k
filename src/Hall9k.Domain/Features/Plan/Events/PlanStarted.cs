@@ -11,7 +11,7 @@ namespace Hall9k.Domain.Features.Plan.Events;
 /// </summary>
 /// <param name="Id">The plan's id (the stream key).</param>
 /// <param name="ProjectId">The project every draft belongs to.</param>
-/// <param name="DraftIds">The drafts, fixed at start, in the order they were named; empty for a plan started from an idea, whose drafts are cut at the gate (<see cref="PlanDraftsCut"/>).</param>
+/// <param name="DraftIds">The drafts, in the order they were named; empty for a plan started from an idea, whose drafts are cut at the gate (<see cref="PlanDraftsCut"/>). An accepted split adds drafts after them (<see cref="PlanSplitAccepted"/>).</param>
 /// <param name="StartPhase">Refinement, or Challenge for a draft that starts at challenge; Discovery for a plan started from an idea.</param>
 /// <param name="NoExistingItemAttested">The <c>--no-existing-item</c> attestation the plan's publish passes on.</param>
 /// <param name="UntrackedAttested">The <c>--untracked</c> attestation the plan's publish passes on.</param>

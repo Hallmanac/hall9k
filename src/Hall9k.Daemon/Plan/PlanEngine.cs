@@ -866,6 +866,10 @@ public sealed class PlanEngine(
             {
                 failure = await ApplyRevisionAsync(job, CancellationToken.None);
             }
+            else if (outcome == RefinementOutcome.Split)
+            {
+                failure = await VetSplitAsync(job, CancellationToken.None);
+            }
         }
 
         await RecordEndAsync(
@@ -986,6 +990,30 @@ public sealed class PlanEngine(
     }
 
     /// <summary>
+    /// A proposed split applies no revision, but each increment line becomes a draft's objective once a person accepts it, so the
+    /// lines are held to the rule a revision is (<see cref="MemberTextCopyGuard"/>) before the split is offered. A split that copies
+    /// a member task's text parks as a refused revision, with the refusal written where <c>h9k plan show</c> sends a person to read
+    /// it. A person's later edit of the report is not checked. Returns the reason the split is not offered, or null.
+    /// </summary>
+    private async Task<RefinementFailureReason?> VetSplitAsync(RefinementJob job, CancellationToken cancellationToken)
+    {
+        RefinementSplitReading reading = await RefinementSplitReport.ReadFileAsync(job.ReportPath, cancellationToken);
+        if (reading.Increments is not { } increments)
+        {
+            return RefinementFailureReason.UnreadableReport;
+        }
+
+        if (MemberTextCopyGuard.SplitRefusal(increments, job.MemberTasks) is { } copied)
+        {
+            logger.LogWarning("Draft {TaskId}: the proposed split copies another member project's task text; refused", job.TaskId);
+            await WriteRefusalAsync(job, copied, cancellationToken);
+            return RefinementFailureReason.RevisionRefused;
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// A revision refused before the child <c>h9k</c> ran has no command output, so the reason is written where
     /// <c>h9k plan show</c> sends a person to read a refusal, and the pointer is true.
     /// </summary>
@@ -1055,9 +1083,13 @@ public sealed class PlanEngine(
                 (PlanAggregate plan, StreamState planFence) = owner;
                 PlanDraftState draft = plan.Draft(end.TaskId)
                     ?? throw new InvalidOperationException($"Plan {plan.Id} does not hold draft {end.TaskId}.");
+                // A proposed split is offered only for a draft whose type the increment rule covers, read as the session left it.
+                TaskType? draftType = end.Outcome == RefinementOutcome.Split
+                    ? (await session.LoadAsync<TaskDetails>(end.TaskId, cancellationToken))?.Type
+                    : null;
                 IReadOnlyList<object> planEvents = end.Failure.IsFailure
                     ? [PlanDecider.ParkOn(plan, end.TaskId, ParkReasonOf(end.Failure), end.SessionId, now)]
-                    : PlanDecider.AfterRefinement(plan, draft, end.Purpose, end.Outcome, end.SessionId ?? Guid.Empty, now);
+                    : PlanDecider.AfterRefinement(plan, draft, end.Purpose, end.Outcome, end.SessionId ?? Guid.Empty, now, draftType);
                 session.Events.Append(plan.Id, expectedVersion: planFence.Version + planEvents.Count, planEvents.ToArray());
             }
 

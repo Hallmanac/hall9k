@@ -109,6 +109,14 @@ public sealed partial class PlanDetailsProjection : SingleStreamProjection<PlanD
         view.Drafts.AddRange(@event.Data.DraftIds.Select(draftId => PlanDraftState.Start(draftId, PlanPhase.Refinement)));
     }
 
+    public void Apply(IEvent<PlanSplitAccepted> @event, PlanDetails view)
+    {
+        view.NoExistingItemAttested = @event.Data.NoExistingItemAttested;
+        view.UntrackedAttested = @event.Data.UntrackedAttested;
+        view.Draft(@event.Data.OriginalDraftId)?.ApplySplitOriginal();
+        view.Drafts.AddRange(@event.Data.NewDraftIds.Select(PlanDraftState.StartSplit));
+    }
+
     public void Apply(IEvent<PlanRefinementDispatched> @event, PlanDetails view) => view.Draft(@event.Data.DraftId)?.Apply(@event.Data);
 
     public void Apply(IEvent<PlanChallengeRequested> @event, PlanDetails view) => view.Draft(@event.Data.DraftId)?.Apply(@event.Data);

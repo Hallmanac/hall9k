@@ -6,7 +6,8 @@ namespace Hall9k.Domain.Features.Plan;
 /// <summary>
 /// A plan: one or more drafts carried by the daemon through refinement and challenge to Published, on a stream of its
 /// own on the node it was started on. A plan started from an idea begins with none: it runs a discovery session, parks at a
-/// gate for a person, and gets its drafts only when they pursue (<see cref="PlanDraftsCut"/>). Not a run, and it holds no
+/// gate for a person, and gets its drafts only when they pursue (<see cref="PlanDraftsCut"/>). An accepted split
+/// (<see cref="PlanSplitAccepted"/>) is the one way a plan gains drafts after that. Not a run, and it holds no
 /// task: a plan creates no run, lease, branch, or worktree. State changes only through <c>Apply</c>; the decisions live in <see cref="Handlers.PlanDecider"/>.
 /// </summary>
 public sealed class PlanAggregate
@@ -52,7 +53,7 @@ public sealed class PlanAggregate
     /// <summary>The reason a person gave when they cancelled the plan, or null.</summary>
     public string? CancelReason { get; private set; }
 
-    /// <summary>The drafts, in the order they were named at start.</summary>
+    /// <summary>The drafts, in the order they were named at start or cut, with any a split cut after them.</summary>
     public IReadOnlyList<PlanDraftState> Drafts => _drafts;
 
     public bool IsLive => State.IsLive;
@@ -98,6 +99,14 @@ public sealed class PlanAggregate
         UntrackedAttested = @event.UntrackedAttested;
         StartedByOwnerId = @event.CutByOwnerId;
         _drafts.AddRange(@event.DraftIds.Select(draftId => PlanDraftState.Start(draftId, PlanPhase.Refinement)));
+    }
+
+    public void Apply(PlanSplitAccepted @event)
+    {
+        NoExistingItemAttested = @event.NoExistingItemAttested;
+        UntrackedAttested = @event.UntrackedAttested;
+        Draft(@event.OriginalDraftId)?.ApplySplitOriginal();
+        _drafts.AddRange(@event.NewDraftIds.Select(PlanDraftState.StartSplit));
     }
 
     public void Apply(PlanRefinementDispatched @event) => Draft(@event.DraftId)?.Apply(@event);

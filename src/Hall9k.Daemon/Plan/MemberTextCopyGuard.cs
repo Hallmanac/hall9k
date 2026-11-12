@@ -38,27 +38,38 @@ public static class MemberTextCopyGuard
         }
 
         Frontmatter revision = FrontmatterYaml.Parse(revisionText);
-        string[] fields =
-        [
-            .. new[] { revision.Scalar("objective"), revision.Body, revision.Scalar("context") }
-                .Concat(revision.List("criteria"))
-                .Select(Normalise)
-                .Where(field => field.Length > 0),
-        ];
+        IEnumerable<string?> fields = new[] { revision.Scalar("objective"), revision.Body, revision.Scalar("context") }
+            .Concat(revision.List("criteria"));
+        return CopiedTask(fields, memberTasks) is { } copied
+            ? $"The revision copies text of another member project's task {DomainId.Short(copied.Id)} into the draft, "
+                + "so it was not applied. Name that task in blocked-by instead of repeating what it says."
+            : null;
+    }
 
-        foreach (SolutionMemberTask task in memberTasks)
+    /// <summary>
+    /// The refusal reason for a proposed split whose increment lines copy a member task's objective, by the rule
+    /// <see cref="Refusal"/> holds a revision to, or null when they copy nothing. A split applies no revision, but each increment
+    /// becomes a draft's objective once a person accepts it, so its lines are held to the same rule before the split is offered.
+    /// </summary>
+    public static string? SplitRefusal(IReadOnlyList<string> increments, IReadOnlyList<SolutionMemberTask>? memberTasks) =>
+        CopiedTask(increments, memberTasks) is { } copied
+            ? $"The split's increment lines copy text of another member project's task {DomainId.Short(copied.Id)}, so the split "
+                + "was not offered. Name that task in a blocked-by edge of a draft instead of repeating what it says."
+            : null;
+
+    private static SolutionMemberTask? CopiedTask(IEnumerable<string?> fieldTexts, IReadOnlyList<SolutionMemberTask>? memberTasks)
+    {
+        if (memberTasks is not { Count: > 0 })
         {
-            string objective = Normalise(task.Objective);
-            bool copied = objective.Length >= MinimumCopiedLength
-                && fields.Any(field => ContainsPhrase(field, objective));
-            if (copied)
-            {
-                return $"The revision copies text of another member project's task {DomainId.Short(task.Id)} into the draft, "
-                    + "so it was not applied. Name that task in blocked-by instead of repeating what it says.";
-            }
+            return null;
         }
 
-        return null;
+        string[] fields = [.. fieldTexts.Select(Normalise).Where(field => field.Length > 0)];
+        return memberTasks.FirstOrDefault(task =>
+        {
+            string objective = Normalise(task.Objective);
+            return objective.Length >= MinimumCopiedLength && fields.Any(field => ContainsPhrase(field, objective));
+        });
     }
 
     private static bool ContainsPhrase(string field, string phrase)
