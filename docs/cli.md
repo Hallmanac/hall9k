@@ -402,9 +402,10 @@ ended here once it has stood past the foreign-session ceiling and then stayed st
 to deliver an outcome recorded while it was away. A plan's refinement session from another node is ended the same way.
 Whichever arrives first, the dispatching node's own outcome wins over such an expiry on the task's own record (what
 `h9k task show` prints and what the publish gate reads), and an expiry for a session that has already ended, or that a
-later session has replaced, changes nothing. A plan driving the draft is another matter: the expiry still parks it
-(`SessionFailed` for a refinement, `ChallengeFailed` for a challenge), and it stays parked after the real outcome
-arrives, so a person resumes it. A challenge changes nothing about the draft: the session is
+later session has replaced, changes nothing. A plan driving the draft lives only on the dispatching node, and it takes
+the session's own outcome too: it follows its own refinement session to the end, and it waits past an expiry for a
+challenge session that node is still running. An expiry for a challenge session the node no longer runs (as after a
+restart) parks the plan as `ChallengeFailed`, so a person resumes it. A challenge changes nothing about the draft: the session is
 refused `h9k task publish`, `revise`, `assign`, `queue`, and `challenge`, and nothing in the daemon applies a
 verdict. `h9k task show` prints the latest challenge (requested, running, failed with its reason, or the verdict
 with its counts, its model and effort, the report's path on the node that holds it, and whether the draft was
