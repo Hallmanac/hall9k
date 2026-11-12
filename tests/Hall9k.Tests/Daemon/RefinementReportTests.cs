@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon.Plan;
+using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Tasks;
 using Xunit;
 
@@ -77,5 +78,64 @@ public sealed class RefinementReportTests : IDisposable
         (RefinementOutcome? outcome, RefinementFailureReason? failure) = await RefinementReport.ReadAsync(good, CancellationToken.None);
         outcome.Should().Be(RefinementOutcome.Unchanged);
         failure.Should().BeNull();
+    }
+
+    private const string Split = "I checked the claims; the draft is three increments.\n\nREFINEMENT: split\nTASK: Read the flag\nTASK: Act on the flag\nTASK: Report the flag\n";
+
+    [Fact]
+    public void A_split_block_reads_as_a_split_with_its_increments_in_order()
+    {
+        RefinementReport.TryRead(Split).Should().Be(RefinementOutcome.Split);
+        RefinementSplitReport.TryRead(Split).Should().Equal("Read the flag", "Act on the flag", "Report the flag");
+    }
+
+    [Fact]
+    public void An_increment_line_forgives_what_a_discovery_task_line_forgives_and_a_fence_and_blank_lines_may_close_the_block()
+    {
+        string report = "Prose.\n\n```\n**REFINEMENT: split.**\n- **TASK:** `Read the flag`.\n1. *TASK: Act on the `flag` value*\n```\n\n";
+
+        RefinementSplitReport.TryRead(report).Should().Equal("Read the flag", "Act on the `flag` value");
+        RefinementReport.TryRead(report).Should().Be(RefinementOutcome.Split);
+    }
+
+    [Theory]
+    [InlineData("Prose.\n\nREFINEMENT: split\nTASK: Only one\n")]
+    [InlineData("Prose.\n\nREFINEMENT: split\n")]
+    [InlineData("Prose.\n\nREFINEMENT: split\nTASK: One\nTASK: **.**\n")]
+    [InlineData("Prose.\n\nREFINEMENT: split\nTASK: One\n\nTASK: Two\n")]
+    [InlineData("Prose.\n\nREFINEMENT: split\n\nTASK: One\nTASK: Two\n")]
+    [InlineData("Prose.\n\nTASK: Zero\nREFINEMENT: split\nTASK: One\nTASK: Two\n")]
+    [InlineData("Prose.\n\nREFINEMENT: question\nREFINEMENT: split\nTASK: One\nTASK: Two\n")]
+    [InlineData("Prose.\n\nREFINEMENT: question\n\nREFINEMENT: split\nTASK: One\nTASK: Two\n")]
+    [InlineData("Prose.\n\nREFINEMENT: split\nTASK: One\nREFINEMENT: split\nTASK: Two\nTASK: Three\n")]
+    [InlineData("Prose.\n\nREFINEMENT: question\nTASK: One\nTASK: Two\n")]
+    [InlineData("Prose.\n\nREFINEMENT: revised\nTASK: One\n")]
+    [InlineData("Prose.\n\nREFINEMENT: split\nTASK: One\nTASK: Two\nMore prose.\n")]
+    public void A_split_block_with_fewer_than_two_increments_a_blank_one_a_blank_line_a_stray_task_line_or_a_second_outcome_is_unreadable(string report)
+    {
+        RefinementSplitReport.TryRead(report).Should().BeNull();
+        RefinementReport.TryRead(report).Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("Prose.\n\nREFINEMENT: revised\n", "Revised")]
+    [InlineData("Prose.\n\nTASK: Not an increment\nREFINEMENT: unchanged\n", "Unchanged")]
+    [InlineData("Prose with REFINEMENT: split\nTASK: quoted\nTASK: quoted\n\nMore prose.\n\nREFINEMENT: question\n", "Question")]
+    public void A_report_ending_in_any_other_outcome_reads_as_it_did_before_the_split(string report, string expected)
+    {
+        RefinementReport.TryRead(report)!.Value.Should().Be(expected);
+        RefinementSplitReport.TryRead(report).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task A_split_report_file_is_read_whole_and_a_missing_one_says_so()
+    {
+        string path = Path.Combine(_directory, "split.md");
+        await File.WriteAllTextAsync(path, Split);
+
+        (await RefinementReport.ReadAsync(path, CancellationToken.None)).Outcome.Should().Be(RefinementOutcome.Split);
+        RefinementSplitReading reading = await RefinementSplitReport.ReadFileAsync(path, CancellationToken.None);
+        reading.Increments.Should().Equal("Read the flag", "Act on the flag", "Report the flag");
+        (await RefinementSplitReport.ReadFileAsync(Path.Combine(_directory, "nope.md"), CancellationToken.None)).Missing.Should().BeTrue();
     }
 }
