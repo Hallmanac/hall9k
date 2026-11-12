@@ -181,6 +181,7 @@ public static class EventScopeRegistry
         [typeof(PlanDiscoveryDispatched)] = EventScope.NodeScoped,
         [typeof(PlanDiscoveryParked)] = EventScope.NodeScoped,
         [typeof(PlanDraftsCut)] = EventScope.NodeScoped,
+        [typeof(PlanSplitAccepted)] = EventScope.NodeScoped,
         [typeof(PlanStopped)] = EventScope.NodeScoped,
         [typeof(PlanTokensRecorded)] = EventScope.NodeScoped,
 

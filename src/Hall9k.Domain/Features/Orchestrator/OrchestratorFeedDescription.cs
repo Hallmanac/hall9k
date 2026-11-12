@@ -377,10 +377,15 @@ public static class OrchestratorFeedDescription
     /// A plan's park: the plan, the draft, and the reason from the closed list, with the verbs that read and answer it.
     /// Ids and the reason alone, because a session's words never reach the feed.
     /// </summary>
-    private static string PlanParkLine(PlanParked parked) =>
-        $"plan {DomainId.Short(parked.Id)} parked on draft {DomainId.Short(parked.DraftId)}: {parked.Reason.Description}; "
-        + $"read it with h9k plan show {DomainId.Short(parked.Id)}, then answer it with h9k plan resume {DomainId.Short(parked.Id)} "
-        + "or by hand";
+    private static string PlanParkLine(PlanParked parked)
+    {
+        string plan = DomainId.Short(parked.Id);
+        string answer = parked.Reason == PlanParkReason.SplitProposed
+            ? $"then answer it with h9k plan split accept {plan}, or h9k plan resume {plan} to keep the draft as one task"
+            : $"then answer it with h9k plan resume {plan} or by hand";
+        return $"plan {plan} parked on draft {DomainId.Short(parked.DraftId)}: {parked.Reason.Description}; "
+            + $"read it with h9k plan show {plan}, {answer}";
+    }
 
     /// <summary>
     /// A plan's park in discovery: the plan, the idea, and the reason from the closed list, with the verbs that read and answer

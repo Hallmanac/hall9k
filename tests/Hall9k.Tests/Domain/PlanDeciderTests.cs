@@ -452,4 +452,131 @@ public sealed class PlanDeciderTests
         Action resumeEnded = () => PlanDecider.Resume(plan, _owner, Now);
         resumeEnded.Should().Throw<DomainConflictException>();
     }
+
+    private PlanAggregate ParkedOnSplit(out Guid draft, out Guid other)
+    {
+        draft = DomainId.New();
+        other = DomainId.New();
+        PlanAggregate plan = Started(PlanPhase.Refinement, draft, other);
+        return Fold(plan, PlanDecider.AfterRefinement(
+            plan, plan.Draft(draft)!, RefinementPurpose.Refine, RefinementOutcome.Split, DomainId.New(), Now, TaskType.Feature));
+    }
+
+    [Fact]
+    public void A_split_parks_the_plan_on_the_draft_for_a_person_to_accept_and_applies_no_revision()
+    {
+        Guid draft = DomainId.New();
+        Guid session = DomainId.New();
+        PlanAggregate plan = Started(PlanPhase.Refinement, draft);
+
+        IReadOnlyList<object> after = PlanDecider.AfterRefinement(
+            plan, plan.Drafts.Single(), RefinementPurpose.Refine, RefinementOutcome.Split, session, Now, TaskType.Feature);
+
+        after.Should().ContainSingle().Which.Should().BeOfType<PlanParked>().Which.Reason.Should().Be(PlanParkReason.SplitProposed);
+        PlanDraftState parked = Fold(plan, after).Drafts.Single();
+        parked.Phase.Should().Be(PlanPhase.Refinement);
+        parked.Outcome.Should().Be(PlanOutcome.SplitProposed);
+        parked.LatestSessionId.Should().Be(session);
+        PlanParkReason.SplitProposed.WayForward.Should().Contain("h9k plan split accept <plan>").And.Contain("journal.md").And.Contain("h9k plan resume");
+    }
+
+    [Theory]
+    [InlineData("Refactor")]
+    [InlineData("Chore")]
+    [InlineData(null)]
+    public void A_split_of_a_refactor_or_a_chore_or_a_draft_whose_type_is_unknown_parks_as_a_question(string? type)
+    {
+        Guid draft = DomainId.New();
+        PlanAggregate plan = Started(PlanPhase.Refinement, draft);
+
+        PlanDecider.AfterRefinement(
+                plan, plan.Drafts.Single(), RefinementPurpose.Refine, RefinementOutcome.Split, DomainId.New(), Now,
+                type is null ? null : TaskType.Parse(type))
+            .Should().ContainSingle().Which.Should().BeOfType<PlanParked>().Which.Reason.Should().Be(PlanParkReason.Question);
+    }
+
+    [Fact]
+    public void A_split_in_a_feedback_step_parks_as_a_question()
+    {
+        Guid draft = DomainId.New();
+        PlanAggregate plan = new();
+        plan.Apply(new PlanStarted(DomainId.New(), _projectId, [draft], PlanPhase.Refinement, false, false, _owner, Now, FeedbackStepTaskId: draft));
+
+        PlanDecider.AfterRefinement(
+                plan, plan.Drafts.Single(), RefinementPurpose.FeedbackRefine, RefinementOutcome.Split, DomainId.New(), Now, TaskType.Feature)
+            .Should().ContainSingle().Which.Should().BeOfType<PlanParked>().Which.Reason.Should().Be(PlanParkReason.Question);
+    }
+
+    [Fact]
+    public void An_accepted_split_puts_the_original_back_to_refinement_and_adds_the_new_drafts_after_the_others_in_order()
+    {
+        PlanAggregate plan = ParkedOnSplit(out Guid draft, out Guid other);
+        Guid second = DomainId.New();
+        Guid third = DomainId.New();
+
+        PlanSplitAccepted accepted = PlanDecider.AcceptSplit(plan, draft, [second, third], true, false, _owner, Now);
+        Fold(plan, [accepted]);
+
+        plan.Drafts.Select(state => state.DraftId).Should().Equal(draft, other, second, third);
+        plan.IsParked.Should().BeFalse();
+        plan.NoExistingItemAttested.Should().BeTrue();
+        foreach (Guid id in new[] { draft, second, third })
+        {
+            PlanDraftState state = plan.Draft(id)!;
+            state.Phase.Should().Be(PlanPhase.Refinement);
+            state.Round.Should().Be(0);
+            state.Purpose.Should().Be(RefinementPurpose.Refine);
+            state.HasSplit.Should().BeTrue();
+            PlanDecider.NextStep(state).Should().Be(PlanStepKind.DispatchRefinement);
+        }
+
+        plan.Draft(other)!.HasSplit.Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_lineage_splits_once_per_plan_so_a_second_split_of_the_original_or_a_new_draft_parks_as_a_question()
+    {
+        PlanAggregate plan = ParkedOnSplit(out Guid draft, out Guid other);
+        Guid second = DomainId.New();
+        Fold(plan, [PlanDecider.AcceptSplit(plan, draft, [second], false, false, _owner, Now)]);
+
+        foreach (Guid id in new[] { draft, second })
+        {
+            PlanDecider.AfterRefinement(plan, plan.Draft(id)!, RefinementPurpose.Refine, RefinementOutcome.Split, DomainId.New(), Now, TaskType.Feature)
+                .Should().ContainSingle().Which.Should().BeOfType<PlanParked>().Which.Reason.Should().Be(PlanParkReason.Question);
+        }
+
+        PlanDecider.AfterRefinement(plan, plan.Draft(other)!, RefinementPurpose.Refine, RefinementOutcome.Split, DomainId.New(), Now, TaskType.Feature)
+            .Should().ContainSingle().Which.Should().BeOfType<PlanParked>().Which.Reason.Should().Be(PlanParkReason.SplitProposed);
+    }
+
+    [Fact]
+    public void The_split_to_accept_is_the_only_parked_one_or_the_named_one_and_anything_else_is_refused()
+    {
+        PlanAggregate plan = ParkedOnSplit(out Guid draft, out Guid other);
+
+        PlanDecider.SplitToAccept(plan, null).DraftId.Should().Be(draft);
+        PlanDecider.SplitToAccept(plan, draft).DraftId.Should().Be(draft);
+        FluentActions.Invoking(() => PlanDecider.SplitToAccept(plan, other))
+            .Should().Throw<DomainConflictException>().WithMessage("*not parked on a proposed split*");
+
+        Fold(plan, PlanDecider.AfterRefinement(plan, plan.Draft(other)!, RefinementPurpose.Refine, RefinementOutcome.Split, DomainId.New(), Now, TaskType.Feature));
+        FluentActions.Invoking(() => PlanDecider.SplitToAccept(plan, null))
+            .Should().Throw<DomainValidationException>().WithMessage("*--draft*");
+        PlanDecider.SplitToAccept(plan, other).DraftId.Should().Be(other);
+    }
+
+    [Fact]
+    public void A_split_is_refused_on_a_plan_with_none_parked_and_on_one_that_has_ended()
+    {
+        Guid draft = DomainId.New();
+        PlanAggregate plan = Started(PlanPhase.Refinement, draft);
+        FluentActions.Invoking(() => PlanDecider.SplitToAccept(plan, null))
+            .Should().Throw<DomainConflictException>().WithMessage("*nothing to accept*");
+
+        PlanAggregate parked = ParkedOnSplit(out Guid split, out _);
+        parked.Apply(new PlanCancelled(parked.Id, _projectId, "changed course", _owner, Now));
+        FluentActions.Invoking(() => PlanDecider.AcceptSplit(parked, split, [DomainId.New()], false, false, _owner, Now))
+            .Should().Throw<DomainConflictException>().WithMessage("*Cancelled*");
+    }
 }

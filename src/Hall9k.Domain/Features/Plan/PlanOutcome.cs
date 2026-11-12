@@ -14,6 +14,7 @@ public sealed record PlanOutcome
     public static readonly PlanOutcome Revised = new("Revised", "refinement revised the draft");
     public static readonly PlanOutcome Unchanged = new("Unchanged", "refinement left the draft unchanged");
     public static readonly PlanOutcome Question = new("Question", "refinement ended with a question");
+    public static readonly PlanOutcome SplitProposed = new("SplitProposed", "refinement proposed a split into increments");
     public static readonly PlanOutcome Applied = new("Applied", "the challenge's changes were applied");
     public static readonly PlanOutcome PublishAsWritten = new("PublishAsWritten", "challenge verdict: publish as written");
     public static readonly PlanOutcome PublishAsRevised = new("PublishAsRevised", "challenge verdict: publish as revised");
@@ -45,6 +46,7 @@ public sealed record PlanOutcome
         "Revised" => Revised,
         "Unchanged" => Unchanged,
         "Question" => Question,
+        "SplitProposed" => SplitProposed,
         "Applied" => Applied,
         "PublishAsWritten" => PublishAsWritten,
         "PublishAsRevised" => PublishAsRevised,

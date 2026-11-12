@@ -55,6 +55,9 @@ internal static class PlanAggregateExtensions
             case PlanStopped stopped:
                 plan.Apply(stopped);
                 break;
+            case PlanSplitAccepted split:
+                plan.Apply(split);
+                break;
             default:
                 break;
         }

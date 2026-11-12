@@ -61,4 +61,16 @@ public sealed class MemberTextCopyGuardTests
         MemberTextCopyGuard.Refusal(Revision("Show the cart"), []).Should().BeNull();
         MemberTextCopyGuard.Refusal(Revision("Show the cart"), null).Should().BeNull();
     }
+
+    [Fact]
+    public void A_split_whose_increment_line_copies_a_member_tasks_objective_is_refused_and_one_that_does_not_is_offered()
+    {
+        string? refusal = MemberTextCopyGuard.SplitRefusal(
+            ["Show the cart", "Then provision the CART cache for the   storefront"], [CartCache]);
+
+        refusal.Should().Contain(DomainId.Short(CartCache.Id)).And.Contain("split");
+        refusal.Should().NotContainEquivalentOf("provision the cart cache");
+        MemberTextCopyGuard.SplitRefusal(["Show the cart", "Show the cart badge"], [CartCache]).Should().BeNull();
+        MemberTextCopyGuard.SplitRefusal(["Provision the cart cache for the storefront", "Two"], null).Should().BeNull();
+    }
 }

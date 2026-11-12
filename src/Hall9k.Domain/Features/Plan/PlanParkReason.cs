@@ -20,6 +20,15 @@ public sealed record PlanParkReason
         "the refinement session ended with a question only a person can settle",
         "answer it in the draft's journal.md or with h9k task revise, then h9k plan resume");
 
+    /// <summary>
+    /// The session proposed splitting the draft into increments and wrote no revision. The increments are in its report and
+    /// nowhere in the record; <c>h9k plan show</c> reads them from the file.
+    /// </summary>
+    public static readonly PlanParkReason SplitProposed = new(
+        "SplitProposed",
+        "the refinement session proposed splitting the draft into increments",
+        "h9k plan split accept <plan> cuts the increments as stacked drafts in this plan; to keep the draft as one task, record that decision in the draft's journal.md, then h9k plan resume");
+
     public static readonly PlanParkReason VerdictNotApplied = new(
         "VerdictNotApplied",
         "the session told to apply the challenge verdict changed nothing",
@@ -96,6 +105,7 @@ public sealed record PlanParkReason
     {
         "RoundsExhausted" => RoundsExhausted,
         "Question" => Question,
+        "SplitProposed" => SplitProposed,
         "VerdictNotApplied" => VerdictNotApplied,
         "DraftChanged" => DraftChanged,
         "RevisionRefused" => RevisionRefused,

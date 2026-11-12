@@ -2,8 +2,8 @@ namespace Hall9k.Domain.Features.Plan.Events;
 
 /// <summary>
 /// <c>h9k plan pursue</c>: a person answered the gate by pursuing the idea, and the report's proposed tasks were cut as
-/// drafts in the same save. Appended once; the plan's drafts are fixed from here on and every step after is a plan's ordinary
-/// path from refinement. The stream's version is the fence that makes two pursues cut one set of drafts.
+/// drafts in the same save. Appended once; every step after is a plan's ordinary path from refinement, and the only drafts the
+/// plan gains later are those an accepted split cuts (<see cref="PlanSplitAccepted"/>). The stream's version is the fence that makes two pursues cut one set of drafts.
 /// </summary>
 /// <param name="Id">The plan's id.</param>
 /// <param name="ProjectId">The project every draft belongs to.</param>
