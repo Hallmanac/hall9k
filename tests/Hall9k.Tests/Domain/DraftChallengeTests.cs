@@ -29,10 +29,21 @@ public sealed class DraftChallengeTests
         return task;
     }
 
+    /// <summary>
+    /// A verdict for the running session, dispatching one on <paramref name="task"/> first when none runs, because an outcome
+    /// applies only to the running session.
+    /// </summary>
     private static DraftChallengeRecorded Verdict(
-        TaskAggregate task, ChallengeVerdict verdict, int must = 0, int should = 0, int park = 0) =>
-        new(task.Id, DomainId.New(), Node, verdict, ChallengeFailureReason.Unknown, must, should, park,
+        TaskAggregate task, ChallengeVerdict verdict, int must = 0, int should = 0, int park = 0)
+    {
+        if (task.RunningChallengeSessionId is null)
+        {
+            task.Apply(new DraftChallengeDispatched(task.Id, DomainId.New(), Node, Now, AgentModel.ChallengeDefault, AgentEffort.High));
+        }
+
+        return new(task.Id, task.RunningChallengeSessionId, Node, verdict, ChallengeFailureReason.Unknown, must, should, park,
             AgentModel.ChallengeDefault, AgentEffort.High, Now);
+    }
 
     private static DraftChallengeRecorded Failure(TaskAggregate task, ChallengeFailureReason reason) =>
         new(task.Id, null, Node, ChallengeVerdict.Unknown, reason, 0, 0, 0, AgentModel.ChallengeDefault, AgentEffort.High, Now);

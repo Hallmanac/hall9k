@@ -269,8 +269,10 @@ public sealed class FeedbackStepTests
         (_, TaskReturnedToDraft drafted, FeedbackStepRefinementBegun begun) = FeedbackStepDecider.TakeBackToDraft(task, DomainId.New(), Owner, Now);
         task.Apply(drafted);
         task.Apply(begun);
+        Guid challenge = DomainId.New();
+        task.Apply(new DraftChallengeDispatched(task.Id, challenge, Node, Now, AgentModel.ChallengeDefault, AgentEffort.High));
         task.Apply(new DraftChallengeRecorded(
-            task.Id, DomainId.New(), Node, ChallengeVerdict.PublishAsRevised, ChallengeFailureReason.Unknown, 2, 0, 0,
+            task.Id, challenge, Node, ChallengeVerdict.PublishAsRevised, ChallengeFailureReason.Unknown, 2, 0, 0,
             AgentModel.ChallengeDefault, AgentEffort.High, Now));
         TaskDependencyGraph graph = new([Blocker(true)]);
         ChallengeGateInput required = new(true, "demo", null);
@@ -278,18 +280,23 @@ public sealed class FeedbackStepTests
         Action beforeJudging = () => TaskDecider.Publish(task, graph, Now, Owner, challenge: required);
         beforeJudging.Should().Throw<DomainBusinessRuleException>().WithMessage("*not been revised since*");
 
-        task.Apply(Judged(task.Id, RefinementOutcome.Unknown, RefinementFailureReason.TimedOut));
+        task.Apply(Judged(task, RefinementOutcome.Unknown, RefinementFailureReason.TimedOut));
         Action afterAFailedJudging = () => TaskDecider.Publish(task, graph, Now, Owner, challenge: required);
         afterAFailedJudging.Should().Throw<DomainBusinessRuleException>("a judging session that failed judged nothing");
 
-        task.Apply(Judged(task.Id, RefinementOutcome.Unchanged, RefinementFailureReason.Unknown));
+        task.Apply(Judged(task, RefinementOutcome.Unchanged, RefinementFailureReason.Unknown));
         task.JudgedSinceChallengeVerdict.Should().BeTrue();
         TaskDecider.Publish(task, graph, Now, Owner, challenge: required).ChallengeSkipReason
             .Should().BeNull("declining every must with a reason for each is the verdict applied, so the daemon publishes the result");
     }
 
-    private static DraftRefinementRecorded Judged(Guid taskId, RefinementOutcome outcome, RefinementFailureReason failure) =>
-        new(taskId, DomainId.New(), Node, outcome, failure, RefinementPurpose.JudgeVerdict, AgentModel.ChallengeDefault, AgentEffort.High, Now);
+    /// <summary>A judging session's outcome, dispatched on <paramref name="task"/> first because an outcome applies only to the running session.</summary>
+    private static DraftRefinementRecorded Judged(TaskAggregate task, RefinementOutcome outcome, RefinementFailureReason failure)
+    {
+        Guid session = DomainId.New();
+        task.Apply(new DraftRefinementDispatched(task.Id, session, Node, Now, AgentModel.ChallengeDefault, AgentEffort.High, RefinementPurpose.JudgeVerdict));
+        return new(task.Id, session, Node, outcome, failure, RefinementPurpose.JudgeVerdict, AgentModel.ChallengeDefault, AgentEffort.High, Now);
+    }
 
     [Fact]
     public void The_requeue_is_refused_when_the_assignee_changed_while_the_step_ran()
