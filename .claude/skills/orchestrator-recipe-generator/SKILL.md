@@ -977,6 +977,16 @@ carries the same house rules, and this recipe is not its source. Both:
   own `journal.md` and end the turn there, since a headless session cannot wait on an answer that
   cannot arrive mid-flight. Otherwise write the result into the workspace, rewrite the journal, and
   end with a short summary and the open questions the operator still has to settle.
+- Carry the same increment guidance the plan's discovery and refinement templates carry, with the
+  same exemption. Discovery proposes its tasks as increments in order, the first being the smallest
+  increment that is useful on its own (behind a flag if it needs one), and says for each what it
+  delivers alone and what it builds on. Refinement judges a draft by whether it is the smallest
+  increment useful on its own, and when the draft should split it names the proposed increments in
+  order, smallest useful one first, each with what it delivers alone and what it builds on, and never
+  narrows the draft to one increment in a way that drops the rest of its work. Work typed Refactor or
+  Chore (or, in refinement, given either type by the session's own revision) is mechanical and exempt,
+  and discovery says so for each such task: a large mechanical pull request is acceptable, while a
+  large feature pull request means the design went wrong.
 - Carry the *Writing conventions* and *Talking to the operator* canonical blocks, verbatim; the
   *Model and effort* block is not one of them here (see *The canonical blocks* above).
 - **In solution mode** the same two recipes are launched by the solution orchestrator and differ in

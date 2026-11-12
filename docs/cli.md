@@ -420,11 +420,11 @@ which is refused for a draft with no acceptance criteria; a plan from an idea st
 phases, rounds, and closed outcomes and no prose, not even a title, and none of its records leaves the node, so no
 other node starts a session for it and a plan record arriving by replication starts nothing. It creates no run, lease,
 branch, or worktree. The loop is the daemon's: one refinement session per draft (a headless session that tests the draft's
-claims against the commit the checkout is at, states the shape before any criterion, writes criteria someone else can
+claims against the commit the checkout is at, judges a feature draft by whether it is the smallest increment that is useful on its own (a draft typed Refactor or Chore is exempt), states the shape before any criterion, writes criteria someone else can
 check, proposes the smallest change, and keeps security detail out of the task text) writes a report and, when it
 revises, a revision file beside it; the daemon applies the revision with the same validation and effects as
 `h9k task revise --file` by running the installed `h9k` as a child process, and only if nobody else changed the draft
-after dispatch and the file names no model. Then the same challenge `h9k task challenge` runs, requested by the plan.
+after dispatch and the file names no model. Then the same challenge `h9k task challenge` runs, requested by the plan; it too judges a feature draft by whether it is the smallest increment useful on its own, asking the challenger to name a smaller one rather than whether the draft fits one pull request.
 `publish as written` makes the draft ready; `publish as revised` gets one refinement session told to apply the verdict's
 must and should changes, after which the draft is ready with no further challenge, and a session that changed nothing
 parks the plan; `do not publish` gets a session told to answer the verdict and then a new challenge, even when that session changed nothing (it may have answered in the journal, which the new challenge reads); a park change
@@ -503,7 +503,7 @@ and when that checkout could not be brought up to the remote base branch, and it
 `journal.md` when there is one, and any earlier discovery report. It cuts no draft and decides nothing about the idea
 (`h9k task add`, `h9k idea revise`, `promote`, `conclude`, `archive`, and every `h9k plan` write are refused inside it), and it
 leaves every file already in the workspace as it found it. It says what the idea is and whether it becomes one task, several,
-a ruling, or nothing; states the shape; for a hard-to-reverse direction gives a recommendation, the strongest case against it,
+a ruling, or nothing; states the shape, proposing the smallest useful increment first and the rest in order, each with what it delivers alone and what it builds on (mechanical work of the Refactor or Chore kind is exempt); for a hard-to-reverse direction gives a recommendation, the strongest case against it,
 and what it still proposes; names each design answer do-now, fold-in, or park; keeps security detail out of every objective;
 and opens its report with a plain-language recap and one acted-out scenario of the world after it ships. Its model and effort
 come from the refinement role (`--model-refinement`, `--effort-refinement`; `h9k config show` says the role covers
