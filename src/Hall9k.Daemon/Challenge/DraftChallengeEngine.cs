@@ -72,7 +72,8 @@ public sealed class DraftChallengeEngine(
     ProcessRunner processRunner,
     ReadingCheckoutLeases checkoutLeases,
     IOptions<DaemonOptions> options,
-    ILogger<DraftChallengeEngine> logger)
+    ILogger<DraftChallengeEngine> logger,
+    TimeProvider? clock = null)
 {
     /// <summary>How long the shutdown path gets to record an outcome: it runs while the daemon is stopping.</summary>
     private static readonly TimeSpan ShutdownRecordTimeout = TimeSpan.FromSeconds(5);
@@ -80,6 +81,8 @@ public sealed class DraftChallengeEngine(
     private readonly DaemonOptions _options = options.Value;
     private readonly SemaphoreSlim _oneAtATime = new(1, 1);
     private readonly HashSet<Guid> _running = [];
+    private readonly ForeignDispatchSettle _foreignSettle = new(options.Value.ForeignSessionSettlePeriod);
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
 
     /// <summary>What one request came to, for the sweep's tally.</summary>
     private enum Attempt
@@ -177,6 +180,7 @@ public sealed class DraftChallengeEngine(
                 .ToListAsync(cancellationToken);
         }
 
+        _foreignSettle.KeepOnly(running.Select(task => task.RunningChallengeSessionId).OfType<Guid>().ToHashSet());
         int recovered = 0;
         int expired = 0;
         foreach (TaskDetails task in running)
@@ -203,7 +207,8 @@ public sealed class DraftChallengeEngine(
                 recovered++;
             }
             else if (task.RunningChallengeDispatchedAt is { } dispatchedAt
-                && DateTimeOffset.UtcNow - dispatchedAt > _options.ForeignPublicationCeiling)
+                && _clock.GetUtcNow() - dispatchedAt > _options.ForeignPublicationCeiling
+                && _foreignSettle.HasSettled(sessionId, _clock.GetUtcNow()))
             {
                 logger.LogWarning(
                     "Task {TaskId}: challenge session {SessionId} dispatched by node {Node} at {DispatchedAt:u} has stood longer than {Ceiling} with no outcome; ending it here",
@@ -212,6 +217,7 @@ public sealed class DraftChallengeEngine(
                     task.Id, sessionId, task.RunningChallengeNodeId ?? node.NodeId, null,
                     ChallengeFailureReason.DispatchExpired, task.RunningChallengeModel, task.RunningChallengeEffort,
                     null, cancellationToken);
+                _foreignSettle.Forget(sessionId);
                 expired++;
             }
         }

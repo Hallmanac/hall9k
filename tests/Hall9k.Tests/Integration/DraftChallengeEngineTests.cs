@@ -104,7 +104,7 @@ public sealed class DraftChallengeEngineTests(PostgresFixture postgres) : IClass
 
     private static DraftChallengeEngine NewEngine(
         DocumentStore store, NodeContext node, IExecutor executor, FakeProcessManager processes,
-        TimeSpan? timeout = null, TimeSpan? foreignCeiling = null, ReadingCheckoutLeases? leases = null) =>
+        TimeSpan? timeout = null, TimeSpan? foreignCeiling = null, ReadingCheckoutLeases? leases = null, TimeProvider? clock = null) =>
         new(store, node, executor, processes, new FixedWorktrees(), (_, _, _, _) => Task.FromResult(
                 new ProcessResult(0, "0123abc\n", string.Empty)),
             leases ?? new ReadingCheckoutLeases(),
@@ -113,7 +113,8 @@ public sealed class DraftChallengeEngineTests(PostgresFixture postgres) : IClass
                 ChallengeTimeout = timeout ?? TimeSpan.FromSeconds(20),
                 ForeignPublicationCeiling = foreignCeiling ?? TimeSpan.FromHours(1),
             }),
-            NullLogger<DraftChallengeEngine>.Instance);
+            NullLogger<DraftChallengeEngine>.Instance,
+            clock);
 
     private sealed class FixedWorktrees : IWorktreeManager
     {
@@ -506,21 +507,24 @@ public sealed class DraftChallengeEngineTests(PostgresFixture postgres) : IClass
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         (Guid taskId, _) = await SeedAsync(store, node, cts.Token, requested: false);
         Guid otherNode = DomainId.New();
+        SettableClock clock = new(DateTimeOffset.UtcNow);
         await using (IDocumentSession session = store.LightweightSession())
         {
             session.Events.Append(taskId, new DraftChallengeDispatched(
-                taskId, DomainId.New(), otherNode, DateTimeOffset.UtcNow.AddHours(-2), AgentModel.ChallengeDefault, AgentEffort.High));
+                taskId, DomainId.New(), otherNode, clock.GetUtcNow().AddMinutes(-30), AgentModel.ChallengeDefault, AgentEffort.High));
             await session.SaveChangesAsync(cts.Token);
         }
 
         FakeProcessManager processes = new();
-        DraftChallengeEngine young = NewEngine(
-            store, node, new ScriptedChallenge(processes, GoodReport), processes, foreignCeiling: TimeSpan.FromHours(3));
-        (await young.PollOnceAsync(cts.Token)).Expired.Should().Be(0);
+        DraftChallengeEngine engine = NewEngine(
+            store, node, new ScriptedChallenge(processes, GoodReport), processes, foreignCeiling: TimeSpan.FromHours(1), clock: clock);
+        (await engine.PollOnceAsync(cts.Token)).Expired.Should().Be(0, "inside the ceiling the other node is still the one to finish it");
 
-        DraftChallengeSweepResult expired = await NewEngine(
-            store, node, new ScriptedChallenge(processes, GoodReport), processes, foreignCeiling: TimeSpan.FromHours(1))
-            .PollOnceAsync(cts.Token);
+        clock.Advance(TimeSpan.FromMinutes(40));
+        (await engine.PollOnceAsync(cts.Token)).Expired.Should().Be(0, "the first sweep that finds it overdue only starts the settle period");
+
+        clock.Advance(new DaemonOptions().ForeignSessionSettlePeriod);
+        DraftChallengeSweepResult expired = await engine.PollOnceAsync(cts.Token);
 
         expired.Expired.Should().Be(1);
         DraftChallengeRecorded recorded = (await StreamAsync(store, taskId, cts.Token))
@@ -529,6 +533,45 @@ public sealed class DraftChallengeEngineTests(PostgresFixture postgres) : IClass
         recorded.NodeId.Should().Be(otherNode, "the node that holds whatever report exists is the one named");
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.RunningChallengeSessionId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task An_overdue_dispatch_whose_outcome_arrives_within_the_settle_period_is_never_expired()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, _) = await SeedAsync(store, node, cts.Token, requested: false);
+        Guid otherNode = DomainId.New();
+        Guid sessionId = DomainId.New();
+        SettableClock clock = new(DateTimeOffset.UtcNow);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(taskId, new DraftChallengeDispatched(
+                taskId, sessionId, otherNode, clock.GetUtcNow().AddHours(-2), AgentModel.ChallengeDefault, AgentEffort.High));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeProcessManager processes = new();
+        DraftChallengeEngine engine = NewEngine(
+            store, node, new ScriptedChallenge(processes, GoodReport), processes, foreignCeiling: TimeSpan.FromHours(1), clock: clock);
+        (await engine.PollOnceAsync(cts.Token)).Expired.Should().Be(0, "a node just back from suspension may not have its inbox yet");
+        (await StreamAsync(store, taskId, cts.Token)).OfType<DraftChallengeRecorded>().Should().BeEmpty();
+
+        // The dispatching node's verdict, recorded long ago, arrives through replication.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(taskId, new DraftChallengeRecorded(
+                taskId, sessionId, otherNode, ChallengeVerdict.PublishAsWritten, ChallengeFailureReason.Unknown, 0, 0, 0,
+                AgentModel.ChallengeDefault, AgentEffort.High, clock.GetUtcNow().AddHours(-1.9)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        clock.Advance(new DaemonOptions().ForeignSessionSettlePeriod + TimeSpan.FromMinutes(1));
+        (await engine.PollOnceAsync(cts.Token)).Expired.Should().Be(0);
+
+        (await StreamAsync(store, taskId, cts.Token)).OfType<DraftChallengeRecorded>()
+            .Should().ContainSingle().Which.Failure.Should().Be(ChallengeFailureReason.Unknown);
     }
 
     [Fact]
