@@ -166,8 +166,16 @@ do not publish gets a session that answers the verdict and then a new challenge)
 each as `h9k task publish --no-queue` would, by running the installed `h9k` as a child process, so the challenge gate, the
 tracker item, and the ledger record happen as by hand. The daemon option `PlanRoundCap` (default 2) is the whole cap: one
 round is one challenge of one draft, and only `h9k plan resume` after rounds exhausted, or a new plan, grants more. The
-plan parks, naming the draft, for one of: rounds exhausted, question, verdict not applied, draft changed, revision refused,
-session failed, challenge failed, or publish refused; while parked no new session starts for any of its drafts. `h9k plan
+plan parks, naming the draft, for one of: rounds exhausted, question, split proposed, verdict not applied, draft changed,
+revision refused, session failed, challenge failed, or publish refused; while parked no new session starts for any of its drafts.
+A refinement session that judges its draft should split ends its report with `REFINEMENT: split` followed directly by two or
+more `TASK: <objective>` lines, the increments in order, and writes no revision; the plan parks as split proposed, `h9k plan
+show` lists the increments (read from the report now), and `h9k status` offers `h9k plan split accept <plan> [--draft <d>]
+[--no-existing-item|--untracked]` beside `h9k plan resume`. The accept makes the draft's objective the first increment and cuts
+each later one as a new draft of the same plan (the original's type, epic, idea, and context; blocked by and stacked on the one
+before it), each refined and challenged on its own; keeping the draft as one task is a decision in its `journal.md` and a resume.
+A lineage splits once per plan, and a draft typed Refactor or Chore, or a feedback step's, never splits: such a split parks as a
+question. A split whose increments copy another member project's task text parks as revision refused. `h9k plan
 show <plan>` prints the state and, per draft, phase, round, latest outcome, and where the latest report is, with the reason,
 the way forward, and where to read the rest for a park; `h9k plan list [--project <p>] [--all]` lists plans;
 `h9k plan resume <plan>` re-runs the step that parked; `h9k plan cancel <plan> --reason "<why>"` ends a live plan, stops its
@@ -206,7 +214,7 @@ stop, the proposed objectives, the report's path, and a line to paste to resume 
 refused at the gate (after a failed session it runs discovery again). The two answers:
 `h9k plan pursue <plan> [--epic-title "<t>"] [--no-existing-item|--untracked]` reads the report from the workspace at that
 moment (an edit counts) and in one save cuts a draft per `TASK` line (what `h9k task add --from-idea <idea> --objective "…"`
-would create, with a context that also names the idea and the report's file name) and moves the plan to refinement, with the drafts then fixed (`--epic-title "<t>"` groups two or more of them under one epic: in a project
+would create, with a context that also names the idea and the report's file name) and moves the plan to refinement, after which only an accepted split adds drafts (`--epic-title "<t>"` groups two or more of them under one epic: in a project
 that belongs to an open solution it is a solution epic made as `h9k epic add` makes it, a copy in each member this node holds sharing one key
 with the drafts in this project's copy, refused where `h9k epic add` would refuse; in a project in no open solution it is one plain epic); and
 `h9k plan stop <plan> --reason "<why>"` ends it as Stopped, a normal ending that leaves the idea Captured. `h9k plan cancel` before
@@ -981,6 +989,7 @@ h9k plan start <draft> [<draft>...] [--at challenge] [--no-existing-item|--untra
 h9k plan start --idea <idea>                       # unattended discovery: one headless session writes a report into the idea's workspace, then the plan parks at a gate
 h9k plan pursue <plan> [--epic-title "<t>"] [--no-existing-item|--untracked]   # the gate: cut the report's TASK lines as drafts (read from the workspace now) and carry them on
 h9k plan stop <plan> --reason "<why>"              # the gate: end the plan as Stopped (a normal ending); the idea stays Captured
+h9k plan split accept <plan> [--draft <d>] [--no-existing-item|--untracked]   # accept a proposed split: the draft becomes the first increment, each later one a new stacked draft of the plan (once per lineage; never Refactor or Chore)
 h9k plan show <plan>                               # state, each draft's phase / round / latest outcome / report path; a park's reason, way forward, and where to read the rest
 h9k plan list [--project <p>] [--all]              # the plans on this node, live ones by default
 h9k plan resume <plan>                             # re-runs the step that parked; after rounds exhausted, grants one more round; refused at discovery's gate
