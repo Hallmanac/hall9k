@@ -595,8 +595,10 @@ Provenance decides what is injected, not just what is displayed. Three marks: re
 run named, recorded by an agent run on this node, and recorded by an agent run on another
 node. The first says only what was observed, which is that nothing named a run: a person at a
 shell records that, and so does an agent that skips `--task`, and nothing on the event separates
-them, which is why the shipped templates make a dispatched session name its task. The third is
-rendered in `lessons.md` and listed by `h9k learn list` and deliberately held
+them, which is why the shipped templates make a dispatched session name its task. A lesson from
+another node of the owner's own fleet reaches prompts, since the owner's machines are one trust
+boundary. One from a node outside that fleet, or replicated here by one (each also when the fleet
+cannot be read), is rendered in `lessons.md` and listed by `h9k learn list` and deliberately held
 out of every prompt, until the security review in idea 7e403b80 rules otherwise: nothing today
 authenticates the agent that wrote a lesson on a machine this node does not control, and a lesson
 rides into the instructions of every later session. A lesson from a run whose node could not be
@@ -610,9 +612,10 @@ asking.
 Distillation is a task a human authors. `h9k learn distill` creates a research spike
 draft and stops: nothing dispatches until a person publishes and queues it, and no daemon code
 path authors one (a source sweep in the test suite holds that). Its instructions are
-merge-and-cite only, and the citation half is enforced rather than requested: `h9k learn
---distilled-from <id>` records the merge with its sources, and the decider refuses a distilled
-lesson whose citations resolve to nothing, repeat, or name the lesson itself. Merging does not
+merge-and-cite only: `h9k learn --distilled-from <id>` records the merge with its sources, and
+the decider refuses a distilled lesson whose citations resolve to nothing, repeat, or name the
+lesson itself. A plain `h9k learn` with no `--distilled-from` is recorded without any, so citing
+every source is the distilling session's own discipline. Merging does not
 retire what it merged: that stays the explicit act with its own reason, which is why distillation
 shipped without a second terminal status. `h9k status` names the lever for each project whose
 active lessons have passed the count cap, and goes no further than naming it.
