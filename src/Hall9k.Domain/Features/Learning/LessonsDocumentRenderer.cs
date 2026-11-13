@@ -62,9 +62,12 @@ public static class LessonsDocumentRenderer
         Line(document);
         Line(document,
             "Every live lesson is here, including ones a dispatched session's prompt is not given "
-            + "(idea d805fd8b, piece 5). A lesson recorded by an agent run on another node is rendered "
-            + "in this file for a reader and deliberately held out of the bounded section injected into "
-            + "prompts, until the security review in idea 7e403b80 rules on it; `h9k learn show <id>` "
+            + "(idea d805fd8b, piece 5). A lesson recorded on another node of the owner's own fleet "
+            + "reaches prompts. A lesson recorded on a node outside the owner's fleet, replicated from a "
+            + "node outside the owner's fleet (each also when the fleet cannot be read), recorded on a "
+            + "node nobody recorded, or recorded with no provenance is rendered in this file for a reader "
+            + "and deliberately held out of the bounded section injected into prompts, until the security "
+            + "review in idea 7e403b80 rules on it; `h9k learn show <id>` "
             + "says which side of that line a given lesson falls on, and why. So this file is the wider "
             + "set, not a duplicate of what any session was told.");
 

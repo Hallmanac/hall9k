@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Learning;
@@ -85,6 +86,24 @@ public sealed class KnowledgeDocumentRendererTests
         rendered.Should().StartWith("# Lessons\n");
         rendered.Should().Contain(LessonsDocumentRenderer.GeneratedMarker);
         rendered.Should().Contain("h9k learn \"<what you learned>\"");
+    }
+
+    /// <summary>
+    /// The held-out sentence once said a lesson from any other node stayed out of prompts, which
+    /// is wrong for the owner's own fleet and led distillation sessions to treat those lessons as
+    /// read-only.
+    /// </summary>
+    [Fact]
+    public void The_lessons_header_says_a_lesson_from_another_node_of_the_owners_own_fleet_reaches_prompts()
+    {
+        string rendered = Regex.Replace(
+            LessonsDocumentRenderer.Render([SomeLesson("Something already learned.")]), @"\s+", " ");
+
+        rendered.Should().Contain("A lesson recorded on another node of the owner's own fleet reaches prompts");
+        rendered.Should().Contain("recorded on a node outside the owner's fleet");
+        rendered.Should().Contain("replicated from a node outside the owner's fleet");
+        rendered.Should().Contain("recorded on a node nobody recorded");
+        rendered.Should().Contain("recorded with no provenance");
     }
 
     /// <summary>
