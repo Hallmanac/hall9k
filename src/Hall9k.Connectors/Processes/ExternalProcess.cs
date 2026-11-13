@@ -179,10 +179,11 @@ public static class ExternalProcess
         TimeSpan deadline,
         IReadOnlyDictionary<string, string>? environment,
         CancellationToken cancellationToken) =>
-        GitRemoteAuthentication.RunAsync(
+        GitRemoteAuthentication.RunExplainingCredentialFailureAsync(
             fileName, arguments, workingDirectory,
             remote => RunOnceAsync(fileName, arguments, workingDirectory, deadline, environment, remote, cancellationToken),
             result => (result.ExitCode, result.StandardError),
+            (result, standardError) => result with { StandardError = standardError },
             cancellationToken);
 
     private static async Task<ProcessResult> RunOnceAsync(
@@ -256,7 +257,11 @@ public static class ExternalProcess
             await TerminateAsync(process);
             throw new TimeoutException(string.Create(
                 CultureInfo.InvariantCulture,
-                $"{fileName} did not answer within {deadline.TotalSeconds:F0} seconds, so Hall9k stopped waiting and ended it."));
+                $"{fileName} did not answer within {deadline.TotalSeconds:F0} seconds, so Hall9k stopped waiting and ended it.")
+                + (GitRemoteAuthentication.ReachesRemote(fileName, arguments)
+                    ? " A git call to a remote that stops answering is most often waiting on its credential "
+                        + "helper (credential.helper) for a prompt nobody can see."
+                    : string.Empty));
         }
         catch
         {

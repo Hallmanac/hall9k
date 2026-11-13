@@ -411,6 +411,64 @@ public sealed class GitRemoteAuthenticationTests
         appliers.Should().BeEquivalentTo(allowed);
     }
 
+    [Theory]
+    [InlineData("fatal: Cannot prompt because user interactivity has been disabled.")]
+    [InlineData("fatal: could not read Username for 'https://github.com': terminal prompts disabled")]
+    [InlineData("fatal: could not read Password for 'https://github.com': terminal prompts disabled")]
+    public void A_credential_the_helper_withheld_is_explained_by_naming_the_helper(string standardError)
+    {
+        GitRemoteAuthentication.CredentialHelperHint(standardError)
+            .Should().NotBeNull().And.Contain("credential helper").And.Contain("credential.helper");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("remote: Repository not found.")]
+    [InlineData("fatal: Authentication failed for 'https://github.com/o/r.git/'")]
+    [InlineData("fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 403")]
+    public void A_failure_that_is_not_a_missing_credential_is_left_as_git_said_it(string standardError)
+    {
+        GitRemoteAuthentication.CredentialHelperHint(standardError).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task A_remote_call_the_helper_refused_to_prompt_for_comes_back_naming_the_helper()
+    {
+        (int ExitCode, string StandardOutput, string StandardError) result =
+            await GitRemoteAuthentication.RunExplainingCredentialFailureAsync(
+                "git", ["fetch", "origin"], "/repos/hall9k",
+                _ => Task.FromResult((ExitCode: 128, StandardOutput: "out", StandardError: "fatal: Cannot prompt because user interactivity has been disabled.")),
+                run => (run.ExitCode, run.StandardError),
+                (run, standardError) => (run.ExitCode, run.StandardOutput, standardError),
+                CancellationToken.None);
+
+        result.ExitCode.Should().Be(128);
+        result.StandardOutput.Should().Be("out");
+        result.StandardError.Should().StartWith("fatal: Cannot prompt").And.Contain("credential helper");
+    }
+
+    [Fact]
+    public async Task A_local_git_call_or_a_success_is_never_given_the_hint()
+    {
+        (int ExitCode, string StandardOutput, string StandardError) local =
+            await GitRemoteAuthentication.RunExplainingCredentialFailureAsync(
+                "git", ["status"], "/repos/hall9k",
+                _ => Task.FromResult((ExitCode: 1, StandardOutput: "", StandardError: "terminal prompts disabled")),
+                run => (run.ExitCode, run.StandardError),
+                (run, standardError) => (run.ExitCode, run.StandardOutput, standardError),
+                CancellationToken.None);
+        (int ExitCode, string StandardOutput, string StandardError) succeeded =
+            await GitRemoteAuthentication.RunExplainingCredentialFailureAsync(
+                "git", ["fetch", "origin"], "/repos/hall9k",
+                _ => Task.FromResult((ExitCode: 0, StandardOutput: "", StandardError: "terminal prompts disabled")),
+                run => (run.ExitCode, run.StandardError),
+                (run, standardError) => (run.ExitCode, run.StandardOutput, standardError),
+                CancellationToken.None);
+
+        local.StandardError.Should().Be("terminal prompts disabled");
+        succeeded.StandardError.Should().Be("terminal prompts disabled");
+    }
+
     [Fact]
     public void The_shared_non_interactive_helper_knows_nothing_about_the_token()
     {

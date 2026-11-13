@@ -1286,10 +1286,11 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
 
     private static Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunGitAsync(
         string repositoryPath, string arguments, bool endGitOnCancel, CancellationToken cancellationToken) =>
-        GitRemoteAuthentication.RunAsync(
+        GitRemoteAuthentication.RunExplainingCredentialFailureAsync(
             "git", arguments, repositoryPath,
             remote => TryRunGitOnceAsync(repositoryPath, arguments, endGitOnCancel, remote, cancellationToken),
             result => (result.ExitCode, result.StandardError),
+            (result, standardError) => (result.ExitCode, result.StandardOutput, standardError),
             cancellationToken);
 
     private static async Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunGitOnceAsync(

@@ -1142,10 +1142,11 @@ public sealed class PullRequestOpener(
 
     private static Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunInWorktreeAsync(
         string worktreePath, string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken) =>
-        GitRemoteAuthentication.RunAsync(
+        GitRemoteAuthentication.RunExplainingCredentialFailureAsync(
             fileName, arguments, worktreePath,
             remote => TryRunInWorktreeOnceAsync(worktreePath, fileName, arguments, remote, cancellationToken),
             result => (result.ExitCode, result.StandardError),
+            (result, standardError) => (result.ExitCode, result.StandardOutput, standardError),
             cancellationToken);
 
     private static async Task<(int ExitCode, string StandardOutput, string StandardError)> TryRunInWorktreeOnceAsync(

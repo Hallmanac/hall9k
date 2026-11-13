@@ -788,10 +788,11 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
         IReadOnlyDictionary<string, string>? environment,
         string? standardInput,
         CancellationToken cancellationToken) =>
-        GitRemoteAuthentication.RunAsync(
+        GitRemoteAuthentication.RunExplainingCredentialFailureAsync(
             "git", arguments, repositoryPath,
             remote => RunGitRawOnceAsync(repositoryPath, arguments, environment, standardInput, remote, cancellationToken),
             result => (result.ExitCode, result.StandardError),
+            (result, standardError) => (result.ExitCode, result.StandardOutput, standardError),
             cancellationToken);
 
     private static async Task<(int ExitCode, string StandardOutput, string StandardError)> RunGitRawOnceAsync(
