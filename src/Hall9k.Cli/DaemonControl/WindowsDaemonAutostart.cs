@@ -588,11 +588,10 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// action process (<c>&lt;Hidden&gt;</c> hides the task from the Task Scheduler UI, not
     /// the window a console-subsystem action creates), and an InteractiveToken principal runs
     /// the action on the signed-in user's own visible desktop precisely so h9kd inherits their
-    /// Claude Code/git/gh credentials. Task Scheduler has no equivalent of the
-    /// <c>CREATE_NO_WINDOW</c> a CLI-launched daemon gets from
-    /// <see cref="WindowsDaemonLaunch"/>, and it is the ACTION's window that cannot be
-    /// suppressed here, not the daemon's own — h9kd is still created with that flag, one link
-    /// further down. cmd.exe run as the action instead
+    /// Claude Code/git/gh credentials. Task Scheduler cannot put h9kd on the private desktop
+    /// <see cref="WindowsDaemonLaunch"/> gives it, and it is the ACTION's window that cannot be
+    /// suppressed here, not the daemon's own: h9kd is still started on that private desktop with
+    /// its own console, one link further down. cmd.exe run as the action instead
     /// would sit on the desktop as a visible window for the daemon's entire life, and closing
     /// it — the obvious reaction — delivers CTRL_CLOSE_EVENT, cutting the 30s graceful-shutdown
     /// budget down to Windows's ~5s console-close grace period. <c>wscript.exe</c> is a

@@ -59,7 +59,18 @@ internal static class WindowsDaemonLaunch
 
     private const uint CreateUnicodeEnvironment = 0x00000400;
     private const uint CreateNoWindow = 0x08000000;
+    private const uint CreateNewConsole = 0x00000010;
+    private const uint GenericAll = 0x10000000;
     private const int StartFlagUseStandardHandles = 0x00000100;
+
+    /// <summary>The window station a logged-on user's visible desktop lives in; every other station is a service or batch one.</summary>
+    private const string InteractiveWindowStation = "WinSta0";
+
+    /// <summary><c>UOI_NAME</c>: the name of a window station or desktop, for <c>GetUserObjectInformation</c>.</summary>
+    private const int UserObjectName = 2;
+
+    /// <summary>Git Credential Manager's switch for whether it may open a prompt: <c>never</c> makes it fail instead.</summary>
+    internal const string GitCredentialManagerInteractiveVariable = "GCM_INTERACTIVE";
 
     private const uint WaitObjectZero = 0x00000000;
     private const uint WaitTimeout = 0x00000102;
@@ -86,7 +97,13 @@ internal static class WindowsDaemonLaunch
         string arguments = "")
     {
         using SafeProcessHandle daemon = Create(
-            binaryPath, arguments, workingDirectory, logFilePath, environmentOverrides, out int processId);
+            binaryPath, arguments, workingDirectory, logFilePath, environmentOverrides,
+            out int processId, out _);
+        // The desktop handle Create returned is deliberately never closed here: a desktop is
+        // destroyed the moment nothing references it, and h9kd's console host attaches to it a
+        // moment AFTER CreateProcess returns, so closing it now could race that attach and leave
+        // h9kd with no desktop to open. This process is `h9k daemon start`, which lives for
+        // seconds more, and its exit closes the handle long after h9kd's own references exist.
         return processId;
     }
 
@@ -113,7 +130,11 @@ internal static class WindowsDaemonLaunch
         string arguments = "")
     {
         using SafeProcessHandle daemon = Create(
-            binaryPath, arguments, workingDirectory, logFilePath, environmentOverrides, out _);
+            binaryPath, arguments, workingDirectory, logFilePath, environmentOverrides,
+            out _, out IntPtr desktop);
+        // Held for the daemon's whole run and closed after it, so the desktop's lifetime is
+        // never shorter than h9kd's (see StartDetached).
+        using IDisposable desktopLifetime = new DesktopLifetime(desktop);
         while (!cancellationToken.IsCancellationRequested)
         {
             uint waited = await Task.Run(
@@ -163,6 +184,16 @@ internal static class WindowsDaemonLaunch
 
         merged[DaemonRuntime.AppendOnlyLogEnvironmentVariable] = "1";
 
+        // h9kd's desktop is one nobody looks at, so a Git Credential Manager prompt there would
+        // wait for a click that never comes, with git (and the call that started it) wedged
+        // behind it. Telling GCM it may never prompt makes a missing credential fail at once
+        // instead; the name is GCM's own documented switch. An operator who set it already keeps
+        // their value.
+        if (!merged.ContainsKey(GitCredentialManagerInteractiveVariable))
+        {
+            merged[GitCredentialManagerInteractiveVariable] = "never";
+        }
+
         StringBuilder block = new();
         foreach ((string name, string value) in merged.OrderBy(variable => variable.Key, StringComparer.OrdinalIgnoreCase))
         {
@@ -200,6 +231,22 @@ internal static class WindowsDaemonLaunch
     /// Opens the log and NUL, creates the process with both as its standard handles, and closes
     /// this process's own copies before returning the process handle.
     /// <para>
+    /// <strong>The private desktop.</strong> h9kd is started on a desktop created for it in
+    /// <c>WinSta0</c> and never switched to, with a new console whose window is visible on that
+    /// desktop (<c>CREATE_NEW_CONSOLE</c>, where this used <c>CREATE_NO_WINDOW</c>). Every
+    /// process h9kd starts inherits both. Why: while a Remote Desktop session is connected, git
+    /// children of a launcher outside the focused app's process tree keep a kernel access token
+    /// each (about 4 to 6 a second) when their console is on the visible desktop. Measured on a
+    /// root process with its own visible console on a private desktop, git, gh, sh, bash and
+    /// the agent CLI kept none (spike 0b4685d2, its <c>tF</c> arm), while a windowless or
+    /// hidden console on a private desktop still kept them. Nobody ever sees the window.
+    /// The cost is that a child showing UI on that desktop waits for a click nobody can give;
+    /// <see cref="EnvironmentBlock"/> turns off the one that matters, Git Credential Manager's
+    /// prompt. If the desktop cannot be created, or this process is not in <c>WinSta0</c> (an
+    /// OpenSSH session or a non-interactive scheduled task, whose window station is its own), the
+    /// old windowless start is used instead of no daemon at all.
+    /// </para>
+    /// <para>
     /// <paramref name="arguments"/> is empty for both shipped callers — h9kd takes none — and
     /// exists so this launcher can be driven against a real process with a chosen exit code and
     /// a chosen line of output, which is the only way to prove the handle handoff and the exit
@@ -214,7 +261,8 @@ internal static class WindowsDaemonLaunch
         string workingDirectory,
         string logFilePath,
         IReadOnlyList<KeyValuePair<string, string>> environmentOverrides,
-        out int processId)
+        out int processId,
+        out IntPtr desktop)
     {
         // Disposed before this method returns, whichever way it returns: the whole point is that
         // the only handles left on the log once the child exists are the child's own. A launcher
@@ -225,6 +273,10 @@ internal static class WindowsDaemonLaunch
         // h9kd reads nothing from stdin; NUL is what cmd.exe's own `< NUL` supplied, and a child
         // with no stdin handle at all is a different thing from one whose stdin is at end of file.
         using SafeFileHandle nul = Open("NUL", GenericRead | Synchronize, FileShareRead | FileShareWrite, OpenExisting);
+
+        // Assigned inside the try below, once nothing that can still throw stands between the
+        // desktop's creation and the CreateProcess that hands it to h9kd.
+        desktop = IntPtr.Zero;
 
         StartupInfo startup = new()
         {
@@ -255,13 +307,18 @@ internal static class WindowsDaemonLaunch
         GCHandle pinnedEnvironment = GCHandle.Alloc(environment, GCHandleType.Pinned);
         try
         {
+            // Zero, with a null name, when the desktop cannot be created; the start then keeps the
+            // shape it had before the desktop existed (a windowless console on the caller's desktop).
+            desktop = CreatePrivateDesktop(out string? desktopName);
+            startup.Desktop = desktopName;
+
             if (!CreateProcessW(
                     null,
                     commandLine,
                     IntPtr.Zero,
                     IntPtr.Zero,
                     inheritHandles: true,
-                    CreateUnicodeEnvironment | CreateNoWindow,
+                    CreateUnicodeEnvironment | (desktopName is null ? CreateNoWindow : CreateNewConsole),
                     pinnedEnvironment.AddrOfPinnedObject(),
                     workingDirectory,
                     ref startup,
@@ -274,6 +331,12 @@ internal static class WindowsDaemonLaunch
                 // message: every caller frames that itself, and saying it here too read as a
                 // stutter when the path was actually run (self-review round two).
                 int error = Marshal.GetLastWin32Error();
+                if (desktop != IntPtr.Zero)
+                {
+                    CloseDesktop(desktop);
+                    desktop = IntPtr.Zero;
+                }
+
                 throw new Win32Exception(
                     error, $"CreateProcess({binaryPath}) failed with Win32 error {error} ({new Win32Exception(error).Message})");
             }
@@ -288,6 +351,61 @@ internal static class WindowsDaemonLaunch
         finally
         {
             pinnedEnvironment.Free();
+        }
+    }
+
+    /// <summary>
+    /// A desktop of its own in the caller's window station, named uniquely so two launchers
+    /// never share one. It is only ever referenced by name through
+    /// <c>STARTUPINFO.lpDesktop</c>: nothing here switches to it, so the operator's screen never
+    /// changes. Returns <see cref="IntPtr.Zero"/> and a null name when the caller's window station
+    /// is not <c>WinSta0</c> (a service or batch session, see the comment in the body) or the
+    /// call fails (an exhausted desktop heap).
+    /// </summary>
+    private static IntPtr CreatePrivateDesktop(out string? desktopName)
+    {
+        // CreateDesktop puts the desktop in THIS process's window station, so the name handed to
+        // the child must be that station's, and the private desktop only makes sense in the
+        // interactive one: an OpenSSH session or a "run whether the user is logged on or not"
+        // scheduled task has a Service-0x0-...$ station of its own, where there is no visible
+        // desktop to leak onto and nothing for a console window to be shown on. There the old
+        // windowless start is kept rather than naming a desktop the child cannot open.
+        if (!string.Equals(CurrentWindowStationName(), InteractiveWindowStation, StringComparison.OrdinalIgnoreCase))
+        {
+            desktopName = null;
+            return IntPtr.Zero;
+        }
+
+        string name = $"h9kd-{Environment.ProcessId}-{Guid.NewGuid():N}";
+        IntPtr handle = CreateDesktopW(name, IntPtr.Zero, IntPtr.Zero, 0, GenericAll, IntPtr.Zero);
+        desktopName = handle == IntPtr.Zero ? null : $"{InteractiveWindowStation}\\{name}";
+        return handle;
+    }
+
+    /// <summary>The name of this process's window station, or an empty string when it cannot be read.</summary>
+    private static string CurrentWindowStationName()
+    {
+        IntPtr station = GetProcessWindowStation();
+        if (station == IntPtr.Zero)
+        {
+            return string.Empty;
+        }
+
+        char[] buffer = new char[256];
+        return GetUserObjectInformationW(station, UserObjectName, buffer, buffer.Length * sizeof(char), out _)
+            ? new string(buffer).TrimEnd('\0')
+            : string.Empty;
+    }
+
+    /// <summary>Closes a private desktop handle when disposed; a zero handle is nothing to close.</summary>
+    private sealed class DesktopLifetime(IntPtr desktop) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (desktop != IntPtr.Zero)
+            {
+                CloseDesktop(desktop);
+            }
         }
     }
 
@@ -340,7 +458,8 @@ internal static class WindowsDaemonLaunch
     {
         public int Size;
         public IntPtr Reserved;
-        public IntPtr Desktop;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string? Desktop;
         public IntPtr Title;
         public int X;
         public int Y;
@@ -389,6 +508,19 @@ internal static class WindowsDaemonLaunch
         string? currentDirectory,
         ref StartupInfo startupInfo,
         out ProcessInformation processInformation);
+
+    [DllImport("user32.dll", EntryPoint = "CreateDesktopW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateDesktopW(
+        string name, IntPtr device, IntPtr deviceMode, uint flags, uint desiredAccess, IntPtr securityAttributes);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool CloseDesktop(IntPtr desktop);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr GetProcessWindowStation();
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool GetUserObjectInformationW(IntPtr handle, int index, char[] info, int length, out int needed);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern uint WaitForSingleObject(SafeProcessHandle handle, uint milliseconds);
