@@ -287,6 +287,68 @@ public static class GitRemoteAuthentication
         }
     }
 
+    /// <summary>
+    /// <see cref="RunAsync{TResult}(string, IReadOnlyList{string}, string, Func{GitRemoteAuthorization?, Task{TResult}}, Func{TResult, ValueTuple{int, string}}, CancellationToken)"/>,
+    /// and when the call still failed because the owner's credential helper had nothing to give
+    /// and was not allowed to ask, <paramref name="withStandardError"/> rebuilds the result with
+    /// <see cref="CredentialHelperHint"/> added to its standard error. Without it git's own
+    /// words ("terminal prompts disabled") never name the helper, and whoever reads them is left
+    /// to work out which configuration to look at.
+    /// </summary>
+    public static async Task<TResult> RunExplainingCredentialFailureAsync<TResult>(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string workingDirectory,
+        Func<GitRemoteAuthorization?, Task<TResult>> start,
+        Func<TResult, (int ExitCode, string StandardError)> outcome,
+        Func<TResult, string, TResult> withStandardError,
+        CancellationToken cancellationToken)
+    {
+        TResult result = await RunAsync(fileName, arguments, workingDirectory, start, outcome, cancellationToken);
+        (int exitCode, string standardError) = outcome(result);
+        return exitCode != 0 && ReachesRemote(fileName, arguments) && CredentialHelperHint(standardError) is { } hint
+            ? withStandardError(result, standardError.TrimEnd() + Environment.NewLine + hint)
+            : result;
+    }
+
+    /// <summary>The same, for a call whose arguments are written as one string (<c>fetch origin</c>).</summary>
+    public static Task<TResult> RunExplainingCredentialFailureAsync<TResult>(
+        string fileName,
+        string arguments,
+        string workingDirectory,
+        Func<GitRemoteAuthorization?, Task<TResult>> start,
+        Func<TResult, (int ExitCode, string StandardError)> outcome,
+        Func<TResult, string, TResult> withStandardError,
+        CancellationToken cancellationToken) =>
+        RunExplainingCredentialFailureAsync(
+            fileName, arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries), workingDirectory, start, outcome,
+            withStandardError, cancellationToken);
+
+    /// <summary>
+    /// What to tell a reader when git failed because its credential helper supplied no
+    /// credential and could not prompt for one, or null when the failure was something else (a
+    /// credential that was supplied and refused names no missing helper entry). The text states
+    /// no single cause, because it is attached wherever git fails this way, on any platform and
+    /// from the daemon or a command run in a terminal: on Windows h9kd runs on a desktop nobody
+    /// sees and tells Git Credential Manager never to prompt there, so a remote it has no
+    /// stored credential for fails at once with this instead of waiting for a click nobody can give.
+    /// </summary>
+    internal static string? CredentialHelperHint(string standardError)
+    {
+        string[] withheld =
+        [
+            "interactivity has been disabled", "terminal prompts disabled", "could not read username",
+            "could not read password",
+        ];
+        return withheld.Any(marker => standardError.Contains(marker, StringComparison.OrdinalIgnoreCase))
+            ? "Hall9k: git needed a credential and none was available without a prompt: no credential "
+                + "helper (credential.helper, for example Git Credential Manager) supplied one, and git was "
+                + "not allowed to ask. Hall9k runs git with prompts off, and the daemon runs where nobody "
+                + "could answer one anyway. Store a credential once from a terminal: "
+                + "'gh auth login' then 'gh auth setup-git', or sign in with the credential helper itself."
+            : null;
+    }
+
     /// <summary>The same run, for a call whose arguments are written as one string (<c>fetch origin</c>).</summary>
     public static Task<TResult> RunAsync<TResult>(
         string fileName,
