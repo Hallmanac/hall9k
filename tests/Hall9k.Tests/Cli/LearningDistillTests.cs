@@ -42,20 +42,82 @@ public sealed class LearningDistillTests
     [Fact]
     public void The_acceptance_contract_states_merge_and_cite_the_citation_verb_and_the_retirement()
     {
-        IReadOnlyList<string> criteria = LearningDistillCommand.Criteria();
+        Guid taskId = DomainId.New();
+        IReadOnlyList<string> criteria = LearningDistillCommand.Criteria(taskId, "--project hall9k");
 
         criteria.Should().HaveCountGreaterThan(1);
         string all = string.Join("\n", criteria);
-        all.Should().Contain("--distilled-from", "the criterion names the verb that actually enforces the citation");
-        all.Should().Contain("refuses a distilled lesson that cites nothing");
+        all.Should().Contain($"--distilled-from <id> --distilled-from <id> --task {taskId}");
+        all.Should().Contain(
+            "a plain `h9k learn` with no `--distilled-from` is recorded without refusal",
+            "nothing on the plain recording path checks a citation, so the session must");
         all.Should().Contain("h9k learn retire", "a merged source left live rides in a prompt twice");
-        all.Should().Contain("record nothing this project has not already learned");
+        all.Should().Contain("every claim in it appears in at least one lesson it cites");
+        all.Should().Contain("longer than its sources together");
+        all.Should().Contain("with no new lesson recorded", "absorbing into an existing lesson needs no merge");
+        all.Should().Contain("a file and line, or the absence of a named file or symbol");
+        all.Should().Contain("\"In prompts\" line of `h9k learn show <id>` says no");
+        all.Should().Contain("another node of the owner's own fleet");
+        all.Should().NotContain("{{", "every placeholder is substituted");
     }
 
-    private const string ExpectedExitCriterion =
-        "Every lesson merged away is retired citing its survivor, and the findings document accounts for every "
-        + "lesson in the inventory as merged into a named new lesson, retired with a reason, left alone, or not "
-        + "reached; or it says no merge was warranted.";
+    private static readonly string[] Headings =
+    [
+        "merged into <new id>",
+        "absorbed into existing <id>",
+        "retired as wrong or obsolete, with its reason",
+        "left alone",
+        "held out",
+        "not reached",
+    ];
+
+    private const string HeadingList =
+        "merged into <new id>; absorbed into existing <id>; retired as wrong or obsolete, with its reason; "
+        + "left alone; held out; not reached";
+
+    /// <summary>
+    /// The exit criterion is the only sentence the spike's review grades, so it carries the
+    /// headings, the inventory command and the task id itself, and offers no way out of the
+    /// per-lesson account.
+    /// </summary>
+    [Theory]
+    [InlineData(false, "h9k learn list --project hall9k --limit 500")]
+    [InlineData(true, "h9k learn list --owner --limit 500")]
+    public void Every_part_of_the_authored_task_names_the_inventory_and_the_six_headings(bool ownerScoped, string inventory)
+    {
+        ResolvedKnowledgeScope scope = ownerScoped
+            ? new ResolvedKnowledgeScope(KnowledgeScope.Owner, Owner, "you, across every project")
+            : ProjectScope;
+        Guid taskId = DomainId.New();
+
+        TaskAdded added = LearningDistillCommand.Author(
+            taskId, ProjectScope, scope, [Lesson("One claim"), Lesson("Another claim")], ownerScoped, Now, Owner);
+
+        string criteria = string.Join("\n", added.AcceptanceCriteria);
+        string exit = added.ExitCriterion ?? "";
+        string context = Regex.Replace(added.AgentContext ?? "", @"\s+", " ");
+
+        criteria.Should().Contain(inventory).And.Contain(HeadingList);
+        exit.Should().Contain(inventory).And.Contain(HeadingList);
+        context.Should().Contain(inventory).And.Contain(HeadingList);
+        foreach (string heading in Headings)
+        {
+            criteria.Should().Contain(heading);
+            exit.Should().Contain(heading);
+        }
+
+        exit.Should().Contain("even when no merge was warranted");
+        exit.Should().Contain($"--task {taskId}");
+        context.Should().Contain("even when no merge was warranted");
+
+        foreach (string part in new[] { criteria, exit, context })
+        {
+            part.Should().NotContain("no way to record a merge without the citations");
+            part.Should().NotContain("or it says no merge was warranted");
+            part.Should().NotContain("or the section says no merge was warranted");
+            part.Should().NotContain("{{");
+        }
+    }
 
     /// <summary>
     /// A distillation ends with findings and no commits, so it is a research spike (no gates, no
@@ -71,15 +133,17 @@ public sealed class LearningDistillTests
             : ProjectScope;
         LearningDetails[] active = [Lesson("One claim"), Lesson("Another claim")];
 
+        Guid taskId = DomainId.New();
+        string listArguments = LearningDistillCommand.ListArguments(ownerScoped, ProjectScope.Label);
         TaskAdded added = LearningDistillCommand.Author(
-            DomainId.New(), ProjectScope, scope, active, ownerScoped, Now, Owner);
+            taskId, ProjectScope, scope, active, ownerScoped, Now, Owner);
 
         added.Type.Should().Be(TaskType.Spike);
         added.SpikeKind.Should().Be(SpikeKind.Research);
-        added.ExitCriterion.Should().Be(ExpectedExitCriterion);
+        added.ExitCriterion.Should().Be(LearningDistillCommand.ExitCriterion(taskId, listArguments));
         added.ProjectId.Should().Be(Project, "the task is tracked in the project even when the lessons are the owner's");
         added.Objective.Should().Be(LearningDistillCommand.Objective(scope, active.Length));
-        added.AcceptanceCriteria.Should().Equal(LearningDistillCommand.Criteria());
+        added.AcceptanceCriteria.Should().Equal(LearningDistillCommand.Criteria(taskId, listArguments));
         added.StartsAsDraft.Should().BeTrue();
     }
 
@@ -106,7 +170,7 @@ public sealed class LearningDistillTests
 
         prompt.Should().Contain("--distilled-from", "only merges that cite their sources are recorded");
         prompt.Should().Contain($"--task {added.Id}", "a recorded lesson is credited to this run, not left looking human-typed");
-        prompt.Should().Contain("record nothing this project has not already learned");
+        prompt.Should().Contain("every claim in it appears in at least one lesson it cites");
         prompt.Should().Contain("h9k learn retire", "each merged source is retired citing its survivor");
         prompt.Should().Contain("Absorbed into");
         prompt.Should().Contain("A lesson that says one thing nothing else says is left exactly as it is");
@@ -122,7 +186,7 @@ public sealed class LearningDistillTests
     [Fact]
     public void Every_criterion_is_one_line_so_a_task_card_renders_it_as_one_bullet()
     {
-        foreach (string criterion in LearningDistillCommand.Criteria())
+        foreach (string criterion in LearningDistillCommand.Criteria(DomainId.New(), "--project hall9k"))
         {
             criterion.Should().NotContain("\n");
         }
@@ -137,7 +201,7 @@ public sealed class LearningDistillTests
             DomainId.New(),
             ProjectScope, [lesson], ownerScoped: false, "hall9k", Now);
 
-        context.Should().Contain("h9k learn list --project hall9k", "the live set is a command, not this snapshot");
+        context.Should().Contain("h9k learn list --project hall9k --limit 500", "the live set is a command, not this snapshot");
         context.Should().Contain("Snapshot taken 2026-09-21 12:00:00Z");
         context.Should().Contain($"- [{DomainId.Short(lesson.Id)}] A claim earlier runs established");
     }
@@ -150,7 +214,7 @@ public sealed class LearningDistillTests
             new ResolvedKnowledgeScope(KnowledgeScope.Owner, Owner, "you, across every project"),
             [Lesson("A habit of mine")], ownerScoped: true, "hall9k", Now);
 
-        context.Should().Contain("h9k learn list --owner");
+        context.Should().Contain("h9k learn list --owner --limit 500");
     }
 
     [Fact]
@@ -172,11 +236,16 @@ public sealed class LearningDistillTests
     [Fact]
     public void The_context_says_a_held_out_lesson_is_read_only_for_this_task()
     {
-        string context = LearningDistillCommand.Context(
-            DomainId.New(),
-            ProjectScope, [Lesson("One claim")], ownerScoped: false, "hall9k", Now);
+        string context = Regex.Replace(
+            LearningDistillCommand.Context(
+                DomainId.New(),
+                ProjectScope, [Lesson("One claim")], ownerScoped: false, "hall9k", Now),
+            @"\s+", " ");
 
-        context.Should().Contain("another node");
+        context.Should().Contain("A lesson is held out exactly when the \"In prompts\" line of `h9k learn show <id>` says no");
+        context.Should().Contain(
+            "A lesson recorded on another node of the owner's own fleet reaches prompts",
+            "a fleet lesson is an ordinary lesson for the task, not a read-only one");
         context.Should().Contain("7e403b80", "merging a held-out lesson into an injected one would route around the hold");
     }
 

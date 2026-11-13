@@ -1,17 +1,23 @@
 ===objective===
 Distil {{Scope}}'s {{LessonCount}} active lessons into fewer, better ones, merging and citing only
 ===criterion-merge-only===
-Every lesson you record here is a merge of lessons already on record, and it cites each one it merged: h9k learn "<the merged claim>" --distilled-from <id> --distilled-from <id>. The decider refuses a distilled lesson that cites nothing, so there is no way to record a merge without the citations, and that is deliberate.
+Every lesson you record here is a merge of lessons already on record. Record it with `h9k learn "<the merged claim>" --distilled-from <id> --distilled-from <id> --task {{TaskId}}`, citing each lesson it merged. The platform refuses a citation that resolves to nothing, but a plain `h9k learn` with no `--distilled-from` is recorded without refusal, so citing every source is your own discipline here.
 ===criterion-no-new-claims===
-You record nothing this project has not already learned. If reading the inventory gives you a genuinely new insight, that is not this task's output: say so in your final summary and let a human decide, rather than recording it here where it would arrive dressed as a merge of things that were actually observed.
+A merged lesson says nothing its sources do not say: every claim in it appears in at least one lesson it cites. If reading the inventory gives you a genuinely new insight, do not record it; name it in the findings document for a person to decide.
 ===criterion-retire-sources===
-Each lesson you merged away is retired explicitly, citing the survivor: h9k learn retire <id> --reason "Absorbed into <the new id>". Merging does not retire anything on its own, and a source left live means the same claim now rides in a prompt twice.
+Each lesson merged away is retired with `h9k learn retire <id> --reason "Absorbed into <the surviving id>"`. A lesson whose whole claim another live lesson already states may be retired into that existing lesson the same way, with no new lesson recorded.
+===criterion-retire-evidence===
+A lesson may be retired as wrong or obsolete only when its reason names the evidence at the checkout's commit that shows it no longer holds: a file and line, or the absence of a named file or symbol. A lesson without that evidence is left alone.
 ===criterion-leave-alone===
-A lesson that says one thing nothing else says is left exactly as it is. The goal is fewer lessons that are each worth a prompt's line, not the smallest possible number: two claims forced into one sentence teach less than the two did.
+A lesson that says one thing nothing else says is left exactly as it is.
+===criterion-held-out===
+A lesson is held out exactly when the "In prompts" line of `h9k learn show <id>` says no: it is read-only for this task, cited in no merge, and named in the findings document under "held out". A lesson recorded on another node of the owner's own fleet whose "In prompts" line says yes is an ordinary lesson for this task.
+===criterion-merge-length===
+A recorded merge becomes the newest lesson, so it is the first one in the injected prompt section, and that section ends at the first lesson that does not fit its character budget, displacing recent lessons. Do not record a merge that is longer than its sources together.
 ===criterion-account===
-Your final summary accounts for every lesson in the inventory below under one of three headings: merged into <new id>, retired as wrong or obsolete with its reason, or left alone. A lesson you did not reach is named as one rather than left unmentioned.
+The inventory is the active list read at session start with `h9k learn list {{ListArguments}} --limit 500`. The findings document's "What was observed" section names every lesson in it by id, under exactly one of these headings: merged into <new id>; absorbed into existing <id>; retired as wrong or obsolete, with its reason; left alone; held out; not reached.
 ===exit-criterion===
-Every lesson merged away is retired citing its survivor, and the findings document accounts for every lesson in the inventory as merged into a named new lesson, retired with a reason, left alone, or not reached; or it says no merge was warranted.
+The findings document's "What was observed" section names by id every lesson in the active list read at session start with `h9k learn list {{ListArguments}} --limit 500`, each under exactly one of these headings: merged into <new id>; absorbed into existing <id>; retired as wrong or obsolete, with its reason; left alone; held out; not reached. It gives that account even when no merge was warranted. Every lesson this run recorded carries `--distilled-from` and `--task {{TaskId}}` and cites no held-out lesson, and every lesson merged or absorbed away is retired citing its survivor.
 ===context===
 What kind of task this is. This is a research spike, not a build task: it ends with a findings
 document and no build or test gate, and the platform opens no pull request for it. Recording and
@@ -20,9 +26,10 @@ not to write, so do both freely. Name this task on every lesson you record by ad
 `--task {{TaskId}}` to the `h9k learn` command: it is what credits the lesson to this run, and
 without it the lesson lands marked as recorded with no run named, which reads to the next session
 as though a person might have typed it. Put the account of the inventory inside the findings document's
-"What was observed" section: every lesson in the inventory below appears there as merged into a
-named new lesson, retired with its reason, left alone, or not reached, or the section says no merge
-was warranted.
+"What was observed" section: every lesson in the inventory, the active list read at session start
+with `h9k learn list {{ListArguments}} --limit 500`, appears there by id under exactly one of these
+headings: merged into <new id>; absorbed into existing <id>; retired as wrong or obsolete, with its
+reason; left alone; held out; not reached. Give that account even when no merge was warranted.
 
 Why this task exists: every dispatched session on this project carries a bounded section of its
 active lessons, and the section has two caps (a lesson count and a character budget). Past those
@@ -45,12 +52,15 @@ How to read a lesson before you touch it. `h9k learn show <id>` gives you its pr
 run and task recorded it, if any, which node it was recorded on, and whether it reaches prompts
 at all. Read "recorded with no run named" as exactly that and no further: a person typing at a
 shell records it, and so does an agent that skipped `--task`, and nothing on the record separates
-the two. A lesson recorded by an agent on another node is rendered in `lessons.md` and held
-out of prompts pending the security review in idea 7e403b80, so merging one INTO a lesson that
-does reach prompts
-would route its claim around that hold. Do not do that: treat a held-out lesson as read-only for
-this task, name it in your summary, and leave it.
+the two. A lesson is held out exactly when the "In prompts" line of `h9k learn show <id>` says no.
+Those are the lessons recorded on a node outside the owner's fleet, replicated from a node outside
+it (each also when the fleet cannot be read), recorded on a node nobody recorded, or recorded with
+no provenance; they are rendered in `lessons.md` and kept out of prompts pending the security
+review in idea 7e403b80, so merging one INTO a lesson that does reach prompts would route its claim
+around that hold. Treat a held-out lesson as read-only for this task: cite it in no merge, and name
+it in the findings under "held out". A lesson recorded on another node of the owner's own fleet
+reaches prompts, and when its "In prompts" line says yes it is an ordinary lesson for this task.
 
-The live inventory is `h9k learn list {{ListArguments}}`, which is what you should actually work
-from. The snapshot below was taken when this task was authored, so treat it as orientation rather
-than as the set: lessons can be recorded and retired between then and now.
+The live inventory is `h9k learn list {{ListArguments}} --limit 500`, which is what you should
+actually work from. The snapshot below was taken when this task was authored, so treat it as
+orientation rather than as the set: lessons can be recorded and retired between then and now.
