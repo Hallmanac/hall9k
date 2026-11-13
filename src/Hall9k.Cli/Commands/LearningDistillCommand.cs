@@ -37,9 +37,10 @@ namespace Hall9k.Cli.Commands;
 /// The task's own instructions are merge-and-cite only, and they are prose in
 /// <c>.claude/templates/learn-distill/task.md</c> rather than string literals here, so an operator
 /// can reword them for their own project the way they can any other shipped prompt prose
-/// (AGENTS.md, the judgment layer). The one half that is not prose is the citation requirement:
-/// <see cref="LearningDecider.RecordDistilled"/> refuses a distilled lesson that cites nothing, so
-/// that contract holds whatever the template ends up saying.
+/// (AGENTS.md, the judgment layer). <see cref="LearningDecider.RecordDistilled"/> refuses a
+/// distilled lesson whose citations resolve to nothing, repeat, or name the lesson itself, but a
+/// plain <c>h9k learn</c> with no <c>--distilled-from</c> never reaches it, so citing every source
+/// stays the session's own discipline.
 /// </para>
 /// </summary>
 public sealed class LearningDistillCommand : Hall9kAsyncCommand<LearningDistillCommand.Settings>
@@ -167,7 +168,7 @@ public sealed class LearningDistillCommand : Hall9kAsyncCommand<LearningDistillC
             taskId,
             tracking.ScopeId,
             Objective(scope, active.Count),
-            Criteria(),
+            Criteria(taskId, ListArguments(ownerScoped, tracking.Label)),
             TaskType.Spike,
             Context(taskId, scope, active, ownerScoped, tracking.Label, now),
             constraints: null,
@@ -175,10 +176,23 @@ public sealed class LearningDistillCommand : Hall9kAsyncCommand<LearningDistillC
             now,
             ownerId,
             spikeKind: SpikeKind.Research,
-            exitCriterion: ExitCriterion());
+            exitCriterion: ExitCriterion(taskId, ListArguments(ownerScoped, tracking.Label)));
 
     /// <summary>The one checkable sentence the spike's review judges its findings against.</summary>
-    internal static string ExitCriterion() => PromptTemplates.Load(TemplateFile, "exit-criterion");
+    internal static string ExitCriterion(Guid taskId, string listArguments) =>
+        PromptTemplates.Load(TemplateFile, "exit-criterion", Placeholders(taskId, listArguments));
+
+    /// <summary>What <c>h9k learn list</c> takes to read this scope's inventory, before <c>--limit</c>.</summary>
+    internal static string ListArguments(bool ownerScoped, string projectName) =>
+        ownerScoped
+            ? "--owner"
+            : $"--project {projectName}";
+
+    private static Dictionary<string, string> Placeholders(Guid taskId, string listArguments) => new()
+    {
+        ["ListArguments"] = listArguments,
+        ["TaskId"] = taskId.ToString(),
+    };
 
     internal static string Objective(ResolvedKnowledgeScope scope, int lessonCount) =>
         PromptTemplates.Load(TemplateFile, "objective", new Dictionary<string, string>
@@ -191,13 +205,25 @@ public sealed class LearningDistillCommand : Hall9kAsyncCommand<LearningDistillC
     /// The acceptance contract, which is where merge-and-cite is stated as something a review pass
     /// grades against rather than as advice buried in the context.
     /// </summary>
-    internal static IReadOnlyList<string> Criteria() =>
+    internal static IReadOnlyList<string> Criteria(Guid taskId, string listArguments)
+    {
+        Dictionary<string, string> placeholders = Placeholders(taskId, listArguments);
+        return
+        [
+            .. CriterionKeys.Select(key => PromptTemplates.Load(TemplateFile, key, placeholders)),
+        ];
+    }
+
+    private static readonly string[] CriterionKeys =
     [
-        PromptTemplates.Load(TemplateFile, "criterion-merge-only"),
-        PromptTemplates.Load(TemplateFile, "criterion-no-new-claims"),
-        PromptTemplates.Load(TemplateFile, "criterion-retire-sources"),
-        PromptTemplates.Load(TemplateFile, "criterion-leave-alone"),
-        PromptTemplates.Load(TemplateFile, "criterion-account"),
+        "criterion-merge-only",
+        "criterion-no-new-claims",
+        "criterion-retire-sources",
+        "criterion-retire-evidence",
+        "criterion-leave-alone",
+        "criterion-held-out",
+        "criterion-merge-length",
+        "criterion-account",
     ];
 
     /// <summary>
@@ -214,13 +240,9 @@ public sealed class LearningDistillCommand : Hall9kAsyncCommand<LearningDistillC
         string projectName,
         DateTimeOffset takenAt)
     {
-        string listArguments = ownerScoped ? "--owner" : $"--project {projectName}";
         StringBuilder context = new();
-        context.AppendLine(PromptTemplates.Load(TemplateFile, "context", new Dictionary<string, string>
-        {
-            ["ListArguments"] = listArguments,
-            ["TaskId"] = taskId.ToString(),
-        }));
+        context.AppendLine(PromptTemplates.Load(
+            TemplateFile, "context", Placeholders(taskId, ListArguments(ownerScoped, projectName))));
         context.AppendLine();
         context.AppendLine(
             $"Snapshot taken {takenAt.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss'Z'", CultureInfo.InvariantCulture)}: "
