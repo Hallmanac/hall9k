@@ -1212,10 +1212,11 @@ public static class CliCommandTree
                     + "Merging two claims into one is a judgment about meaning, and a wrong merge is "
                     + "worse than two lessons that overlap: the overlap costs a prompt line, a bad "
                     + "merge replaces two things somebody observed with one thing nobody did. The "
-                    + "task's instructions are merge-and-cite only, and the citation half is enforced "
-                    + "rather than requested: h9k learn --distilled-from is refused outright if the "
-                    + "citations resolve to nothing. h9k status names this lever when a project's "
-                    + "active lessons pass the prompt count cap (h9k config show).")
+                    + "task's instructions are merge-and-cite only: h9k learn --distilled-from is "
+                    + "refused if its citations resolve to nothing, repeat, or name the lesson itself, "
+                    + "but a plain h9k learn with no --distilled-from is recorded without any, so citing "
+                    + "every source is the session's own discipline. h9k status names this lever when "
+                    + "a project's active lessons pass the prompt count cap (h9k config show).")
                 .WithExample("learn", "distill")
                 .WithExample("learn", "distill", "--project", "hall9k")
                 .WithExample("learn", "distill", "--owner");

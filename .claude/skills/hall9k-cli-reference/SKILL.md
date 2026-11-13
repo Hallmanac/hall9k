@@ -892,9 +892,11 @@ the section under "What this project's earlier runs already learned" is not a du
 owner's, newest first, each line led by the id you cite or retire it by. Two caps bound it and
 truncation is announced: the section says how many of how many it carries, names both caps, and
 names `h9k learn list` for the rest. Provenance is what decides membership, not just what is
-displayed: a lesson recorded by an agent run on ANOTHER node is rendered in `lessons.md` and held
-out of every prompt until the security review in idea 7e403b80 rules otherwise, and so is one
-whose recording node could not be read at all. `h9k learn show <id>` says which side of that line
+displayed: a lesson from another node of the owner's own fleet reaches prompts, while one recorded
+on a node outside that fleet, or replicated here by one (each also when the fleet cannot be read),
+is rendered in `lessons.md` and held out of every prompt until the security review in idea 7e403b80
+rules otherwise, and so is one whose recording node could not be read at all or that carries no
+provenance. `h9k learn show <id>` says which side of that line
 a lesson falls on, and whether it is still active enough to reach a prompt at all. So an absent
 section never means "this project has learned nothing", and a present one never means "this is
 everything".
@@ -914,10 +916,11 @@ h9k learn distill [--project <name>|--owner]          # author the research spik
 
 Distillation is a task a human authors, never something the daemon decides to do. `h9k learn
 distill` creates an ordinary research spike draft and stops there; a person publishes and queues
-it like any other. Its instructions are merge-and-cite only, and the citation half is enforced:
-`--distilled-from` is refused outright when its citations resolve to nothing, repeat, or name the
-lesson itself, because a merge nobody can check against what it merged is a new claim wearing a
-merge's clothes. Merging does not retire what it merged; that is still `h9k learn retire <id>
+it like any other. Its instructions are merge-and-cite only: the decider refuses a distilled
+lesson whose citations resolve to nothing, repeat, or name the lesson itself, because a merge nobody
+can check against what it merged is a new claim wearing a merge's clothes. A plain `h9k learn` with
+no `--distilled-from` is recorded without any, so citing every source is the distilling session's
+own discipline. Merging does not retire what it merged; that is still `h9k learn retire <id>
 --reason "Absorbed into <id>"`, and a source left live keeps riding in prompts. `h9k status` names
 this lever for a project whose active lessons have passed the count cap.
 

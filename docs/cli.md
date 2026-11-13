@@ -193,10 +193,11 @@ never distils on its own judgment, because merging two claims into one is a judg
 and a wrong merge replaces two things somebody observed with one thing nobody did. The closeout note
 promotion (see [Task notes](#task-notes)) is not a distillation for that reason: it copies one note
 and cites it, and it merges nothing and replaces nothing. The task's
-instructions are merge-and-cite only, and the citation half is enforced rather than requested:
+instructions are merge-and-cite only:
 `h9k learn "<merged claim>" --distilled-from <id> --distilled-from <id>` records the merge with its
-sources, and the decider refuses one whose citations resolve to nothing, repeat, or name the lesson
-itself. Merging retires nothing on its own; each source still ends with its own
+sources, and the decider refuses a distilled lesson whose citations resolve to nothing, repeat, or
+name the lesson itself. A plain `h9k learn` with no `--distilled-from` is recorded without any, so
+citing every source is the distilling session's own discipline. Merging retires nothing on its own; each source still ends with its own
 `h9k learn retire <id> --reason "Absorbed into <id>"`. `h9k status` names this lever for a project
 whose active lessons have passed the count cap.
 
