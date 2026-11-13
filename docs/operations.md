@@ -131,6 +131,14 @@ h9k daemon stop       # graceful: in-flight event appends finish
 h9k daemon status     # running or not, pid, uptime, autostart posture, recent log lines
 ```
 
+**On Windows the daemon runs on a desktop of its own.** `h9k daemon start` and the logon autostart task
+both create a desktop in `WinSta0` for `h9kd`, never switch to it, and start `h9kd` there with a new
+console whose window is visible on that desktop, so every process it starts inherits both. Without it,
+git children of the daemon leak kernel access tokens while a Remote Desktop session is connected. You
+never see the window. The cost is that a child which shows UI on that desktop waits for a click nobody
+can give, so `h9kd` sets `GCM_INTERACTIVE=never` (unless you set it) and a git call to a remote with no
+stored credential fails within seconds with a message naming the credential helper rather than hanging. From a session whose window station is not `WinSta0` (an OpenSSH session, or a scheduled task set to run whether or not you are logged on) there is no visible desktop to avoid, so `h9kd` starts there with a windowless console as before.
+
 **A daemon can be starting, not just running or not.** `h9k daemon start` waits up to 20s for the
 daemon's pid file to land before concluding the launch is still starting — earlier output (a log
 rotation notice, a database reachability prompt, an autostart routing line) can print before that
