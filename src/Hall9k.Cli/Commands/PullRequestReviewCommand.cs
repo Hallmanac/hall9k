@@ -6,6 +6,7 @@ using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -1016,13 +1017,16 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
                 // pr-review run is never stacked, never replayed, and never rebased.
                 BaseBranch: string.Empty,
                 BaseCommit: string.Empty));
+            // The account this lap's run is frozen to (node-only), the same record every dispatch carries.
+            session.Events.Append(runId, new RunClaudeCodeAccountRecorded(
+                runId, ClaudeCodeAccountBinding.ForProject(project), DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
 
-            // Version 1: this dispatch is the stream's only event, and it is what
-            // RecordLapOpenedAsync re-checks — so startup adoption failing this sentinel run as
-            // "dispatched but never started" between here and the record is caught rather than
+            // Version 2: this dispatch and its account freeze are the stream's only events, and that
+            // version is what RecordLapOpenedAsync re-checks, so startup adoption failing this sentinel
+            // run as "dispatched but never started" between here and the record is caught rather than
             // recorded over (LapAttachment's own doc).
-            return (worktreePath, 1);
+            return (worktreePath, 2);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

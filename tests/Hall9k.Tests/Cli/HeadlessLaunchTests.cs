@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
@@ -58,7 +59,7 @@ public sealed class HeadlessLaunchTests : IDisposable
 
         (int processId, DateTimeOffset startedAt) = HeadlessLaunch.SpawnDetached(
             _scratchDirectory, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "test-headless-build",
-            AgentModel.Sonnet, promptFile, streamFile, standardErrorFile, settingsFile, skipPermissions: false);
+            AgentModel.Sonnet, promptFile, streamFile, standardErrorFile, settingsFile, skipPermissions: false, ClaudeCodeAccount.Default);
 
         processId.Should().BePositive();
         startedAt.Should().NotBe(DateTimeOffset.MinValue, "the process really started, so its start time is observed, not the never-started sentinel");
@@ -113,7 +114,7 @@ public sealed class HeadlessLaunchTests : IDisposable
 
         Action act = () => HeadlessLaunch.SpawnDetached(
             _scratchDirectory, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "test-headless-build",
-            AgentModel.Sonnet, promptFile, streamFile, standardErrorFile, settingsFile, skipPermissions: false);
+            AgentModel.Sonnet, promptFile, streamFile, standardErrorFile, settingsFile, skipPermissions: false, ClaudeCodeAccount.Default);
 
         act.Should().Throw<InvalidOperationException>()
             .Where(exception => exception.Message.Contains("already exited")

@@ -1,9 +1,11 @@
 using System.ComponentModel;
+using Hall9k.Cli.ClaudeCode;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
@@ -136,11 +138,19 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // role.
         string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build);
 
+        // Checked before the claim, the worktree cut, or any append: a spawn that throws after them leaves
+        // the claim Dispatched, so a refused account must stop this command while nothing is dispatched yet.
+        // The account checked here is the one ClaimAndCutAsync freezes on the run below.
+        ProjectDetails boundProject = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
+            ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
+        ClaudeCodeAccount account = await CliClaudeAccount.ForProjectAsync(session, boundProject, cancellationToken);
+        await CliClaudeAccount.EnsureUsableAsync(account, cancellationToken);
+
         (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork,
             AgentModel model, string baseBranch, string baseCommit) =
             await ClaimAndCutAsync(
                 store, session, task, fence, context, claudeSessionId, sessionName,
-                acknowledgeUnmetDependencies, interactiveMode, trackerClaimGate, cancellationToken);
+                acknowledgeUnmetDependencies, interactiveMode, trackerClaimGate, account, cancellationToken);
 
         TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
@@ -242,7 +252,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         {
             (processId, startedAt) = HeadlessLaunch.SpawnDetached(
                 worktreePath, runId, taskId, claudeSessionId, sessionName, model, promptFile, streamFile,
-                standardErrorFile, settingsFile, project.SkipPermissions);
+                standardErrorFile, settingsFile, project.SkipPermissions, account);
         }
         catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
         {
@@ -312,6 +322,16 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         + $"h9k task drive {taskId} to iterate on it by hand, or h9k pr resolve {taskId} to dispatch a "
         + "headless follow-up instead.";
 
+    /// <summary>The claim with no account checked yet: the run freezes the project's current binding.</summary>
+    internal static Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, AgentModel Model, string BaseBranch, string BaseCommit)> ClaimAndCutAsync(
+        DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
+        Guid claudeSessionId, string sessionName, bool acknowledgeUnmetDependencies, bool interactiveMode,
+        TrackerClaimGate? trackerClaimGate,
+        CancellationToken cancellationToken) =>
+        ClaimAndCutAsync(
+            store, session, task, fence, context, claudeSessionId, sessionName, acknowledgeUnmetDependencies,
+            interactiveMode, trackerClaimGate, checkedAccount: null, cancellationToken);
+
     /// <summary>
     /// The claim itself, pure enough to test against the failure states without touching the
     /// filesystem: Published loads the dependency snapshot and warns-then-optionally-overrides
@@ -327,7 +347,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, AgentModel Model, string BaseBranch, string BaseCommit)> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
         Guid claudeSessionId, string sessionName, bool acknowledgeUnmetDependencies, bool interactiveMode,
-        TrackerClaimGate? trackerClaimGate, CancellationToken cancellationToken)
+        TrackerClaimGate? trackerClaimGate, ClaudeCodeAccount? checkedAccount, CancellationToken cancellationToken)
     {
         string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
             session, context.OwnerId, cancellationToken);
@@ -615,6 +635,13 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 // and BaseCommit are just above (StackedBaseResolver.ResumedBase's own doc) — null
                 // for a fresh cut, which is every ordinary claim.
                 OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
+            // The Claude Code account this run runs under, frozen in the dispatch's own commit and node-only:
+            // every later spawn into this run uses it, whatever the project is bound to by then. The account the
+            // caller already checked wins, so a binding changed since that check cannot freeze a different one.
+            Guid? frozenConnectionId = checkedAccount is { } checkedOne
+                ? checkedOne.ConnectionId
+                : ClaudeCodeAccountBinding.ForProject(project);
+            session.Events.Append(runId, new RunClaudeCodeAccountRecorded(runId, frozenConnectionId, DateTimeOffset.UtcNow));
             // Appended right behind the dispatch, in the same commit, so this claim's record can
             // never exist saying "resumed" while the fact that it did not is still in flight
             // (#234). Null for every claim that resumed what it meant to and every

@@ -1,6 +1,8 @@
 using System.ComponentModel;
+using Hall9k.Cli.ClaudeCode;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
@@ -97,6 +99,14 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
         DelegationPlan plan = await PrepareAsync(session, taskId, settings.Note, settings.Force, cancellationToken);
 
+        // The contractor runs under the account frozen on this run at task start, checked before any file is
+        // written or anything appended, so a refused account leaves the interactive claim exactly as it was.
+        RunDetails accountRun = await session.LoadAsync<RunDetails>(plan.RunId, cancellationToken)
+            ?? throw new DomainConflictException(
+                $"Task {taskId}'s run {plan.RunId} no longer has a record; h9k task show {taskId} to see where it stands.");
+        ClaudeCodeAccount account = await CliClaudeAccount.ForRunAsync(session, accountRun, cancellationToken);
+        await CliClaudeAccount.EnsureUsableAsync(account, cancellationToken);
+
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(plan.RunDirectory);
         Directory.CreateDirectory(resolvedRunDirectory);
 
@@ -175,7 +185,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         {
             (processId, startedAt) = HeadlessLaunch.SpawnDetached(
                 plan.WorktreePath, plan.RunId, taskId, plan.ClaudeSessionId, plan.SessionName, plan.Model, promptFile,
-                streamFile, standardErrorFile, settingsFile, plan.SkipPermissions);
+                streamFile, standardErrorFile, settingsFile, plan.SkipPermissions, account);
         }
         catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
         {

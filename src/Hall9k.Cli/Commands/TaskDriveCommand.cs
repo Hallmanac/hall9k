@@ -1,12 +1,15 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
+using Hall9k.Cli.ClaudeCode;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
+using Hall9k.Connectors.ClaudeCode;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Owner;
@@ -235,11 +238,24 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         // than leave it silent (independent pre-PR review, cycle 1, conformance lens): the same
         // asymmetry TaskReleaseCommand already corrected on the clearing side.
         bool isFreshInteractiveClaim = !(task.State == TaskState.Claimed && task.IsInteractiveClaim);
+
+        // --direct-launch spawns claude itself, so its account is checked here, before the claim or the
+        // worktree cut: a re-entry runs under the account its run froze, a fresh claim under the project's
+        // current binding, which ClaimAndCutAsync freezes on the run it dispatches. The paste flow and the
+        // launch line start nothing, so they check nothing.
+        ClaudeCodeAccount account = settings.DirectLaunch
+            ? await DirectLaunchAccountAsync(session, task, isFreshInteractiveClaim, cancellationToken)
+            : ClaudeCodeAccount.Default;
+        if (settings.DirectLaunch)
+        {
+            await CliClaudeAccount.EnsureUsableAsync(account, cancellationToken);
+        }
         (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork, bool crossMachineNoticeShown, Guid? previousClaudeSessionId) = task.State == TaskState.Claimed && task.IsInteractiveClaim
             ? await ReenterAsync(session, task, settings.Force, cancellationToken)
             : await ClaimAndCutAsync(
                 store, session, task, fence, context, claudeSessionId, sessionName,
-                settings.AcknowledgeUnmetDependencies, trackerClaimGate: null, cancellationToken);
+                settings.AcknowledgeUnmetDependencies, trackerClaimGate: null,
+                settings.DirectLaunch ? account : null, cancellationToken);
 
         TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
@@ -317,7 +333,7 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         return settings.DirectLaunch
             ? await LaunchDirectlyAsync(
                 store, session, taskId, runId, worktreePath, branch, prompt, claudeSessionId, previousClaudeSessionId,
-                settingsFile, project.SkipPermissions, sessionName, isFreshInteractiveClaim, cancellationToken)
+                settingsFile, project.SkipPermissions, sessionName, isFreshInteractiveClaim, account, cancellationToken)
             : settings.PrintPrompt
                 ? PrintPromptHandoff(taskId, worktreePath, branch, prompt, settingsFile, isFreshInteractiveClaim)
                 : await PrintLaunchLineAsync(
@@ -654,6 +670,24 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
     }
 
     /// <summary>
+    /// The account a <c>--direct-launch</c> spawn runs under: the one its run froze on a re-entry, or the
+    /// project's current binding on a fresh claim, which is the account the claim is about to freeze.
+    /// </summary>
+    private static async Task<ClaudeCodeAccount> DirectLaunchAccountAsync(
+        IDocumentSession session, TaskAggregate task, bool isFreshInteractiveClaim, CancellationToken cancellationToken)
+    {
+        if (!isFreshInteractiveClaim && task.CurrentRunId is { } runId
+            && await session.LoadAsync<RunDetails>(runId, cancellationToken) is { } run)
+        {
+            return await CliClaudeAccount.ForRunAsync(session, run, cancellationToken);
+        }
+
+        ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
+            ?? throw new DomainNotFoundException($"Task {task.Id}'s project no longer exists.");
+        return await CliClaudeAccount.ForProjectAsync(session, project, cancellationToken);
+    }
+
+    /// <summary>
     /// <c>--direct-launch</c>'s own path, kept for one release exactly as this command always
     /// behaved: launches a plain interactive <c>claude</c> process attached to this terminal,
     /// waits for it to exit, and prints the same deliver/verify/drive/handback/release menu this
@@ -664,7 +698,7 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
     private static async Task<int> LaunchDirectlyAsync(
         DocumentStore store, IDocumentSession session, Guid taskId, Guid runId, string worktreePath, string branch,
         string prompt, Guid claudeSessionId, Guid? previousClaudeSessionId, string settingsFile, bool skipPermissions,
-        string sessionName, bool isFreshInteractiveClaim, CancellationToken cancellationToken)
+        string sessionName, bool isFreshInteractiveClaim, ClaudeCodeAccount account, CancellationToken cancellationToken)
     {
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
@@ -717,7 +751,7 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
                 // like any other attempt rather than left invisible.
                 (attemptExitCode, sessionStartRecorded, resumeNotFound, exitedAt) = await LaunchInteractiveClaudeAsync(
                     worktreePath, resume ? reentryPrompt : prompt, sessionIdToLaunch, settingsFile, skipPermissions, runId,
-                    sessionName, resume,
+                    sessionName, resume, account,
                     // CancellationToken.None: by the time this runs, process.Start() has already
                     // spawned a real, terminal-attached claude — a Ctrl-C landing in the window
                     // before this append completes must not turn into a lost append (adversarial
@@ -934,10 +968,20 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         return (runId, run.WorktreePath, run.Branch, run.RunDirectory, ResumesPreviousWork: true, crossMachineNoticeShown, run.InteractiveClaudeSessionId ?? run.SessionId);
     }
 
+    /// <summary>The claim with no account checked yet: the run freezes the project's current binding.</summary>
+    internal static Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown, Guid? PreviousClaudeSessionId)> ClaimAndCutAsync(
+        DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
+        Guid claudeSessionId, string sessionName, bool acknowledgeUnmetDependencies,
+        TrackerClaimGate? trackerClaimGate,
+        CancellationToken cancellationToken) =>
+        ClaimAndCutAsync(
+            store, session, task, fence, context, claudeSessionId, sessionName, acknowledgeUnmetDependencies,
+            trackerClaimGate, checkedAccount: null, cancellationToken);
+
     internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown, Guid? PreviousClaudeSessionId)> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
         Guid claudeSessionId, string sessionName, bool acknowledgeUnmetDependencies,
-        TrackerClaimGate? trackerClaimGate, CancellationToken cancellationToken)
+        TrackerClaimGate? trackerClaimGate, ClaudeCodeAccount? checkedAccount, CancellationToken cancellationToken)
     {
         // Published is the atomic entry (task 688a1ccf-h9k): the dependency snapshot is loaded
         // here, before any other check, because it decides whether this claim is even possible.
@@ -1289,6 +1333,12 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
                 // and BaseCommit are just above (StackedBaseResolver.ResumedBase's own doc) — null
                 // for a fresh cut, which is every ordinary claim.
                 OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
+            // The Claude Code account this run runs under, frozen in the dispatch's own commit and node-only:
+            // every later spawn into this run uses it, whatever the project is bound to by then.
+            Guid? frozenConnectionId = checkedAccount is { } checkedOne
+                ? checkedOne.ConnectionId
+                : ClaudeCodeAccountBinding.ForProject(project);
+            session.Events.Append(runId, new RunClaudeCodeAccountRecorded(runId, frozenConnectionId, DateTimeOffset.UtcNow));
             // Appended right behind the dispatch, in the same commit, so this claim's record can
             // never exist saying "resumed" while the fact that it did not is still in flight
             // (#234). Null for every claim that resumed what it meant to and every
@@ -2029,7 +2079,8 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
 
     private static async Task<(int ExitCode, bool SessionStartRecorded, bool ResumeNotFound, DateTimeOffset ExitedAt)> LaunchInteractiveClaudeAsync(
         string worktreePath, string prompt, Guid sessionId, string settingsFile, bool skipPermissions, Guid runId,
-        string sessionName, bool resume, Func<int, DateTimeOffset, Task> onStarted, CancellationToken cancellationToken)
+        string sessionName, bool resume, ClaudeCodeAccount account, Func<int, DateTimeOffset, Task> onStarted,
+        CancellationToken cancellationToken)
     {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
@@ -2044,6 +2095,7 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         // that session is blocked waiting on the command it just started rather than racing it
         // (conformance review, cycle 2).
         process.StartInfo.EnvironmentVariables[InteractiveSessionLiveness.InteractiveRunEnvironmentVariable] = runId.ToString();
+        ClaudeCodeEnvironment.Apply(process.StartInfo.Environment, account);
         foreach (string argument in BuildInteractiveArguments(sessionId, resume, sessionName, settingsFile, skipPermissions, prompt))
         {
             process.StartInfo.ArgumentList.Add(argument);
