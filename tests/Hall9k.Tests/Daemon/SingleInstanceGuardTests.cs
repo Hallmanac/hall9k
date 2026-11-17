@@ -52,5 +52,21 @@ public sealed class SingleInstanceGuardTests : IDisposable
         DaemonPidFile.TryRead(PidPath).Should().BeNull("a clean exit leaves no stale identity behind");
     }
 
+    [Fact]
+    public void Acquire_records_the_claude_config_directory_this_process_inherited_or_none()
+    {
+        using (SingleInstanceGuard.TryAcquire(LockPath, PidPath, name => name == "CLAUDE_CONFIG_DIR" ? "/Users/dev/.claude-alt" : null))
+        {
+            DaemonPidFile.TryReadRecord(PidPath)?.Inherited.Should().Be(new DaemonInheritedEnvironment("/Users/dev/.claude-alt"));
+        }
+
+        using (SingleInstanceGuard.TryAcquire(LockPath, PidPath, _ => null))
+        {
+            DaemonPidRecord? record = DaemonPidFile.TryReadRecord(PidPath);
+            record.Should().NotBeNull();
+            record?.Inherited.Should().Be(new DaemonInheritedEnvironment(null), "inheriting none is recorded, not left out");
+        }
+    }
+
     public void Dispose() => Directory.Delete(_directory, recursive: true);
 }

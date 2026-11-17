@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Domain.Infrastructure.Storage;
 using Xunit;
@@ -23,9 +24,61 @@ public sealed class DaemonPidFileTests : IDisposable
     }
 
     [Fact]
+    public void The_daemons_record_reads_back_with_the_value_it_inherited()
+    {
+        DaemonProcessDescriptor descriptor = new(4242, DateTimeOffset.Parse("2026-11-17T10:00:00Z"));
+
+        DaemonPidFile.Write(PidPath, descriptor, new DaemonInheritedEnvironment("/Users/dev/.claude-alt"));
+
+        DaemonPidFile.TryReadRecord(PidPath).Should().Be(
+            new DaemonPidRecord(descriptor, new DaemonInheritedEnvironment("/Users/dev/.claude-alt")));
+        DaemonPidFile.TryRead(PidPath).Should().Be(descriptor, "the identity read is unchanged by the extra field");
+    }
+
+    [Fact]
+    public void The_daemons_record_reads_back_with_an_explicit_none()
+    {
+        DaemonProcessDescriptor descriptor = new(4242, DateTimeOffset.Parse("2026-11-17T10:00:00Z"));
+
+        DaemonPidFile.Write(PidPath, descriptor, new DaemonInheritedEnvironment(null));
+
+        DaemonPidFile.TryReadRecord(PidPath).Should().Be(new DaemonPidRecord(descriptor, new DaemonInheritedEnvironment(null)));
+    }
+
+    [Fact]
+    public void A_pid_file_an_older_build_wrote_reads_as_no_record_of_the_environment()
+    {
+        File.WriteAllText(PidPath, """{"processId":4242,"startedAt":"2026-11-17T10:00:00+00:00"}""");
+
+        DaemonPidRecord? record = DaemonPidFile.TryReadRecord(PidPath);
+
+        record.Should().NotBeNull();
+        record?.Daemon.Should().Be(new DaemonProcessDescriptor(4242, DateTimeOffset.Parse("2026-11-17T10:00:00Z")));
+        record?.Inherited.Should().BeNull("an older build recorded nothing, which is not the same as recording none");
+    }
+
+    [Fact]
+    public void The_record_carries_the_one_variable_and_nothing_else()
+    {
+        DaemonInheritedEnvironment.Read(name => name switch
+        {
+            "CLAUDE_CONFIG_DIR" => "/Users/dev/.claude-alt",
+            _ => "something else",
+        }).Should().Be(new DaemonInheritedEnvironment("/Users/dev/.claude-alt"));
+        DaemonInheritedEnvironment.Read(_ => "").Should().Be(new DaemonInheritedEnvironment(null), "an empty value is none");
+        DaemonInheritedEnvironment.Read(_ => null).Should().Be(new DaemonInheritedEnvironment(null));
+
+        DaemonPidFile.Write(PidPath, new DaemonProcessDescriptor(1, DateTimeOffset.UtcNow), new DaemonInheritedEnvironment("/x"));
+        using JsonDocument written = JsonDocument.Parse(File.ReadAllText(PidPath));
+        written.RootElement.GetProperty("inheritedEnvironment").EnumerateObject().Select(property => property.Name)
+            .Should().Equal("claudeConfigDirectory");
+    }
+
+    [Fact]
     public void Missing_file_reads_as_null_not_an_error()
     {
         DaemonPidFile.TryRead(PidPath).Should().BeNull();
+        DaemonPidFile.TryReadRecord(PidPath).Should().BeNull();
     }
 
     [Fact]

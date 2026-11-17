@@ -24,9 +24,12 @@ public sealed class SingleInstanceGuard : IDisposable
 
     /// <summary>
     /// Null when another instance already holds the lock. Paths are parameters so tests
-    /// run against a temp directory; production passes the DaemonRuntime paths.
+    /// run against a temp directory; production passes the DaemonRuntime paths. The pid file also records
+    /// what this process inherited of <c>CLAUDE_CONFIG_DIR</c>, read through <paramref name="readEnvironment"/>
+    /// (this process's own environment when null), so <c>h9k doctor</c> can warn about it.
     /// </summary>
-    public static SingleInstanceGuard? TryAcquire(string lockFilePath, string pidFilePath)
+    public static SingleInstanceGuard? TryAcquire(
+        string lockFilePath, string pidFilePath, Func<string, string?>? readEnvironment = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(lockFilePath)!);
         FileStream lockStream;
@@ -42,9 +45,10 @@ public sealed class SingleInstanceGuard : IDisposable
         }
 
         using Process current = Process.GetCurrentProcess();
-        DaemonPidFile.Write(pidFilePath, new DaemonProcessDescriptor(
-            current.Id,
-            new DateTimeOffset(current.StartTime.ToUniversalTime(), TimeSpan.Zero)));
+        DaemonPidFile.Write(
+            pidFilePath,
+            new DaemonProcessDescriptor(current.Id, new DateTimeOffset(current.StartTime.ToUniversalTime(), TimeSpan.Zero)),
+            DaemonInheritedEnvironment.Read(readEnvironment ?? Environment.GetEnvironmentVariable));
         return new SingleInstanceGuard(lockStream, pidFilePath);
     }
 
