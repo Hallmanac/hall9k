@@ -61,3 +61,7 @@ context: |-
   **Doctor and solutions.** DoctorCommand composes its checks in order; LinearDoctor (src/Hall9k.Cli/Diagnostics/LinearDoctor.cs) is the probe pattern to follow: an outcome enum, never throws, one remediation line per outcome. A solution has no settings store; it follows its members, one account when every member agrees and the default otherwise. The override credentials outrank a directory's login; doctor warns about them, and spawns do not strip them, since an operator may set them on purpose. A bound project's spawn check refuses while one is in effect, as above.
 
   **Boundaries.** Hall9k never runs /login, never reads or copies the Keychain item or .credentials.json, and never handles a token. Unbound projects behave exactly as today apart from the variable's removal, on every node including Windows. The parked account-switching lines in the skill (around line 1579) and in docs/scope.md concern GitHub accounts, not Claude Code ones. Printed paste lines, the launch anchor, and h9k task register-session belong to the task stacked on this one; leave them alone. The per-account spend report is a separate draft. Public records: examples use ~/.claude-alt and never name another project, organization, or person.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-11-17 16:27:09Z
