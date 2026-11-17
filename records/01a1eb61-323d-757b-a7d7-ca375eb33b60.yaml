@@ -1,0 +1,97 @@
+hall9k-task-record: 1
+task-id: 01a1eb61-323d-757b-a7d7-ca375eb33b60
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#890
+objective: h9k doctor warns when the running h9kd or the shell it runs in carries a non-empty CLAUDE_CONFIG_DIR, saying what that value does and does not change for projects with no bound Claude Code account and naming the fix
+criteria:
+  - |-
+    With h9kd running in an environment that carries a non-empty CLAUDE_CONFIG_DIR (for example, started from a shell that exports it, by hand or with `h9k daemon start` when no autostart is registered, or under the AppHost dev loop), `h9k doctor` prints a yellow warning that names the daemon and the inherited value, whatever doctor's own shell carries. The warning says that every session h9kd starts under the default login (for a project with no bound claude-code account, or for a solution whose members do not all share one) runs under the default login regardless of that value, while a session for a bound project runs under its own connection's directory. It names the fix: register the directory with `h9k connection add claude-code --config-dir <dir>` and bind the projects that should use it with `h9k project set <project> --claude-code-account <connection>`, or remove the variable from the daemon's environment and restart the daemon.
+  - No daemon warning prints when no daemon is running, including when a pid file or any other record outlives a daemon that has exited, or when the running daemon's environment does not carry the variable (or carries it empty), even if doctor's own shell does. When a daemon is running but left no record of what it inherited (it was started from a build that predates this change), doctor prints one yellow line saying that it cannot tell whether the daemon carries the variable and that restarting the daemon lets it tell, rather than staying silent.
+  - When the shell `h9k doctor` runs in carries a non-empty CLAUDE_CONFIG_DIR, doctor prints a separate yellow warning that names the value. It says that every Claude Code session h9k itself starts from this shell under the default login (for example `h9k task start`, `h9k task delegate`, `h9k task drive --direct-launch`, and `h9k orchestrator measure`) runs under the default login regardless of the variable. It also says that a line printed for a project with no bound account, or for the node's own window, runs under the directory the variable names when pasted into this shell, and that a daemon started directly from this shell inherits the variable. It names the fix of unsetting the variable before pasting such a line or starting the daemon. With the variable unset or empty in doctor's shell, no such warning prints.
+  - Both warnings print in doctor's Claude Code accounts section on every run whose database check passes, whether or not this node records any claude-code connection, and neither changes the exit code of `h9k doctor`. The daemon records only the CLAUDE_CONFIG_DIR value it inherited, or the fact that it inherited none, together with the pid and start time that identify the daemon that wrote it, and no other environment variable's name or value. The record is written to a file in the same directory as the daemon's pid file (the pid file itself or one beside it), and this change adds no event type and no field to any event.
+  - The "Claude Code accounts" section of docs/cli.md and the account section of the hall9k-cli-reference skill describe both warnings, the cannot-tell line, and their fixes, and the `--help` description of `h9k doctor` says that it warns when the daemon's environment or its own shell carries CLAUDE_CONFIG_DIR.
+  - Unit tests show the daemon warning printing for a running daemon whose record carries the variable, and staying silent for one whose record says it inherited none, for a record left by a daemon that has exited, and with no daemon at all, each independently of doctor's own shell; they show the cannot-tell line for a running daemon with no record. They show the daemon's record reading back with its value, with an explicit none, and as no record from a pid file an older build wrote. They show the shell warning printing when its variable is set and staying silent when it is absent or empty, and both warnings printing on a node with no claude-code connection recorded.
+dependencies: [01a1ea5a-ef53-77ad-89bf-36b5707917d1]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/5eb33b60-h9k-doctor-warns-when-the-runn
+published: 2026-11-17 21:36:15Z
+context: |-
+  Per-project Claude Code account on a node: an operator logs an alternate Claude Code config directory in by
+  hand, registers it as a claude-code connection, and binds some projects to it, so every claude process
+  Hall9k starts or prints for a bound project runs under that account while unbound projects keep the default
+  `~/.claude` login. That work has shipped and merged. Two gaps its challenges parked were ruled worth doing at
+  the owner's go on 2026-11-17. This task closes the first: an inherited CLAUDE_CONFIG_DIR is now removed for
+  sessions that resolve to the default login without a word. The second gap, the account on two paste
+  handoffs, is the task this one is stacked on and is not part of this one.
+
+  ## Why the warning is needed
+
+  - Every daemon spawn under the default login removes the variable from the child's environment
+    (`ProcessSpawnRequest.RemovedEnvironment`, `src/Hall9k.Daemon/ProcessManagement/IProcessManager.cs:33`,
+    set in `src/Hall9k.Daemon/Execution/ClaudeExecutor.cs:151`). That covers unbound projects and solutions
+    whose members do not all share one binding (`ClaudeCodeAccountBinding.ForSolution`,
+    `src/Hall9k.Domain/Features/Connection/ClaudeCodeAccountBinding.cs:51-57`). The CLI's own spawns do the
+    same through `ClaudeCodeEnvironment.Apply` (`src/Hall9k.Connectors/ClaudeCode/ClaudeCodeAccounts.cs:52`),
+    called from `HeadlessLaunch.cs:127` (task start and delegate), `TaskDriveCommand.cs:2111` (`--direct-launch`),
+    and `OrchestratorMeasureProbe.cs:65` (`h9k orchestrator measure`, whose node probe always passes
+    `ClaudeCodeAccount.Default`, `OrchestratorMeasureCommand.cs:121`). That is correct, but a node whose daemon
+    inherited the variable used to run everything under that directory and now silently runs these sessions
+    under the default login.
+  - Printed lines for an unbound project, and the node window's line, carry no prefix (a ruling of the account
+    work, not to be reopened), so a bare `claude` line pasted into a shell that exports the variable runs under
+    it. That is why doctor's own shell gets a warning too. The shell warning names commands as examples rather
+    than as an exhaustive list, so a later spawn site does not make it false.
+
+  ## Where it goes
+
+  - The section to extend is `src/Hall9k.Cli/Diagnostics/ClaudeCodeDoctor.cs`. It returns early when no
+    claude-code connection is recorded (lines 50-54), which is exactly the node this warning matters most on,
+    and its existing override check (`EnvironmentOverrides`, line 138, used at line 59) reads only doctor's
+    own shell and treats an empty value as absent. `DoctorCommand.cs:81-86` returns before this section when
+    the database check fails, which criterion 4 accepts.
+  - The CLI has no view of h9kd's environment today. What it reads about a running daemon is the pid file
+    (`DaemonProcessDescriptor`, `src/Hall9k.Domain/Infrastructure/Storage/DaemonPidFile.cs:9`, written by
+    `src/Hall9k.Daemon/SingleInstanceGuard.cs:45` under `DaemonRuntime.PidFile`, `DaemonRuntime.cs:25`, and read
+    with a pid-and-start-time aliveness check by `DaemonProcess.Probe`, `src/Hall9k.Cli/DaemonControl/DaemonProcess.cs:38`).
+    How the daemon reports what it inherited is the build's choice, a field in the pid file or a file beside
+    it, as long as it is read through the same aliveness check so a stale record never warns. The pid file is
+    written with `File.WriteAllText` and no file mode, so whatever carries the value should hold that one
+    variable and nothing else.
+  - Two traps in the record's shape. First, the record must let an older build's pid file read differently
+    from a daemon that recorded no variable; a nullable field on the positional `DaemonProcessDescriptor`
+    cannot, because both deserialize to null. A file beside the pid file must carry the writing daemon's pid
+    and start time so it is read through the same aliveness check and never attributed to a later daemon.
+    Second, a field on `DaemonProcessDescriptor` also travels into the Windows stop-request file
+    (`DaemonLifecycle.cs:494`, `WindowsDaemonAutostart.cs:490`), whose watcher logs the file's content on a
+    mismatch (`src/Hall9k.Daemon/WindowsStopRequestWatcher.cs:176-179`). That stays on the node, but choose it
+    deliberately or keep the field off the descriptor the stop request uses.
+  - Existing coverage to extend: `tests/Hall9k.Tests/Cli/ClaudeCodeAccountCliTests.cs` (line 253 already drives
+    `EnvironmentOverrides` with a fake reader, the pattern for the shell warning), `tests/Hall9k.Tests/Domain/DaemonPidFileTests.cs`,
+    and `tests/Hall9k.Tests/Daemon/SingleInstanceGuardTests.cs`. The unit tests for a node with no connection
+    and for a dead daemon's record need the section's composition factored so the connection list and the
+    aliveness check can be supplied by the test.
+  - Where the case arises: a daemon started by hand, by `h9k daemon start` when no autostart is registered
+    (it inherits the operator's shell, `DaemonEnvironment.cs:6-8`; with autostart registered it starts through
+    the service manager, `DaemonLifecycle.cs:146`), and the AppHost dev loop. Under the macOS LaunchAgent the
+    daemon's environment is pinned (`src/Hall9k.Cli/DaemonControl/DaemonEnvironment.cs:31-37`). The Windows
+    launcher merges everything it inherited (`WindowsDaemonLaunch.cs:175`), so whether the Windows autostart
+    carries a user-level variable is unobserved but not ruled out.
+  - The cannot-tell line matters because `h9k install` and `h9k update` take `--no-restart`, so the first
+    doctor run after an upgrade can see a running daemon that left no record.
+
+  ## Left out on purpose
+
+  - The daemon reporting which override credential variables it inherited (names only) was parked by the
+    challenge and is not part of this task.
+
+  ## Docs
+
+  `docs/cli.md` "Claude Code accounts" (line 2475 at the time of writing) and the hall9k-cli-reference skill's
+  account section (starting at line 1519 of `.claude/skills/hall9k-cli-reference/SKILL.md`). Doctor's `--help`
+  description is at `src/Hall9k.Cli/Infrastructure/CliCommandTree.cs:824-843`. Both docs sections are also
+  edited by the task this one is stacked on, so this task's docs edits go on top of that task's text and the
+  line numbers will have moved.
