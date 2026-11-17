@@ -2546,6 +2546,23 @@ the account. The node window line
 no binding. The solution window line printed by `h9k solution init` and `h9k solution add` carries the account
 every member agrees on, and nothing when they disagree or none is bound.
 
+The two paste handoffs, `h9k task drive --print-prompt` and `h9k pr review`, hand you a prompt or a briefing
+rather than a launch line, so for a bound project each one also names the account (its recorded email and
+directory, or "an unobserved account" and the directory when no email is recorded) and prints a start command
+on a line of its own that runs under it:
+
+```bash
+CLAUDE_CONFIG_DIR='/Users/you/.claude-alt' claude --settings "/Users/you/.hall9k/runs/<run>/settings.json"
+```
+
+In PowerShell the command carries the same `try`/`finally` wrapper as every other printed line. The command
+passes the handoff's settings file, and the handoff's lines that would otherwise tell you to start Claude Code
+with `--settings` yourself point at it instead. Like every printed line it names the project's current binding,
+not the account a re-entered run froze, so the session you start registers the account the next `h9k task
+drive` will offer to resume. `h9k pr review` reads the binding before it adopts, attaches, or records anything,
+and a binding to a connection this node no longer records refuses the lap there. A handoff for an unbound
+project prints neither the account nor a start command and is exactly what it was before.
+
 Because the prefix is added at print time, `h9k orchestrator launch-text set` refuses any text containing
 `CLAUDE_CONFIG_DIR`. To store a line you copied from `launch-text show`, remove what Hall9k added first (the
 prefix in POSIX, and in PowerShell both the `try { $env:...; ` before the statement and the `finally` block
