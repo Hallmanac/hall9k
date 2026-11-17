@@ -1553,6 +1553,13 @@ one, an unbound project's lines are unchanged, a stored claude-code text with no
 prints as stored with a sentence naming the directory, a stored text that already names
 `CLAUDE_CONFIG_DIR` prints as stored with a sentence saying to store it again without it, and another
 CLI's text never gets it.
+The two paste handoffs, `task drive --print-prompt` and `pr review`, name a bound project's account
+(`ClaudeCodeAccount.Describe`: the email and directory, or "an unobserved account" and the directory) and print
+a start command on a line of its own, `claude --settings "<the handoff's settings file>"` carrying the account
+in the same POSIX or PowerShell form; the handoff's `--settings` lines point at it. Both name the current
+binding, not a run's frozen account. `pr review` reads it before adopting, attaching, or recording, so a
+binding to a connection the node no longer records refuses the lap there. An unbound project's handoffs are
+unchanged.
 `launch-text set` refuses any text containing `CLAUDE_CONFIG_DIR`, so strip what Hall9k added (the prefix, and in
 PowerShell the `try`/`finally` wrapper) from a line copied from `show` before setting it. `task register-session` and `task drive --direct-launch` record the
 session's account on `InteractiveSessionStarted` (a connection, the default, or unrecognized, never a
