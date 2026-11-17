@@ -11,7 +11,9 @@ namespace Hall9k.Cli.Orchestrator;
 /// </summary>
 public static class OrchestratorReport
 {
-    public static void Print(string cli, LaunchText? launchText, string recipePath, string journalPath)
+    /// <param name="configDirectory">The project's bound Claude Code directory, or null for the node and an unbound project.</param>
+    public static void Print(
+        string cli, LaunchText? launchText, string recipePath, string journalPath, string? configDirectory = null)
     {
         string escapedCli = cli.EscapeMarkup();
         if (launchText is null)
@@ -22,7 +24,7 @@ public static class OrchestratorReport
         }
         else
         {
-            LaunchLineWriter.Write(launchText.Text);
+            LaunchLineWriter.WriteWindowLine(launchText, configDirectory);
         }
 
         string recipeStatus = File.Exists(recipePath) ? string.Empty : " (not created yet - run the orchestrator-recipe-generator skill)";

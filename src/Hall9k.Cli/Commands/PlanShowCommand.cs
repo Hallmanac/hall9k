@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using Hall9k.Cli.ClaudeCode;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
@@ -95,9 +96,12 @@ public sealed class PlanShowCommand : Hall9kAsyncCommand<PlanShowCommand.Setting
             : hasReport
                 ? new DiscoveryReading(Missing: true, null)
                 : null;
+        // The project's current binding: a plan records no account, so a session started before a rebind is
+        // not found under the directory this line carries (docs/cli.md says so).
         string? resume = discovery.LatestSessionId is { } sessionId && project is not null && hasReport
             ? LaunchTextDefaults.DiscoveryResumeLine(
-                ProjectCheckout.ForReading(project), sessionId, OperatingSystem.IsWindows() ? LaunchShell.PowerShell : LaunchShell.Posix)
+                ProjectCheckout.ForReading(project), sessionId, OperatingSystem.IsWindows() ? LaunchShell.PowerShell : LaunchShell.Posix,
+                await CliClaudeAccount.PrintedLineDirectoryAsync(session, project, cancellationToken))
             : null;
         return new DiscoveryShowFacts(idea?.Text, reportPath, reading, resume);
     }

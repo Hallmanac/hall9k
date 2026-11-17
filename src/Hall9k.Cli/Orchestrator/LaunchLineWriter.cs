@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Orchestrator;
 using Spectre.Console;
 
 namespace Hall9k.Cli.Orchestrator;
@@ -19,5 +20,19 @@ public static class LaunchLineWriter
         TextWriter writer = AnsiConsole.Console.Profile.Out.Writer;
         writer.Write(text.TrimEnd('\r', '\n'));
         writer.Write('\n');
+    }
+
+    /// <summary>
+    /// Writes a window's launch line with the bound account on it (<see cref="LaunchLineAccount.ForWindow"/>),
+    /// and the sentence beneath it when the account could not be put on the line.
+    /// </summary>
+    public static void WriteWindowLine(LaunchText launchText, string? configDirectory)
+    {
+        PrintedLaunchLine printed = LaunchLineAccount.ForWindow(launchText, configDirectory, LaunchTextDefaults.HostShell);
+        Write(printed.Line);
+        if (printed.Notice is not null)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[yellow]{printed.Notice}[/]");
+        }
     }
 }

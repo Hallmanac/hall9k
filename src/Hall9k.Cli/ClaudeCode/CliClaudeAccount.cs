@@ -39,6 +39,31 @@ public static class CliClaudeAccount
         IQuerySession session, RunDetails run, CancellationToken cancellationToken) =>
         ClaudeCodeAccounts.LoadAsync(session, ClaudeCodeAccountBinding.ForRun(run), cancellationToken);
 
+    /// <summary>
+    /// The directory a line printed for <paramref name="project"/> carries as <c>CLAUDE_CONFIG_DIR</c>: its bound
+    /// connection's recorded one, or null for an unbound project, whose lines carry nothing.
+    /// </summary>
+    public static async Task<string?> PrintedLineDirectoryAsync(
+        IQuerySession session, ProjectDetails project, CancellationToken cancellationToken) =>
+        (await ForProjectAsync(session, project, cancellationToken)).ConfigDirectory;
+
+    /// <summary>
+    /// The directory a solution window line carries: the account every member agrees on
+    /// (<see cref="ClaudeCodeAccountBinding.ForSolution"/>), or null when they disagree or none is bound.
+    /// </summary>
+    public static async Task<string?> PrintedSolutionLineDirectoryAsync(
+        IQuerySession session, IEnumerable<ProjectDetails> members, CancellationToken cancellationToken) =>
+        SolutionLineDirectory(members, await ClaudeCodeAccounts.ListAsync(session, cancellationToken));
+
+    /// <summary>
+    /// <see cref="PrintedSolutionLineDirectoryAsync"/> over connections already read: the shared connection's
+    /// recorded directory, or null when the members disagree, none is bound, or the shared one is not recorded.
+    /// </summary>
+    internal static string? SolutionLineDirectory(IEnumerable<ProjectDetails> members, IEnumerable<ConnectionDetails> connections) =>
+        ClaudeCodeAccountBinding.ForSolution(members.Select(ClaudeCodeAccountBinding.ForProject)) is { } shared
+            ? ClaudeCodeAccount.For(connections.FirstOrDefault(connection => connection.Id == shared)).ConfigDirectory
+            : null;
+
     /// <summary>Refuses with the check's own text unless <paramref name="account"/> may start a process now.</summary>
     public static async Task EnsureUsableAsync(ClaudeCodeAccount account, CancellationToken cancellationToken)
     {

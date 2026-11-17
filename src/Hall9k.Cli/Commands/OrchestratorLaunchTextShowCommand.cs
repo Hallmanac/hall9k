@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using Hall9k.Cli.ClaudeCode;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Orchestrator;
@@ -39,6 +40,7 @@ public sealed class OrchestratorLaunchTextShowCommand : Hall9kAsyncCommand<Orche
             await using IQuerySession session = store.QuerySession();
             ProjectDetails project = await ProjectResolver.ResolveAsync(session, projectArg, cancellationToken);
             bool stored = OrchestratorLaunchTextResolution.ResolveStored(project.LaunchTexts, settings.Cli) is not null;
+            string? configDirectory = await CliClaudeAccount.PrintedLineDirectoryAsync(session, project, cancellationToken);
             Print(
                 settings.Cli,
                 OrchestratorLaunchTextResolution.Resolve(
@@ -47,7 +49,8 @@ public sealed class OrchestratorLaunchTextShowCommand : Hall9kAsyncCommand<Orche
                     OrchestratorRecipeContext.ProjectWorkingDirectory(project),
                     OrchestratorRecipeContext.ProjectOpeningMessage(project.Name)),
                 stored,
-                $" --project {project.Name.EscapeMarkup()}");
+                $" --project {project.Name.EscapeMarkup()}",
+                configDirectory);
             return ExitCodes.Ok;
         }
 
@@ -65,7 +68,8 @@ public sealed class OrchestratorLaunchTextShowCommand : Hall9kAsyncCommand<Orche
         return ExitCodes.Ok;
     }
 
-    internal static void Print(string cli, LaunchText? resolved, bool stored, string scopeSuffix)
+    /// <param name="configDirectory">The project's bound Claude Code directory, or null for the node and an unbound project.</param>
+    internal static void Print(string cli, LaunchText? resolved, bool stored, string scopeSuffix, string? configDirectory = null)
     {
         string escapedCli = cli.EscapeMarkup();
         if (resolved is null)
@@ -76,7 +80,7 @@ public sealed class OrchestratorLaunchTextShowCommand : Hall9kAsyncCommand<Orche
             return;
         }
 
-        LaunchLineWriter.Write(resolved.Text);
+        LaunchLineWriter.WriteWindowLine(resolved, configDirectory);
         AnsiConsole.MarkupLine(resolved is { MeasuredTurnOneTokens: { } tokens, MeasuredAt: { } at }
             ? $"[dim]Last measured: {tokens} tokens on {at:yyyy-MM-dd}.[/]"
             : stored

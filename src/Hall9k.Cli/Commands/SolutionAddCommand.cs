@@ -86,7 +86,7 @@ public sealed class SolutionAddCommand : Hall9kAsyncCommand<SolutionAddCommand.S
             $"[green]Solution '{membership.Name}' created[/] [dim]({membership.Key})[/] over {string.Join(", ", members.Select(member => member.Name))}.");
         AnsiConsole.MarkupLineInterpolated($"[dim]See its board: h9k solution show \"{membership.Name}\"[/]");
 
-        if (!await SolutionHomeInit.RunAsync(membership, context, cancellationToken))
+        if (!await SolutionHomeInit.RunAsync(session, membership, context, cancellationToken))
         {
             AnsiConsole.MarkupLineInterpolated(
                 $"[yellow]The solution itself was created; only its home on this node was not. Fix what the step above names, then run h9k solution init \"{membership.Name}\".[/]");

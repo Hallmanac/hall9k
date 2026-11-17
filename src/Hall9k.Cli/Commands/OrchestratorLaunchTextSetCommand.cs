@@ -20,7 +20,8 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// Replaces one CLI's launch text (task: an operator starts a lean node or project orchestrator
 /// window) — on the node by default, or on a project with <c>--project</c>. Any prior measurement
-/// for this CLI is cleared: it was observed against the line being replaced, not this one.
+/// for this CLI is cleared: it was observed against the line being replaced, not this one. A text
+/// setting <c>CLAUDE_CONFIG_DIR</c> is refused at either scope (<see cref="LaunchLineAccount.RefuseStoredAccount"/>).
 /// </summary>
 public sealed class OrchestratorLaunchTextSetCommand : Hall9kAsyncCommand<OrchestratorLaunchTextSetCommand.Settings>
 {
@@ -31,7 +32,10 @@ public sealed class OrchestratorLaunchTextSetCommand : Hall9kAsyncCommand<Orches
         public string Cli { get; init; } = LaunchText.DefaultCli;
 
         [CommandArgument(0, "<TEXT>")]
-        [Description("The exact command line an operator pastes to start this window.")]
+        [Description(
+            "The exact command line an operator pastes to start this window, without any CLAUDE_CONFIG_DIR: a "
+            + "project's Claude Code account comes from its binding (h9k project set <p> --claude-code-account) and "
+            + "is added when the line is printed, so remove that prefix from a line copied from launch-text show.")]
         public string Text { get; init; } = string.Empty;
 
         [CommandOption("--project <NAME>")]
@@ -43,6 +47,10 @@ public sealed class OrchestratorLaunchTextSetCommand : Hall9kAsyncCommand<Orches
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        // At both scopes and before anything is opened or written: the account is the binding's, added when
+        // the line is printed, so a stored one would print twice or go stale on a rebind.
+        LaunchLineAccount.RefuseStoredAccount(settings.Text);
+
         if (settings.Project is { } projectArg)
         {
             using var store = CliStore.Open();
