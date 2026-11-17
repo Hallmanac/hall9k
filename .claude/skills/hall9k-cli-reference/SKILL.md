@@ -1524,7 +1524,7 @@ reads a Keychain item or `.credentials.json`, or handles a token):
 h9k connection add claude-code --config-dir ~/.claude-alt    # checks claude auth status under it, records email/org/subscription
 h9k project set <name> --claude-code-account <connection>    # id, short id, or directory; 'default' clears
 h9k project show <name>                                      # the binding, its email, "recorded on this node only"
-h9k doctor                                                   # each bound account, override credentials, split solutions
+h9k doctor                                                   # each bound account, override credentials, split solutions, inherited CLAUDE_CONFIG_DIR
 ```
 
 The path is absolute after `~` expansion, has no trailing separator, and is never symlink-resolved;
@@ -1572,6 +1572,20 @@ discover or message each other (a Claude Code limit); the courier runs on its pr
 still reaches that project's window. A bare `claude` typed in a project folder is outside Hall9k. Log a
 directory in by hand with `CLAUDE_CONFIG_DIR=~/.claude-alt claude`, then `/login`. Registry reads follow
 the variable: the anchor and `register-session` read `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/`.
+
+`h9k doctor` warns about an inherited `CLAUDE_CONFIG_DIR` whether or not a claude-code connection is recorded,
+without changing its exit code. When the running h9kd inherited a non-empty one (started by hand, by `daemon
+start` with no autostart registered, or under the AppHost), it names the daemon and the value: the daemon's
+default-login sessions (unbound projects, split solutions) run under the default login regardless, and bound
+projects under their own directory; the fix is `connection add claude-code --config-dir <dir>` plus `project set
+<project> --claude-code-account <connection>`, or removing the variable from the daemon's environment and
+restarting it. The daemon records only that value, or an explicit none, as `inheritedEnvironment` in its pid
+file (`DaemonPidFile.TryReadRecord`), read through the pid-and-start-time aliveness check so a stale file never
+warns; a running daemon whose pid file predates the field gets one line saying doctor cannot tell and that a
+restart lets it. When doctor's own shell carries a non-empty value, a separate warning says h9k's own
+default-login spawns from that shell (`task start`, `task delegate`, `task drive --direct-launch`, `orchestrator
+measure`, as examples) ignore it, while an unbound project's or the node window's pasted line runs under it and a
+daemon started from that shell inherits it; unset it before either.
 
 The platform never authors a card's *content*: issue types, required fields and routing rules are
 the organisation's configuration, so `push-to-jira` dispatches a session into the project's own
