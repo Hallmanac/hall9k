@@ -1516,6 +1516,32 @@ a 429 or `RATELIMITED` answer is an outage with its `Retry-After`, and a URL fro
 refused because a stored reference records no workspace. `task show` renders a Linear link from the
 connection's workspace, and shows `linear:<identifier>` unlinked on a node with no connection.
 
+Claude Code accounts are node-local claude-code connections, one per Claude Code config directory a human
+has already logged in to (`CLAUDE_CONFIG_DIR=~/.claude-alt claude`, then `/login`; Hall9k never logs in,
+reads a Keychain item or `.credentials.json`, or handles a token):
+
+```bash
+h9k connection add claude-code --config-dir ~/.claude-alt    # checks claude auth status under it, records email/org/subscription
+h9k project set <name> --claude-code-account <connection>    # id, short id, or directory; 'default' clears
+h9k project show <name>                                      # the binding, its email, "recorded on this node only"
+h9k doctor                                                   # each bound account, override credentials, split solutions
+```
+
+The path is absolute after `~` expansion, has no trailing separator, and is never symlink-resolved;
+adding the same directory again re-observes it (and clears a refusal). A status with no email or org id
+is refused naming the override (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, or
+an `apiKeyHelper`). The binding rides `ProjectSettingsChanged` only and never replicates. Every spawn for
+a bound project sets the exact recorded directory as `CLAUDE_CONFIG_DIR` (an unbound project has any
+inherited value removed) after a check that the directory exists and still reports the recorded email
+and org id, reused for five minutes; a failure refuses the spawn and never falls back to the default
+login. A run freezes its account at dispatch (`RunClaudeCodeAccountRecorded`, naming the connection or
+the default), so a binding change moves only later work. A daemon refusal records
+`ConnectionClaudeCodeAccountRefused`, prints one needs-you line per connection in `h9k status`, keeps new
+work for its projects from starting (dispatch, plans, feedback steps, auto-pr-review), holds refused runs
+(`RunAccountHeld`), and re-checks until it passes and resumes them. A CLI spawn (`task start`, `task
+delegate`, `task drive --direct-launch`, `orchestrator measure --project`) checks before it claims or
+records anything and exits non-zero with the same text.
+
 The platform never authors a card's *content*: issue types, required fields and routing rules are
 the organisation's configuration, so `push-to-jira` dispatches a session into the project's own
 repository, where its card-authoring skills live, to work out what the card should look like — but

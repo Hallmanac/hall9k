@@ -1645,7 +1645,7 @@ made during that park. Commits made while a run waits here therefore never reach
 ### Projects, owners, connections
 
 `h9k project add | init | join | assign-key | list | show | set | remove | cancel-purge | reactivate | rename | invite | pull | reconcile | members | member remove | prompt-addendum | run-skill` ·
-`h9k owner show | set | promote` · `h9k node invite | vouch | revoke` · `h9k connection add jira | linear | list`
+`h9k owner show | set | promote` · `h9k node invite | vouch | revoke` · `h9k connection add jira | linear | claude-code | list`
 
 `project add` registers a project **and creates its home directory**; `project init` is the same
 recipe for a project that has none yet, and the repair path for one that is incomplete. `project
@@ -2471,6 +2471,63 @@ see every team, so an identifier from a team it cannot see is not guarded, and a
 link with no word before it is not guarded either. Whether the inserted word fully stops Linear linking is
 unverified; it follows the matcher Linear publishes, and a person should run the live check before relying
 on it.
+
+### Claude Code accounts
+
+`h9k connection add claude-code --config-dir <dir>` · `h9k project set <project> --claude-code-account <connection|default>` ·
+`h9k connection list` · `h9k project show` · `h9k doctor`
+
+A project can run every Claude Code session Hall9k starts for it under a different Claude Code login than
+the machine's default, by binding it to a claude-code connection. The connection is a Claude Code config
+directory you have already logged in to yourself: run `CLAUDE_CONFIG_DIR=~/.claude-alt claude` (on Windows,
+`$env:CLAUDE_CONFIG_DIR='C:\Users\you\.claude-alt'; claude` in PowerShell), then `/login` inside it. Hall9k never
+logs in, never reads the login's Keychain item or credentials file, and never handles a token; it only
+confirms whose login the directory holds.
+
+`h9k connection add claude-code --config-dir ~/.claude-alt` records the directory as an absolute path with
+`~` expanded and no trailing separator. It is never resolved through a symlink, because on macOS Claude
+Code keys the login to that exact string. Relative paths and filesystem roots are refused. Before anything
+is recorded, the directory has to exist, and `claude auth status`, run with `CLAUDE_CONFIG_DIR` set to it,
+has to report a logged-in account with an email and an org id. A logged-out directory is refused with the
+line to log it in. A status with no account is refused too, naming the credential that hid it: an
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN` in the environment outranks the
+directory's own login. The email, org id, org name, and subscription type are recorded on this node only.
+Adding the same directory again re-observes the existing connection, which is how a deliberately changed
+login is accepted, and it clears a refusal at once. `h9k connection list` shows each claude-code
+connection's id, directory, email, and the number of projects bound to it.
+
+`h9k project set <project> --claude-code-account <connection>` binds the project, naming the connection by
+the id `connection list` prints (full or short) or by its directory. A connection this node does not hold,
+or one of another provider, is refused, and `default` clears the binding. The binding is a node setting,
+never a team one: it is not replicated, so each node of a project chooses its own account, and `h9k project
+show` prints the bound directory and email and says so. An unbound project runs exactly as before, except
+that any `CLAUDE_CONFIG_DIR` inherited from the environment is removed, so it always means the default login.
+
+Every spawn under a bound account first checks the account: the directory still exists, and `claude auth
+status` still reports the recorded email and org id. A pass is reused for at most five minutes. A missing,
+logged-out, or different login refuses the spawn and never falls back to the default login, and the
+refusal names the directory and the fix. A run keeps the account it was dispatched under (frozen at
+dispatch, at `h9k task start`, at `h9k task drive`, and at `h9k pr review`), so changing a binding moves only
+work dispatched afterwards; a run dispatched before this existed keeps the default login. The launch line
+`h9k task drive` prints for a session you start yourself does not set `CLAUDE_CONFIG_DIR` yet, so start that
+session with the bound directory set, or use `--direct-launch`, which does.
+
+When the daemon refuses an account, `h9k status` prints one needs-you line per refused connection. Until
+the account passes again, no new work starts for the projects bound to it: the dispatcher leaves their
+tasks unclaimed, and plans, feedback steps, and auto-pr-review wait. Runs whose session was refused are
+held rather than failed. A held run gives its concurrency slot back while it waits, so other projects' work
+keeps running. The daemon re-checks the account on its own and resumes the held runs once the check
+passes, waiting as well for any node-wide launch hold to clear and for a free concurrency slot. A session that exits at once with no work done under a bound account is re-checked without the
+five-minute reuse before the node-wide launch hold is raised; when the check fails, the account is refused
+and the node-wide hold stays down. A CLI spawn (`h9k task start`, `h9k task delegate`, `h9k task drive
+--direct-launch`, `h9k orchestrator measure --project`) runs the same check before it claims, cuts a
+worktree, or records anything, and exits non-zero with the same text on stderr.
+
+`h9k doctor` shows each bound connection's email, org name, and subscription, or the problem it found. It
+warns when one of the override variables above is set in its own environment, when a bound directory's
+`settings.json` sets an `apiKeyHelper` or one of those variables in its `env` block, and when a solution's
+members are bound to different accounts (a solution follows its members, so it resolves to their shared
+account when they all agree and to the default login otherwise).
 
 ### Install and the daemon
 

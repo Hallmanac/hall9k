@@ -1041,6 +1041,24 @@ account. GitHub signing-key registration and multi-account switching are both pa
 202383dc, A2b), triggered respectively by a team wanting automatic admission from the collaborator
 list, and a first owner needing two accounts on one machine.
 
+### Claude Code accounts per project
+
+A project can be bound to a node-local claude-code connection (`h9k connection add claude-code
+--config-dir ~/.claude-alt`, then `h9k project set <project> --claude-code-account <connection>`), and every
+claude process Hall9k starts for it then runs with `CLAUDE_CONFIG_DIR` set to that directory: dispatched
+runs and their review, verification, and follow-up sessions, the sessions that belong to no run (the
+courier, plan refinement and discovery, the lesson picker, blocker context, closeout triage, and the rest),
+the pull-request review pre-flight, and the CLI's own spawns. A run freezes its account at dispatch. Each
+spawn is checked against the account recorded for the directory first, and a missing, logged-out, or
+different login refuses it rather than falling back to the default login. The daemon holds the refused
+work, starts no new work for the account's projects, re-checks on its own, and resumes once the check
+passes; `h9k status` and `h9k doctor` name the problem and its fix. The binding and the connection are
+recorded on one node and never replicated, so each node of a project picks its own account. Hall9k never
+logs in, never reads a login's Keychain item or credentials file, and never handles a token: the login is
+the human's to make. Not done: a run's phase line still reads like the node-wide launch hold while it waits
+on its account, and the launch line `h9k task drive` prints for a session you start yourself does not set
+the account yet.
+
 ### Outside-interaction logging
 
 `h9k task log-interaction <task> --party "<who>" --summary "<what happened>"` is the escape-hatch
