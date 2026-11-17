@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using Hall9k.Connectors.Processes;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Project.Projections;
@@ -279,6 +280,8 @@ public sealed class FeedbackEvaluators(
                 {
                     TaskId = job.TaskId,
                     SessionName = sessionName,
+                    // A session for this run, so the account the run froze at dispatch.
+                    Account = await ClaudeAccountResolution.ForRunAsync(store, job.Run.Id, stopping),
                 },
                 stopping);
         }

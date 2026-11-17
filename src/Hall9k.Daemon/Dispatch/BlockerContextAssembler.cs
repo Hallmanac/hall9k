@@ -1,5 +1,6 @@
 using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon.AutoPrReview;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Project.Projections;
@@ -122,6 +123,7 @@ public sealed class BlockerContextAssembler(
             {
                 TaskId = task.Id,
                 SessionName = sessionName,
+                Account = await ClaudeAccountResolution.ForProjectAsync(store, project.Id, cancellationToken),
             }, cancellationToken);
             unfinished = agent;
 

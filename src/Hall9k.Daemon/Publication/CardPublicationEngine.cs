@@ -1,4 +1,5 @@
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Connectors.Worktrees;
@@ -641,6 +642,7 @@ public sealed class CardPublicationEngine(
             {
                 TaskId = task.Id,
                 SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.CardPublication),
+                Account = await ClaudeAccountResolution.ForProjectAsync(store, project.Id, cancellationToken),
             },
             cancellationToken);
 

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.AutoPrReview;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Learning.Queries;
@@ -387,6 +388,7 @@ public sealed class FeedbackStepEngine(
                     {
                         TaskId = taskId,
                         SessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.FeedbackChecker),
+                        Account = await ClaudeAccountResolution.ForTaskAsync(store, taskId, stopping),
                     },
                     stopping);
             }
@@ -815,6 +817,10 @@ public sealed class FeedbackStepEngine(
         else if (await launchHold.CurrentHoldAsync(node.NodeId, cancellationToken) is { LaunchHoldActive: true })
         {
             reason = "this node's launch hold stands";
+        }
+        else if (await ClaudeAccountResolution.IsRefusedAsync(session, project, cancellationToken))
+        {
+            reason = $"project '{project.Name}''s Claude Code account is refused (h9k status names the fix)";
         }
 
         if (reason is null)

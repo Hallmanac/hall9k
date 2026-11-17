@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -157,6 +158,16 @@ public sealed record AgentSpawnRequest(
     /// exactly the accidental-worktree-name gap this field exists to close.
     /// </summary>
     public required string SessionName { get; init; }
+
+    /// <summary>
+    /// The Claude Code account this session runs under (task d5c94f15). Required, with no default, so the
+    /// compiler names every construction site: a site spawning for a run passes the run's frozen account
+    /// (<c>ClaudeAccountResolution.ForRunAsync</c>), and every other site passes its project's current binding.
+    /// <see cref="ClaudeCodeAccount.Default"/> removes <c>CLAUDE_CONFIG_DIR</c> from the child's environment; a
+    /// bound account sets it to the exact recorded directory, after <see cref="ClaudeExecutor"/> has checked the
+    /// login there. Nothing ever falls back from a bound account to the default.
+    /// </summary>
+    public required ClaudeCodeAccount Account { get; init; }
 }
 
 public sealed record SpawnedAgent(int ProcessId, DateTimeOffset StartedAt);

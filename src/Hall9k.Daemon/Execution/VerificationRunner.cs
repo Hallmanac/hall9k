@@ -1,3 +1,4 @@
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
 using Hall9k.Connectors.Processes;
@@ -978,9 +979,11 @@ public sealed partial class VerificationRunner(
                 {
                     TaskId = task.Id,
                     SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.CommitRecovery),
+                    Account = await ClaudeAccountResolution.ForRunAsync(store, run.Id, cancellationToken),
                 }, cancellationToken);
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
+            // A refused account propagates to the run's own hold (RunSupervisor, ReviewEngine), never a failure.
+            catch (Exception exception) when (exception is not (OperationCanceledException or ClaudeAccountRefusedException))
             {
                 logger.LogWarning(
                     exception, "Run {RunId}: the automatic uncommitted-work recovery session could not be spawned", run.Id);
@@ -1053,7 +1056,7 @@ public sealed partial class VerificationRunner(
                 }
             }
 
-            if (exception is OperationCanceledException)
+            if (exception is OperationCanceledException or ClaudeAccountRefusedException)
             {
                 throw;
             }

@@ -1,5 +1,6 @@
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.ProjectHomes;
@@ -416,6 +417,7 @@ public sealed class DraftChallengeEngine(
                 {
                     TaskId = taskId,
                     SessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Challenge),
+                    Account = await ClaudeAccountResolution.ForTaskAsync(store, taskId, cancellationToken),
                     ExtraReadRoots = skipPermissions
                         ? []
                         : extraReadRoots,

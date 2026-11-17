@@ -1,5 +1,6 @@
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Idea;
@@ -240,6 +241,12 @@ public sealed class SpikeEngine(
         {
             await DriveAsync(runId, taskId, cancellationToken);
         }
+        catch (ClaudeAccountRefusedException refusal)
+        {
+            // Held, not failed: the account monitor resumes this loop once the run's account passes a check.
+            logger.LogWarning("Run {RunId}: spike loop held, its Claude Code account was refused: {Reason}", runId, refusal.Message);
+            await ClaudeAccountHolds.HoldRunAsync(store, runId, refusal, primarySession: false, cancellationToken);
+        }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogError(exception, "Spike loop crashed for run {RunId}", runId);
@@ -445,6 +452,7 @@ public sealed class SpikeEngine(
             {
                 TaskId = taskId,
                 SessionName = sessionName,
+                Account = await ClaudeAccountResolution.ForRunAsync(store, runId, cancellationToken),
             },
             cancellationToken);
 

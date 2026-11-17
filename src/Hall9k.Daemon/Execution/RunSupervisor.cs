@@ -2,6 +2,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using System.Collections.Concurrent;
 using System.Text;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.PrReviewPreflight;
@@ -137,10 +138,31 @@ public sealed class RunSupervisor(
     {
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
         _monitors.TryAdd(runId, Task.Run(
-            () => MonitorAsync(
-                runId, resolvedRunDirectory, taskId, processId, processStartedAt, cancellationToken,
-                isDeliberateHeadlessStart),
+            () => HoldOnAccountRefusalAsync(
+                runId,
+                () => MonitorAsync(
+                    runId, resolvedRunDirectory, taskId, processId, processStartedAt, cancellationToken,
+                    isDeliberateHeadlessStart),
+                cancellationToken),
             cancellationToken));
+    }
+
+    /// <summary>
+    /// Holds the run when a session spawned for it after the primary one (a verify or final pass, a
+    /// recovery session, or anything the review loop starts) was refused for the run's Claude Code
+    /// account and the refusal reached this far: held, never failed, and resumed by the account monitor.
+    /// </summary>
+    private async Task HoldOnAccountRefusalAsync(Guid runId, Func<Task> work, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await work();
+        }
+        catch (ClaudeAccountRefusedException refusal)
+        {
+            logger.LogWarning("Run {RunId} held: its Claude Code account was refused: {Reason}", runId, refusal.Message);
+            await ClaudeAccountHolds.HoldRunAsync(store, runId, refusal, primarySession: false, cancellationToken);
+        }
     }
 
     /// <summary>
@@ -258,7 +280,14 @@ public sealed class RunSupervisor(
                     // task on this node, not only this one, until a probe finds the node can
                     // launch again.
                     string observedMessage = result?.Summary ?? "the pre-flight exceeded its own timeout without a result";
-                    await launchHold.RaiseOrJoinAsync(node.NodeId, preflightRunId, observedMessage, cancellationToken);
+                    // A launch failure under a bound account is that account's to answer for: a failing
+                    // re-check refuses it (so the dispatcher claims none of its work) and the node-wide
+                    // hold stays down; the abandon-and-requeue below then waits on the account instead.
+                    if (!launchFailure
+                        || await launchHold.RefusedPreflightAccountOnLaunchFailureAsync(preflightRunId, cancellationToken) is null)
+                    {
+                        await launchHold.RaiseOrJoinAsync(node.NodeId, preflightRunId, observedMessage, cancellationToken);
+                    }
                 }
 
                 await AbandonPreflightAsync(preflightRunId, taskId, cancellationToken);
@@ -412,7 +441,7 @@ public sealed class RunSupervisor(
     /// exactly as a completion can, and an unfenced append here is the identical trap.
     /// </para>
     /// </summary>
-    private async Task AbandonPreflightAsync(
+    internal async Task AbandonPreflightAsync(
         Guid preflightRunId, Guid taskId, CancellationToken cancellationToken, int attempt = 0)
     {
         await using IDocumentSession session = store.LightweightSession();
@@ -601,6 +630,27 @@ public sealed class RunSupervisor(
             return false;
         }
 
+        // A run its account's refusal held past its primary session goes back to where it was held: the
+        // gates for one held while verifying, the review loop (or the pr-review or spike loop) otherwise.
+        // RunAccountHoldResumed is recorded first, so the run counts against the node's ceiling again (in
+        // RunListItem and RunDetails both) for the whole resumed stage, not only once its own first event lands.
+        if (run.AccountHeldConnectionId is { } heldConnectionId
+            && run.AccountHeldFromState is { } heldFrom
+            && (heldFrom == RunState.Verifying || heldFrom == RunState.UnderReview))
+        {
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                session.Events.Append(
+                    run.Id, new RunAccountHoldResumed(run.Id, heldConnectionId, heldFrom, DateTimeOffset.UtcNow));
+                await session.SaveChangesAsync(cancellationToken);
+            }
+
+            run.State = heldFrom;
+            ResumePipeline(run, cancellationToken);
+            logger.LogInformation("Run {RunId}: account hold resumed from {State}", run.Id, heldFrom.Value);
+            return true;
+        }
+
         if (aggregate.ReviewPhase != ReviewPhase.None
             || (task.Type == TaskType.PrReview && aggregate.PrReviewConformanceLaunchHeld))
         {
@@ -625,6 +675,11 @@ public sealed class RunSupervisor(
                 logger.LogInformation("Run {RunId}: launch hold resumed (pid {ProcessId})", run.Id, processId);
                 return true;
             case BuildSessionRetryOutcome.ClaimMovedOn:
+                _launchHeldSpawnFailures.TryRemove(run.Id, out _);
+                return false;
+            case BuildSessionRetryOutcome.Held:
+                // Its account was refused, so the run is held for that account instead (RunAccountHeld)
+                // and the account monitor resumes it; this is no spawn failure of the run's own.
                 _launchHeldSpawnFailures.TryRemove(run.Id, out _);
                 return false;
             case BuildSessionRetryOutcome.SpawnFailed:
@@ -747,6 +802,11 @@ public sealed class RunSupervisor(
                     case BuildSessionRetryOutcome.ClaimMovedOn:
                         // Already retired with RunSuperseded — not counted either way, the
                         // same convention RetireStaleAdoptionCandidateAsync's callers use above.
+                        break;
+                    case BuildSessionRetryOutcome.Held:
+                        // Held for its refused Claude Code account; the account monitor resumes it.
+                        await RefreshAdoptedLeaseAsync(run, cancellationToken);
+                        adopted++;
                         break;
                     case BuildSessionRetryOutcome.SpawnFailed:
                     default:
@@ -1304,7 +1364,7 @@ public sealed class RunSupervisor(
         {
             // Daemon shutdown: the agent keeps running; adoption picks this run back up.
         }
-        catch (Exception exception)
+        catch (Exception exception) when (exception is not ClaudeAccountRefusedException)
         {
             logger.LogError(exception, "Monitor for run {RunId} crashed", runId);
         }
@@ -1445,7 +1505,12 @@ public sealed class RunSupervisor(
         // direction: the run resumes into whatever it was doing and reports its own outcome fresh
         // (task: a session that exits at once with no work done is treated as the node failing to
         // launch sessions).
-        if (isLaunchFailure)
+        // A launch failure under a bound account may be that account's own login, not the node: re-checked
+        // first, and a failing check holds this run for the account and leaves the node-wide hold down.
+        ClaudeAccountRefusedException? accountRefusal = isLaunchFailure
+            ? await launchHold.RefusedAccountOnLaunchFailureAsync(runId, cancellationToken)
+            : null;
+        if (isLaunchFailure && accountRefusal is null)
         {
             await launchHold.RaiseOrJoinAsync(node.NodeId, runId, result.Summary ?? "(no message)", cancellationToken);
         }
@@ -1545,6 +1610,13 @@ public sealed class RunSupervisor(
                 // way the ordinary error path below does, would be the exact defect this branch
                 // exists to close: a declared turn cap doing its job read back as the task simply
                 // failing.
+            }
+            else if (accountRefusal is not null)
+            {
+                // The primary session itself was refused; the AgentSessionCompleted above already moved the run to
+                // Verifying, so the hold says so and the resume starts the session again rather than the gates.
+                session.Events.Append(runId, new RunAccountHeld(
+                    runId, accountRefusal.ConnectionId, accountRefusal.Message, now, PrimarySession: true));
             }
             else if (isLaunchFailure || holdAlreadyStanding)
             {
@@ -1658,12 +1730,13 @@ public sealed class RunSupervisor(
                     // Already retired with RunSuperseded inside ResumeBuildSessionErrorRetryAsync.
                     return null;
                 case BuildSessionRetryOutcome.Held:
-                    // Already appended RunLaunchHeld inside JoinLaunchHoldIfActiveAsync — a
-                    // different run's own launch failure raised the hold during this backoff, so
-                    // this run joined it instead of spending its one retry on a resume that could
-                    // not work yet.
+                    // Already held inside ResumeBuildSessionErrorRetryAsync, one of two ways: RunLaunchHeld from
+                    // JoinLaunchHoldIfActiveAsync, because a different run's own launch failure raised the node-wide
+                    // hold during this backoff, or RunAccountHeld, because the retry's spawn was refused for this
+                    // run's Claude Code account. Either way the run waits instead of spending its one retry on a
+                    // resume that could not work yet.
                     logger.LogInformation(
-                        "Run {RunId}: the primary session's error retry found the node-wide launch hold standing after its backoff — held instead of resumed",
+                        "Run {RunId}: the primary session's error retry was held instead of resumed after its backoff, for the node-wide launch hold or for its Claude Code account (the run's parked reason says which)",
                         runId);
                     return null;
                 case BuildSessionRetryOutcome.SpawnFailed:
@@ -2245,7 +2318,8 @@ public sealed class RunSupervisor(
         /// <summary>The spawn itself could not happen (missing docs, or the resume threw) — the caller fails the run exactly as before.</summary>
         SpawnFailed,
         /// <summary>
-        /// A different run's launch failure raised the node-wide hold while this leg's own backoff
+        /// Held rather than resumed: its Claude Code account was refused (the run is now
+        /// <see cref="RunAccountHeld"/>), or a different run's launch failure raised the node-wide hold while this leg's own backoff
         /// was still waiting (task: a session that exits at once with no work done is treated as
         /// the node failing to launch sessions, criterion 2) — this run joined the hold instead of
         /// spending its one retry on a resume that could not work yet.
@@ -2353,6 +2427,14 @@ public sealed class RunSupervisor(
                 session, runDetails, task, project, AgentPromptBuilder.BuildSessionErrorRetry(task), cancellationToken);
             await session.SaveChangesAsync(cancellationToken);
             return (BuildSessionRetryOutcome.Resumed, agent.ProcessId, agent.StartedAt);
+        }
+        catch (ClaudeAccountRefusedException refusal)
+        {
+            // Held, never failed and never moved onto another login: the account monitor resumes the
+            // run through ResumeLaunchHeldRunAsync once the account's check passes.
+            logger.LogWarning("Run {RunId}: primary session held, its Claude Code account was refused: {Reason}", runId, refusal.Message);
+            await ClaudeAccountHolds.HoldRunAsync(store, runId, refusal, primarySession: true, cancellationToken);
+            return (BuildSessionRetryOutcome.Held, 0, default);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -3148,6 +3230,11 @@ public sealed class RunSupervisor(
             catch (OperationCanceledException)
             {
                 // Daemon shutdown: the run stream holds the phase; the next adoption resumes it.
+            }
+            catch (ClaudeAccountRefusedException refusal)
+            {
+                logger.LogWarning("Resumed pipeline for run {RunId} held: its Claude Code account was refused: {Reason}", run.Id, refusal.Message);
+                await ClaudeAccountHolds.HoldRunAsync(store, run.Id, refusal, primarySession: false, cancellationToken);
             }
             catch (Exception exception)
             {

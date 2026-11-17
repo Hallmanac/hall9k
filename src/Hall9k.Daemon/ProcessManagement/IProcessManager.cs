@@ -22,7 +22,16 @@ public sealed record ProcessSpawnRequest(
     IReadOnlyList<KeyValuePair<string, string>> Environment,
     string? StandardInputFile,
     string StandardOutputFile,
-    string StandardErrorFile);
+    string StandardErrorFile)
+{
+    /// <summary>
+    /// Variables removed from the environment the child would otherwise inherit, applied before
+    /// <see cref="Environment"/>'s additions. A Claude Code session on the default login removes
+    /// <c>CLAUDE_CONFIG_DIR</c> here, so a daemon started by hand from a shell that set it still runs
+    /// unbound projects under the default login.
+    /// </summary>
+    public IReadOnlyList<string> RemovedEnvironment { get; init; } = [];
+}
 
 /// <summary>
 /// The cross-platform seam for agent process control (Decisions Log #3): macOS implemented

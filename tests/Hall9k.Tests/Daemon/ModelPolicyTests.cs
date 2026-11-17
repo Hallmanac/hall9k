@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -392,6 +393,7 @@ public sealed class ModelPolicyTests
             runId, DomainId.New(), "/tmp/worktree", "/tmp/run", "prompt", ExecutorMode.Subscription,
             AgentModel.FromInput("claude-opus-5-5[1m]"), AgentEffort.Unknown, SkipPermissions: true)
         {
+            Account = ClaudeCodeAccount.Default,
             SessionName = "test-build",
         };
 
@@ -413,6 +415,7 @@ public sealed class ModelPolicyTests
             AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false, SessionArtifactName: "review-1-abc",
             ResumeSessionId: resumed)
         {
+            Account = ClaudeCodeAccount.Default,
             SessionName = "test-review-conformance-1",
         };
 
@@ -435,6 +438,7 @@ public sealed class ModelPolicyTests
             DomainId.New(), DomainId.New(), "/tmp/worktree", "/tmp/run", "prompt", ExecutorMode.Subscription,
             AgentModel.Unknown, AgentEffort.Unknown, SkipPermissions: false)
         {
+            Account = ClaudeCodeAccount.Default,
             SessionName = "test-build",
         };
 

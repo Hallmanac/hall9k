@@ -3,6 +3,7 @@ using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -66,6 +67,7 @@ public sealed class ClaudeExecutorNoToolsSpawnTests : IDisposable
                 AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false, SessionArtifactName: "lesson-picker-test",
                 UntrustedWorkingDirectory: true, MaxTurns: 1, NoTools: true)
             {
+                Account = ClaudeCodeAccount.Default,
                 SessionName = "test-lesson-picker",
             },
             CancellationToken.None);

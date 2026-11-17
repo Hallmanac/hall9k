@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -95,6 +96,7 @@ public sealed class LessonPickerPromptTests
             AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false, UntrustedWorkingDirectory: untrusted,
             MaxTurns: 1, NoTools: noTools)
         {
+            Account = ClaudeCodeAccount.Default,
             SessionName = "test-lesson-picker",
         };
 

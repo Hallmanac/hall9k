@@ -2,6 +2,7 @@ using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.RunSkills;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Owner;
@@ -284,6 +285,7 @@ public sealed class RunSkillSweepEngine(
                         MaxTurns: _options.RunSkillDiscoveryMaxTurns)
                     {
                         SessionName = sessionName,
+                        Account = await ClaudeAccountResolution.ForProjectAsync(store, project.Id, cancellationToken),
                     },
                     cancellationToken);
             }

@@ -1,3 +1,4 @@
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Project.Projections;
@@ -130,6 +131,7 @@ public sealed class LessonPicker(
                 {
                     TaskId = task.Id,
                     SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.LessonPicker),
+                    Account = await ClaudeAccountResolution.ForProjectAsync(store, project.Id, cancellationToken),
                 }, cancellationToken);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)

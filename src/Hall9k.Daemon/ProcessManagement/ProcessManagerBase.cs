@@ -21,6 +21,23 @@ public abstract class ProcessManagerBase : IProcessManager
     // window means "same process", anything further means the PID was reused.
     private static readonly TimeSpan StartTimeTolerance = TimeSpan.FromSeconds(2);
 
+    /// <summary>
+    /// The child's environment: what it would inherit, less <see cref="ProcessSpawnRequest.RemovedEnvironment"/>,
+    /// plus <see cref="ProcessSpawnRequest.Environment"/>. One rule for both platforms, so neither can forget the removal.
+    /// </summary>
+    internal static void ApplyEnvironment(ProcessStartInfo startInfo, ProcessSpawnRequest request)
+    {
+        foreach (string name in request.RemovedEnvironment)
+        {
+            startInfo.Environment.Remove(name);
+        }
+
+        foreach ((string name, string value) in request.Environment)
+        {
+            startInfo.Environment[name] = value;
+        }
+    }
+
     // How long a process found alive gets to exit on its own before TerminateTree treats it as
     // lingering rather than mid-teardown: SessionResultWaiter/RunSupervisor only call this once
     // the root is already confirmed dead (discovery cc9b7aec), but the daemon's own poll can
