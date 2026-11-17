@@ -1,0 +1,85 @@
+hall9k-task-record: 1
+task-id: 01a1ea5a-ef53-77ad-89bf-36b5707917d1
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#889
+objective: The paste handoffs of h9k task drive --print-prompt and h9k pr review name a bound project's Claude Code account and give a start command that runs under it, so a person following either handoff starts Claude Code under the right account
+criteria:
+  - |-
+    For a task whose project is bound to a claude-code connection, `h9k task drive <task> --print-prompt` prints two things before the prompt. The first is a line naming the bound account as `ClaudeCodeAccount.Describe` reads it (the recorded email and the config directory, or "an unobserved account" and the directory when no email is recorded). The second is a start command of the form `claude --settings "<the settings file it wrote>"`, with the path quoted the way `LaunchTextDefaults.TaskDriveLine` quotes `--settings`. The start command carries the account in the host shell's form that printed launch lines already use: the `CLAUDE_CONFIG_DIR='<dir>'` prefix in POSIX, and in PowerShell the `try { $env:CLAUDE_CONFIG_DIR='<dir>'; ... } finally { Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction Ignore }` wrapper. It is printed on a line of its own, raw and unwrapped, the way `LaunchLineWriter.Write` prints launch lines. The account named is the project's current binding: the same one that `h9k task drive <task>` with neither flag puts on its printed launch line, including on a re-entry after the project was rebound.
+  - For a project bound to a claude-code connection, the handoff that `h9k pr review <pull-request>` prints names the bound account and gives a start command in the form, print path, and binding rule of the previous criterion, carrying the lap's settings file. It does so whether the command adopts the pull request, attaches to a task this node already holds for it, or re-enters a lap already open, and whatever the push guard's outcome. For a project bound to a connection this node does not record, `h9k pr review` refuses with `ClaudeCodeAccounts.LoadAsync`'s own text before it adopts, attaches, or records anything.
+  - |-
+    In a bound project's handoff, each line that at commit 1fdfbf66 tells the reader how to start or set up a Claude Code session either points the reader to the start command or itself carries the account. In `h9k task drive --print-prompt` these are the settings-file line and the line introducing the prompt. In `h9k pr review` they are the settings-file line, the line introducing the briefing, and the push-guard lines for a checkout that already had a guard file, for a guard that could not be written, and for no worktree. The prompt and the briefing themselves are unchanged. For a project with no bound claude-code account, both handoffs print exactly the text they print at commit 1fdfbf66: no account line or start command is added and no existing line changes.
+  - The "Claude Code accounts" section of docs/cli.md and the account section of the hall9k-cli-reference skill say that both handoffs name a bound project's account and give a start command carrying it, and the `--help` text for `h9k task drive --print-prompt` and the description of `h9k pr review` say the same.
+  - Unit tests show each handoff for a bound project in both the POSIX and PowerShell forms, using a config directory that contains a single quote and a settings path that contains a space; one test per handoff per shell suffices when it uses both values. For `h9k pr review`, they cover each of the three push-guard outcomes named in the third criterion. They also show each handoff for an unbound project matching the text it prints at commit 1fdfbf66. A store-backed test shows `h9k task drive --print-prompt`, on a re-entry after the project was rebound, naming the new binding.
+dependencies: [01a1ea39-9681-730b-ad8d-9e0fa3fd1c5e]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/707917d1-the-paste-handoffs-of-h9k-task
+published: 2026-11-17 21:35:57Z
+context: |-
+  Per-project Claude Code account on a node: an operator logs an alternate Claude Code config directory in by
+  hand, registers it as a claude-code connection, and binds some projects to it, so every claude process
+  Hall9k starts or prints for a bound project runs under that account while unbound projects keep the default
+  `~/.claude` login. That work has shipped and merged. Two gaps its challenges parked were ruled worth doing at
+  the owner's go on 2026-11-17. This task closes the second of them: two paste handoffs tell a person to start
+  Claude Code without naming the account. The first gap, `h9k doctor` warning about an inherited
+  CLAUDE_CONFIG_DIR, is a separate task and is not part of this one.
+
+  ## The two handoffs
+
+  - `TaskDriveCommand.PrintPromptHandoff` (`src/Hall9k.Cli/Commands/TaskDriveCommand.cs:644`) tells the reader
+    to pass `--settings` "to your own claude invocation" and to paste the prompt into "a Claude Code session
+    started anywhere". Its only caller is line 338, where `session` and `project` are in scope. Unlike the
+    default path (line 348), it never reads the project's account today.
+  - **A trap at that call site.** The `account` local in scope at lines 336-338 is `ClaudeCodeAccount.Default`
+    on the `--print-prompt` path (lines 246-248), and `DirectLaunchAccountAsync` (line 685) returns the account
+    the run froze on a re-entry. Neither is the account this handoff names; read it with
+    `CliClaudeAccount.ForProjectAsync`.
+  - `PullRequestReviewCommand.PrintHandoff` (`src/Hall9k.Cli/Commands/PullRequestReviewCommand.cs:1584`) says
+    the same for the review briefing. Its only caller is line 208, reached by adoption, attachment, and re-entry
+    alike, with `session` and `project` in scope. The push-guard lines for an already-present guard file, a
+    failed write, and no worktree (lines 1609, 1611, and 1613) also tell the reader to start the session with
+    `--settings`. Note the comment above the guard switch on escaping: that method's interpolated calls escape
+    their holes themselves, while its plain `MarkupLine` call does not.
+  - **When `h9k pr review` reads the account.** Today it never loads the connection (adoption records only the
+    binding's id). A read beside `PrintHandoff` would come after adoption, `RecordLapOpenedAsync` (line 179), and
+    the doorbell (line 207), so a stale binding would leave an adopted lap with no handoff. Read the account
+    once the project is resolved (line 124), before adoption or attachment, and pass it down to `PrintHandoff`.
+  - Neither handoff has a test today, so the unbound pin in the tests is the first; its baseline is the text at
+    commit 1fdfbf66. `ScopedAnsiConsoleCapture` (`tests/Hall9k.Tests/TestSupport/`) captures console output.
+
+  ## What to reuse
+
+  - The account: `CliClaudeAccount.ForProjectAsync` (`src/Hall9k.Cli/ClaudeCode/CliClaudeAccount.cs:33`) gives
+    the project's current binding with its email; `PrintedLineDirectoryAsync` (line 46) is the directory alone,
+    which is what printed launch lines carry. A person reads an account through `ClaudeCodeAccount.Describe`
+    (`src/Hall9k.Domain/Features/Connection/ClaudeCodeAccount.cs:29`), "email (dir)", or "an unobserved
+    account (dir)" when no email is recorded. A binding to a connection this node no longer records is refused
+    by `ClaudeCodeAccounts.LoadAsync`, as it already is on the default drive path.
+  - The shell forms: `LaunchLineAccount.Prefix` and `Suffix` (`src/Hall9k.Cli/Orchestrator/LaunchLineAccount.cs`),
+    or `LaunchLineAccount.Apply` on a composed line, with `LaunchTextDefaults.HostShell`. Printed launch lines
+    quote the settings path with `Quoted` in `LaunchTextDefaults.TaskDriveLine` (around line 118); `Quoted` is
+    local to that method and the escaping behind it is private, so the handoff needs it exposed or its
+    equivalent.
+  - The print path: `LaunchLineWriter.Write` (`src/Hall9k.Cli/Orchestrator/LaunchLineWriter.cs`) writes a line
+    raw and unwrapped. Spectre's own writers wrap at the profile width even when piped, and `MarkupLine` would
+    parse a bracket in a path as markup.
+
+  ## Settled, not to reopen
+
+  - The handoffs name the project's current binding, not the account a run froze. A `--print-prompt` paste
+    session registers the account it actually runs under (`TaskRegisterSessionCommand.cs:200-206`), and the next
+    `h9k task drive` offers a resume only when that account equals the current binding
+    (`src/Hall9k.Cli/Orchestrator/TaskDriveResume.cs:19-31`), so naming the frozen account after a rebind would
+    make the next drive refuse the resume. A review lap has no resume to protect.
+  - Printed lines and handoffs for an unbound project carry no prefix.
+
+  ## Docs
+
+  `docs/cli.md` "Claude Code accounts" (line 2475) and the hall9k-cli-reference skill's account section
+  (starting at line 1519 of `.claude/skills/hall9k-cli-reference/SKILL.md`). The `--print-prompt` option's
+  description is at `src/Hall9k.Cli/Commands/TaskDriveCommand.cs:116-122`, and `h9k pr review`'s at
+  `src/Hall9k.Cli/Infrastructure/CliCommandTree.cs:664`.
