@@ -977,6 +977,70 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     }
 
     /// <summary>
+    /// A bound project's handoff names its account and prints a start command carrying it, on the adopting entry
+    /// and on the re-entry alike, since both reach the same handoff with the account read up front.
+    /// </summary>
+    [Fact]
+    public async Task A_bound_projects_lap_names_the_account_and_prints_a_start_command_on_adoption_and_re_entry()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        SeededProject project = await SeedProjectAsync(store, node, cts.Token);
+        string directory = Path.Join(Path.GetTempPath(), $"h9k-lap-{project.Id:N}", ".claude-alt");
+        Guid connection = await ClaudeCodeBindingSeed.RegisterConnectionAsync(store, directory, Now, cts.Token);
+        await ClaudeCodeBindingSeed.BindAsync(store, project.Id, connection, Now, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+
+        foreach (string entry in new[] { "adoption", "re-entry" })
+        {
+            string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+            {
+                await using IDocumentSession session = store.LightweightSession();
+                (await PullRequestReviewCommand.RunAsync(
+                    store, session, new PullRequestReviewCommand.Settings { PullRequest = "42", Project = project.Name },
+                    ScriptedGh(), worktrees, cts.Token)).Should().Be(0);
+            });
+
+            output.Should().Contain($"bound Claude Code account, an unobserved account ({directory})", entry);
+            output.Should().MatchRegex(
+                OperatingSystem.IsWindows()
+                    ? $@"(?m)^try \{{ \$env:CLAUDE_CONFIG_DIR='{System.Text.RegularExpressions.Regex.Escape(directory)}'; claude --settings "".+settings\.json"" }} finally"
+                    : $@"(?m)^CLAUDE_CONFIG_DIR='{System.Text.RegularExpressions.Regex.Escape(directory)}' claude --settings "".+settings\.json""$",
+                entry);
+        }
+    }
+
+    /// <summary>
+    /// A binding to a connection this node does not record refuses the lap with the account read's own text, before
+    /// anything is adopted or recorded, so no lap is left open with no handoff printed for it.
+    /// </summary>
+    [Fact]
+    public async Task A_lap_for_a_project_bound_to_an_unrecorded_connection_is_refused_before_anything_is_adopted()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        SeededProject project = await SeedProjectAsync(store, node, cts.Token);
+        Guid missing = DomainId.New();
+        await ClaudeCodeBindingSeed.BindAsync(store, project.Id, missing, Now, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            Func<Task> lap = () => PullRequestReviewCommand.RunAsync(
+                store, session, new PullRequestReviewCommand.Settings { PullRequest = "42", Project = project.Name },
+                ScriptedGh(), NewWorktrees(), cts.Token);
+            await lap.Should().ThrowAsync<DomainNotFoundException>()
+                .WithMessage($"Claude Code connection {missing} is not recorded on this node*");
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Query<TaskListItem>()
+            .Where(item => item.ExternalReference == $"github-pr:{repository}#42")
+            .ToListAsync(cts.Token)).Should().BeEmpty("the refusal comes before the pull request is adopted");
+    }
+
+    /// <summary>
     /// A lap opened without a checkout stays that way. Cutting one on re-entry would leave it
     /// named nowhere on the run stream, which is where every consumer that actually removes a
     /// checkout reads one from — so it would be a worktree nothing ever releases (self-review,

@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using System.Globalization;
 using Hall9k.Connectors.Processes;
+using Hall9k.Cli.ClaudeCode;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.Orchestrator;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
@@ -136,6 +138,10 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
                 + $"purge first: h9k project cancel-purge {project.Name}");
         }
 
+        // The handoff names the project's current binding. Read before anything is adopted, attached, or recorded,
+        // so a binding to a connection this node does not record refuses with no lap left behind without a handoff.
+        ClaudeCodeAccount account = await CliClaudeAccount.ForProjectAsync(session, project, cancellationToken);
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         GitHubPullRequestSurface github = new(processRunner);
@@ -205,7 +211,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             worktreePath, pullRequest.Repository, cancellationToken);
 
         await Doorbell.RingAsync($"pr-review-lap:{taskId}", cancellationToken);
-        PrintHandoff(taskId, worktreePath, settingsFile, guard, prompt);
+        PrintHandoff(taskId, worktreePath, settingsFile, guard, prompt, account, LaunchTextDefaults.HostShell);
         return ExitCodes.Ok;
     }
 
@@ -1581,8 +1587,15 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         return settingsFile;
     }
 
-    private static void PrintHandoff(
-        Guid taskId, string worktreePath, string settingsFile, ReviewLapGuardOutcome guard, string prompt)
+    /// <summary>
+    /// What a reviewer reads before pasting the briefing. For a project bound to a Claude Code account
+    /// (<paramref name="account"/>, the project's current binding) it names the account and prints a start command
+    /// carrying it, and every line that would otherwise send the reader to start claude with <c>--settings</c> on
+    /// their own points at that command instead. An unbound project's handoff is unchanged.
+    /// </summary>
+    internal static void PrintHandoff(
+        Guid taskId, string worktreePath, string settingsFile, ReviewLapGuardOutcome guard, string prompt,
+        ClaudeCodeAccount account, LaunchShell shell)
     {
         if (worktreePath.IsNotBlank())
         {
@@ -1593,13 +1606,59 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             AnsiConsole.MarkupLine("[dim]No worktree (--no-worktree) — review against your deployed environment.[/]");
         }
 
+        string? startLine = PasteHandoffAccount.StartLine(account, settingsFile, shell);
+        if (startLine is not null)
+        {
+            PasteHandoffAccount.Write(account, startLine);
+        }
+
         // Every hole below travels through MarkupLineInterpolated, which escapes interpolated
         // values itself — so these are the RAW paths, deliberately. Escaping them first would
         // double-escape (a '[' in a user-set HALL9K_HOME would render as '[[[['), which is the
         // mistake this comment exists to stop somebody re-introducing by copying
         // TaskDriveCommand's own handoff: that one escapes explicitly because its own call is a
         // plain MarkupLine, which escapes nothing (self-review, round one).
-        FormattableString guardLine = guard switch
+        FormattableString guardLine = (guard, startLine) switch
+        {
+            (ReviewLapGuardOutcome.AlreadyPresent, not null) =>
+                $"[yellow]The checkout already had a {ReviewLapGuardFile.RelativePath}, so the push guard was NOT written there[/] [dim]and nothing of the pull request's own was overwritten. Start your session with the command above, which passes --settings {settingsFile} and so carries the same denials.[/]",
+            (ReviewLapGuardOutcome.Failed, not null) =>
+                $"[yellow]The push guard could not be written into the checkout.[/] [dim]Start your session with the command above, which passes --settings {settingsFile} and so carries the same denials.[/]",
+            (ReviewLapGuardOutcome.NoWorktree, not null) =>
+                $"[dim]No worktree, so the push guard travels with the settings file: start your session with the command above, which passes --settings {settingsFile}.[/]",
+            _ => UnboundGuardLine(guard, worktreePath, settingsFile),
+        };
+        AnsiConsole.MarkupLineInterpolated(guardLine);
+
+        // Escaped explicitly here, and only here: this one is a plain MarkupLine, built with
+        // ordinary concatenation across lines (which an interpolated-string literal cannot be),
+        // so nothing escapes it for us.
+        string escapedSettingsFile = Markup.Escape(settingsFile);
+        AnsiConsole.MarkupLine(startLine is not null
+            ? $"[dim]Settings file: {escapedSettingsFile}. The command above passes it with --settings, for this "
+                + "platform's required conventions and the same push guard.[/]"
+            : $"[dim]Settings file: {escapedSettingsFile} — pass --settings {escapedSettingsFile} to your own "
+                + "claude invocation for this platform's required conventions and the same push guard.[/]");
+        AnsiConsole.MarkupLineInterpolated(
+            $"[dim]This lap ends only when you run h9k pr approve {taskId} --note \"…\" or h9k pr request-changes {taskId} --note \"…\" — never on its own.[/]");
+        AnsiConsole.MarkupLine(startLine is not null
+            ? "[dim]Paste the briefing below into the Claude Code session that command starts. The checkout above is "
+                + "the natural place to start it, but nothing requires it:[/]"
+            : "[dim]Paste the briefing below into a Claude Code session started anywhere — the checkout above is "
+                + "the natural place, but nothing requires it:[/]");
+        AnsiConsole.WriteLine();
+        // WriteLine, not MarkupLine: the briefing is the reviewer's to paste verbatim, and
+        // Spectre would try to parse any [..] in a findings report or a pull request body as
+        // markup. ExternalText.ForTerminal first, for the reason TaskDriveCommand's own handoff
+        // gives: this text quotes a title, a body and a findings report written by other people,
+        // and a control or bidirectional-override character in any of them would be obeyed by
+        // this terminal rather than shown.
+        AnsiConsole.WriteLine(ExternalText.ForTerminal(prompt));
+    }
+
+    /// <summary>The push-guard line an unbound project's handoff prints, unchanged from before the account existed.</summary>
+    private static FormattableString UnboundGuardLine(ReviewLapGuardOutcome guard, string worktreePath, string settingsFile) =>
+        guard switch
         {
             ReviewLapGuardOutcome.Written =>
                 $"[dim]Push guard installed at {ReviewLapGuardFile.PathIn(worktreePath)} — any Claude Code session started in that checkout is denied git push, every gh write verb, gh api (the endpoint they all reach), and your own two verdict commands, with no flag needed.[/]",
@@ -1612,27 +1671,4 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             _ =>
                 $"[dim]No worktree, so the push guard travels with the settings file: start your session with --settings {settingsFile}.[/]",
         };
-        AnsiConsole.MarkupLineInterpolated(guardLine);
-
-        // Escaped explicitly here, and only here: this one is a plain MarkupLine, built with
-        // ordinary concatenation across lines (which an interpolated-string literal cannot be),
-        // so nothing escapes it for us.
-        string escapedSettingsFile = Markup.Escape(settingsFile);
-        AnsiConsole.MarkupLine(
-            $"[dim]Settings file: {escapedSettingsFile} — pass --settings {escapedSettingsFile} to your own "
-            + "claude invocation for this platform's required conventions and the same push guard.[/]");
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]This lap ends only when you run h9k pr approve {taskId} --note \"…\" or h9k pr request-changes {taskId} --note \"…\" — never on its own.[/]");
-        AnsiConsole.MarkupLine(
-            "[dim]Paste the briefing below into a Claude Code session started anywhere — the checkout above is "
-            + "the natural place, but nothing requires it:[/]");
-        AnsiConsole.WriteLine();
-        // WriteLine, not MarkupLine: the briefing is the reviewer's to paste verbatim, and
-        // Spectre would try to parse any [..] in a findings report or a pull request body as
-        // markup. ExternalText.ForTerminal first, for the reason TaskDriveCommand's own handoff
-        // gives: this text quotes a title, a body and a findings report written by other people,
-        // and a control or bidirectional-override character in any of them would be obeyed by
-        // this terminal rather than shown.
-        AnsiConsole.WriteLine(ExternalText.ForTerminal(prompt));
-    }
 }
