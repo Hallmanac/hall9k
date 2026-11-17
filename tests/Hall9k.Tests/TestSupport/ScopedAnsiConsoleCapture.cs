@@ -60,6 +60,12 @@ internal sealed class ScopedAnsiConsoleCapture : IDisposable
             ColorSystem = ColorSystemSupport.NoColors,
             Interactive = InteractionSupport.No,
             Out = new AnsiConsoleOutput(writer),
+
+            // Spectre's default enrichers read the host's environment after the settings above, and its
+            // GitHub Actions enricher turns ANSI back on whenever GITHUB_ACTIONS is set. NoColors keeps
+            // colors out but not decorations, so a [dim] line reached the capture as \e[2m...\e[0m on CI
+            // alone, and an exact-text assertion passed locally and failed there (PR #892).
+            Enrichment = new ProfileEnrichment { UseDefaultEnrichers = false },
         });
 
         captured.Profile.Width = width;
