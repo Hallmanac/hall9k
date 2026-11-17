@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -114,6 +115,7 @@ public sealed class SessionContainmentTests
             DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
             ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
         {
+            Account = ClaudeCodeAccount.Default,
             SessionName = "test-build",
         };
 }

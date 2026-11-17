@@ -4,6 +4,7 @@ using Hall9k.Connectors.Text;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Challenge;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Feedback;
 using Hall9k.Daemon.ProcessManagement;
@@ -444,6 +445,10 @@ public sealed class PlanEngine(
         {
             reason = "this node's launch hold stands";
         }
+        else if (await ClaudeAccountResolution.IsRefusedAsync(session, project, cancellationToken))
+        {
+            reason = $"project '{project.Name}''s Claude Code account is refused (h9k status names the fix)";
+        }
         else if (_options.SpendBudgetTokens is { } budget)
         {
             // Spend only grows within a period, so once it is confirmed spent the answer stands until the period rolls over
@@ -791,6 +796,7 @@ public sealed class PlanEngine(
                 {
                     TaskId = job.TaskId,
                     SessionName = SessionRoleName.For(DomainId.Short(job.TaskId), SessionRoleName.Refinement),
+                    Account = await ClaudeAccountResolution.ForTaskAsync(store, job.TaskId, linked.Token),
                 },
                 linked.Token);
         }
@@ -1423,6 +1429,7 @@ public sealed class PlanEngine(
                     job.Model, job.Effort, SkipPermissions: true)
                 {
                     SessionName = SessionRoleName.For(DomainId.Short(job.PlanId), SessionRoleName.Discovery),
+                    Account = await ClaudeAccountResolution.ForPlanAsync(store, job.PlanId, linked.Token),
                 },
                 linked.Token);
         }

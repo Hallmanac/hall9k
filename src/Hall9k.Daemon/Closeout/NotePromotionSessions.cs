@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Hall9k.Daemon.AutoPrReview;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Learning;
@@ -250,6 +251,7 @@ public sealed class NotePromotionSessions(
                 {
                     TaskId = task.Id,
                     SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.NotePromoter),
+                    Account = await ClaudeAccountResolution.ForTaskAsync(store, task.Id, cancellationToken),
                 }, cancellationToken);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)

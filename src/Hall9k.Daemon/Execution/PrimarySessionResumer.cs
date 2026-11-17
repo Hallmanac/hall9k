@@ -1,5 +1,7 @@
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
@@ -91,8 +93,12 @@ public sealed class PrimarySessionResumer(IExecutor executor, IOptions<DaemonOpt
         }
 
         bool isPrReview = task.Type == TaskType.PrReview;
+
+        SessionStart start = await StartForAsync(run, task, prompt, options.Value, cancellationToken);
+
+        ClaudeCodeAccount account = await ClaudeAccountResolution.ForRunAsync(session, run, cancellationToken);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
-            run.Id, DomainId.New(), run.WorktreePath, run.RunDirectory, prompt,
+            run.Id, start.SessionId, run.WorktreePath, run.RunDirectory, start.Prompt,
             run.ExecutorMode, run.Model, effort,
             // Hardcoded false for a pr-review resume, never project.SkipPermissions (Brian's
             // ruling 2026-09-27: no pr-review session ever runs with permissions skipped, member
@@ -101,13 +107,13 @@ public sealed class PrimarySessionResumer(IExecutor executor, IOptions<DaemonOpt
             // pre-PR review, cycle 1, both lenses: this was the fourth real spawn site the
             // security review's own IExecutor doc named only three of).
             SkipPermissions: isPrReview ? false : project.SkipPermissions,
-            ResumeSessionId: run.SessionId, UntrustedWorkingDirectory: isPrReview,
+            ResumeSessionId: start.ResumeSessionId, UntrustedWorkingDirectory: isPrReview,
             // Carried forward from the task's own declared budget, exactly as the original spawn
             // (RunLauncher.LaunchAsync) already passes it: without this, a resumed primary session
             // — a token-budget park's own retry, or the short-backoff error-result retry — ran
             // with no turn cap at all despite the task's own stated one, since AgentSpawnRequest's
             // own default is null/unbounded (independent pre-PR review, cycle 1, adversarial lens).
-            MaxTurns: task.Constraints?.MaxTurns)
+            MaxTurns: start.MaxTurns)
         {
             TaskId = task.Id,
             SessionName = sessionName,
@@ -124,6 +130,7 @@ public sealed class PrimarySessionResumer(IExecutor executor, IOptions<DaemonOpt
             QaGateCommands = isPrReview && run.PrReviewPersonasRan.FirstOrDefault() == ReviewPersona.Qa
                 ? QaGateCommandsResolver.Resolve(project)
                 : null,
+            Account = account,
         }, cancellationToken);
 
         // The retry's stdout redirect truncates the run's stream file fresh (log #2), so the
@@ -139,5 +146,34 @@ public sealed class PrimarySessionResumer(IExecutor executor, IOptions<DaemonOpt
             run.Id, new RunResumed(run.Id, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, sessionName));
 
         return agent;
+    }
+
+    /// <summary>How the primary session starts again: the session id it runs under, the one it resumes, its prompt, and its turn cap.</summary>
+    internal sealed record SessionStart(Guid SessionId, Guid? ResumeSessionId, string Prompt, int? MaxTurns);
+
+    /// <summary>
+    /// A session that ran is resumed with <c>--resume</c> under a fresh process session id and given
+    /// <paramref name="retryPrompt"/>. A launch held because its account was refused never started a session, so
+    /// there is nothing to resume: it starts fresh, under the session id it was dispatched with, from the prompt its
+    /// refused spawn already wrote to the run directory, and a mention follow-up gets the same hard turn cap its
+    /// original launch would have (RunLauncher's mention branch) rather than the task's.
+    /// </summary>
+    internal static async ValueTask<SessionStart> StartForAsync(
+        RunDetails run, TaskDetails task, string retryPrompt, DaemonOptions options, CancellationToken cancellationToken)
+    {
+        bool neverStarted = run.ProcessStartedAt is null && run.AccountHeldConnectionId is not null;
+        if (!neverStarted)
+        {
+            return new SessionStart(DomainId.New(), run.SessionId, retryPrompt, task.Constraints?.MaxTurns);
+        }
+
+        string promptFile = RunPaths.PromptFile(RunPaths.ResolveCurrentDirectory(run.RunDirectory));
+        string prompt = File.Exists(promptFile)
+            ? await File.ReadAllTextAsync(promptFile, cancellationToken)
+            : retryPrompt;
+        int? maxTurns = run.PrReviewMentionCommentId is not null
+            ? options.PrReviewMentionFollowUpMaxTurns
+            : task.Constraints?.MaxTurns;
+        return new SessionStart(run.SessionId, null, prompt, maxTurns);
     }
 }

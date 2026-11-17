@@ -1,4 +1,5 @@
 using Hall9k.Daemon;
+using Hall9k.Connectors.ClaudeCode;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
@@ -9,6 +10,7 @@ using Hall9k.Connectors.Releases;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Challenge;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Courier;
 using Hall9k.Daemon.Dispatch;
@@ -203,6 +205,10 @@ builder.Services.AddSingleton(services => new TrackerClaimGate(
     services.GetRequiredService<ProcessRunner>(), services.GetRequiredService<JiraRequester>()));
 builder.Services.AddSingleton<DispatchEngine>();
 builder.Services.AddSingleton(SessionContainment.ForCurrentPlatform());
+builder.Services.AddSingleton<IClaudeAuthStatusProbe, ClaudeAuthStatusProbe>(_ => new ClaudeAuthStatusProbe());
+builder.Services.AddSingleton(provider => new ClaudeAccountChecker(provider.GetRequiredService<IClaudeAuthStatusProbe>()));
+builder.Services.AddSingleton<IClaudeAccountRefusalLedger, MartenClaudeAccountRefusalLedger>();
+builder.Services.AddSingleton<ClaudeAccountGate>();
 builder.Services.AddSingleton<IExecutor, ClaudeExecutor>();
 builder.Services.AddSingleton<VerificationRunner>();
 // A factory rather than plain AddSingleton<ReviewEngine>(): its constructor takes TWO
@@ -368,6 +374,7 @@ builder.Services.AddHostedService<PullRequestMonitor>();
 builder.Services.AddHostedService<AutoPrReviewMonitor>();
 builder.Services.AddHostedService<TokenBudgetRetryMonitor>();
 builder.Services.AddHostedService<LaunchHoldMonitor>();
+builder.Services.AddHostedService<ClaudeAccountMonitor>();
 builder.Services.AddHostedService<TakeoverWatchLoop>();
 builder.Services.AddHostedService<SpikeBudgetWatchLoop>();
 builder.Services.AddHostedService<ClaimRequestWatchLoop>();

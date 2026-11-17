@@ -1,8 +1,11 @@
+using Hall9k.Daemon.ClaudeAccounts;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Shared.Exceptions;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -26,8 +29,45 @@ namespace Hall9k.Daemon.Execution;
 /// action, the same split <c>TokenBudgetRetryEngine</c> draws between parking (inline in
 /// <c>RunSupervisor</c>/<c>ReviewEngine</c>) and resuming (its own sweep).
 /// </summary>
-public sealed class LaunchHoldEngine(IDocumentStore store, ILogger<LaunchHoldEngine> logger)
+public sealed class LaunchHoldEngine(
+    IDocumentStore store, ILogger<LaunchHoldEngine> logger, ClaudeAccountGate? accountGate = null)
 {
+    /// <summary>
+    /// Before a launch failure raises this hold: when the run's frozen Claude Code account is bound, it is
+    /// re-checked without the reuse window, and a failing check returns the refusal so the caller holds the run
+    /// for that account and leaves this node-wide hold down. Null for the default login, a passing check, or an
+    /// account that cannot be resolved, and the caller then raises the hold exactly as before.
+    /// </summary>
+    public Task<ClaudeAccountRefusedException?> RefusedAccountOnLaunchFailureAsync(
+        Guid runId, CancellationToken cancellationToken) =>
+        RefusedAccountAsync(token => ClaudeAccountResolution.ForRunAsync(store, runId, token), cancellationToken);
+
+    /// <summary>The same re-check for a pre-flight, whose account is the one its dispatching run froze.</summary>
+    public Task<ClaudeAccountRefusedException?> RefusedPreflightAccountOnLaunchFailureAsync(
+        Guid preflightRunId, CancellationToken cancellationToken) =>
+        RefusedAccountAsync(token => ClaudeAccountResolution.ForPreflightRowAsync(store, preflightRunId, token), cancellationToken);
+
+    private async Task<ClaudeAccountRefusedException?> RefusedAccountAsync(
+        Func<CancellationToken, Task<ClaudeCodeAccount>> resolve, CancellationToken cancellationToken)
+    {
+        if (accountGate is null)
+        {
+            return null;
+        }
+
+        ClaudeCodeAccount account;
+        try
+        {
+            account = await resolve(cancellationToken);
+        }
+        catch (DomainNotFoundException)
+        {
+            return null;
+        }
+
+        return await accountGate.RefusalOnLaunchFailureAsync(account, cancellationToken);
+    }
+
     /// <summary>
     /// Bounds the retry in <see cref="AppendWithConcurrencyRetryAsync"/> — a handful of attempts
     /// is enough to ride out genuine contention on this node's own stream (independent pre-PR
@@ -350,9 +390,13 @@ public sealed class LaunchHoldEngine(IDocumentStore store, ILogger<LaunchHoldEng
     private static async Task<IReadOnlyList<RunDetails>> HeldRunsAsync(
         IQuerySession session, Guid nodeId, CancellationToken cancellationToken)
     {
+        // A run held for a refused Claude Code account (RunAccountHeld) belongs to that account's own
+        // re-check, never to this hold: probing it would only refuse again, and counting it would keep
+        // this hold standing for as long as one account stays logged out.
         IReadOnlyList<RunDetails> ownNode = await session.Query<RunDetails>()
             .Where(r => r.NodeId == nodeId)
             .Where(r => r.MatchesSql("d.data ->> 'state' = ?", RunState.LaunchHeld.Value))
+            .Where(r => r.AccountHeldConnectionId == null)
             .ToListAsync(cancellationToken);
         IReadOnlyList<RunDetails> sentinelPrReview = await SentinelPrReviewCandidatesAsync(
             session, nodeId, cancellationToken);
@@ -374,6 +418,7 @@ public sealed class LaunchHoldEngine(IDocumentStore store, ILogger<LaunchHoldEng
             .Where(r => r.NodeId == Guid.Empty)
             .Where(r => r.DispatchingNodeId == nodeId)
             .Where(r => r.MatchesSql("d.data ->> 'state' = ?", RunState.LaunchHeld.Value))
+            .Where(r => r.AccountHeldConnectionId == null)
             .ToListAsync(cancellationToken);
         if (sentinel.Count == 0)
         {

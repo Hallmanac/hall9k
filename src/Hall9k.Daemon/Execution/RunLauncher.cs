@@ -3,11 +3,13 @@ using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.AutoPrReview;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Review;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.AutoPrReview;
@@ -707,6 +709,10 @@ public sealed class RunLauncher(
                 // and BaseCommit are just above (StackedBaseResolver.ResumedBase's own doc) — null
                 // for a fresh cut, which is every ordinary run.
                 OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
+            // Frozen in the dispatch's own commit: every later spawn for this run reads this, never the
+            // project's binding, which may change while the run is live.
+            ClaudeCodeAccount account = await ClaudeAccountResolution.ForProjectAsync(session, project, cancellationToken);
+            session.Events.Append(runId, ClaudeAccountResolution.Freeze(runId, account, DateTimeOffset.UtcNow));
             // Appended in the dispatch's own commit so the run's record of what it set out to
             // review can never be missing from a run that is already dispatched (idea b9b09779,
             // piece 1). Read back by PrReviewEngine, by the findings report, and by h9k task show,
@@ -1073,6 +1079,7 @@ public sealed class RunLauncher(
                     UsesReviewPermissions = isPrReview,
                     QaGateCommands = primaryQaGateCommands,
                     GitHubRepository = isPrReview ? GitHubPullRequestReference.RepositoryOfTask(task.ExternalReference) : null,
+                    Account = account,
                 },
                 cancellationToken);
 
@@ -1091,6 +1098,13 @@ public sealed class RunLauncher(
             logger.LogWarning(exception, "Launch of run {RunId} could not reach origin", runId);
             await RecordLaunchNetworkRetryAsync(
                 taskId, runId, leaseGeneration, exception.GitError, mentionFollowUp: false, cancellationToken);
+        }
+        // A refused account holds the run rather than failing it: the prompt is already on disk, and the
+        // account monitor starts this same session once the account's check passes.
+        catch (ClaudeAccountRefusedException refusal)
+        {
+            logger.LogWarning("Launch of run {RunId} held: its Claude Code account was refused: {Reason}", runId, refusal.Message);
+            await ClaudeAccountHolds.HoldRunAsync(store, runId, refusal, primarySession: true, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -1285,6 +1299,8 @@ public sealed class RunLauncher(
                 // detached checkout's own start point is its BaseCommit, the identical value a
                 // fresh (non-resumed) unstacked checkout records there.
                 BaseBranch: string.Empty, BaseCommit: worktree.StartPointCommit));
+            ClaudeCodeAccount account = await ClaudeAccountResolution.ForProjectAsync(session, project, cancellationToken);
+            session.Events.Append(runId, ClaudeAccountResolution.Freeze(runId, account, DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
 
             string baseBranch = facts.BaseRefName.IsNotBlank() ? facts.BaseRefName : project.BaseBranch;
@@ -1352,6 +1368,7 @@ public sealed class RunLauncher(
                     SessionName = sessionName,
                     UsesReviewPermissions = true,
                     GitHubRepository = facts.Repository,
+                    Account = account,
                 },
                 cancellationToken);
 
@@ -1371,6 +1388,13 @@ public sealed class RunLauncher(
             logger.LogWarning(exception, "Mention follow-up launch of run {RunId} could not reach origin", runId);
             await RecordLaunchNetworkRetryAsync(
                 taskId, runId, leaseGeneration, exception.GitError, mentionFollowUp: true, cancellationToken);
+            return MentionFollowUpLaunch.Handled;
+        }
+        catch (ClaudeAccountRefusedException refusal)
+        {
+            logger.LogWarning(
+                "Mention follow-up launch of run {RunId} held: its Claude Code account was refused: {Reason}", runId, refusal.Message);
+            await ClaudeAccountHolds.HoldRunAsync(store, runId, refusal, primarySession: true, cancellationToken);
             return MentionFollowUpLaunch.Handled;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -1859,6 +1883,12 @@ public sealed class RunLauncher(
                 HumanGateAnswered: failedRun.HumanGateAnsweredAt is not null
                     || failedRun.ReviewSkip is not null
                     || failedRun.ResumedHumanGateAnswered)));
+        session.Events.Append(runId, new RunClaudeCodeAccountRecorded(
+            runId,
+            await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is { } owningProject
+                ? ClaudeCodeAccountBinding.ForProject(owningProject)
+                : null,
+            DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
@@ -2554,6 +2584,8 @@ public sealed class RunLauncher(
         SpawnedAgent agent;
         try
         {
+            ClaudeCodeAccount account = await ClaudeAccountResolution.ForPreflightAsync(
+                store, runId, project, cancellationToken);
             agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(
                     preflightRunId, preflightRunId, runDirectory, runDirectory, prompt, ExecutorMode.Subscription,
@@ -2564,8 +2596,21 @@ public sealed class RunLauncher(
                     TaskId = task.Id,
                     SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.SecurityPreflight),
                     UsesReviewPermissions = true,
+                    Account = account,
                 },
                 cancellationToken);
+        }
+        catch (ClaudeAccountRefusedException refusal)
+        {
+            // Held rather than failed: the row is abandoned and the task given back, and the dispatcher
+            // claims none of a refused account's tasks, so a fresh pre-flight is dispatched once the
+            // account's check passes, the same redispatch a pre-flight with no verdict already gets.
+            logger.LogWarning(
+                "Task {TaskId}: the pull-request review pre-flight is held, its Claude Code account was refused: {Reason}",
+                task.Id, refusal.Message);
+            supervisor.ReleasePreflightSpawnReservation(preflightRunId);
+            await supervisor.AbandonPreflightAsync(preflightRunId, task.Id, cancellationToken);
+            return;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

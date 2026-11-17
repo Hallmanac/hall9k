@@ -31,10 +31,7 @@ public sealed class WindowsProcessManager : ProcessManagerBase
                 CreateNoWindow = true,
             },
         };
-        foreach ((string name, string value) in request.Environment)
-        {
-            process.StartInfo.Environment[name] = value;
-        }
+        ApplyEnvironment(process.StartInfo, request);
 
         // The raw Arguments string, never ArgumentList (see WindowsCommandLine): the
         // command this wraps already carries its own embedded quotes (a quoted claude

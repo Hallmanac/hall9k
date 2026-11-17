@@ -1,4 +1,7 @@
+using Hall9k.Connectors.ClaudeCode;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Daemon.ClaudeAccounts;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Run;
@@ -19,7 +22,7 @@ namespace Hall9k.Daemon.Execution;
 /// </summary>
 public sealed class ClaudeExecutor(
     ILogger<ClaudeExecutor> logger, IProcessManager processManager, IOptions<DaemonOptions> options,
-    SessionContainment containment) : IExecutor
+    SessionContainment containment, ClaudeAccountGate? accountGate = null) : IExecutor
 {
     public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
     {
@@ -72,6 +75,14 @@ public sealed class ClaudeExecutor(
                 options.Value.VerifyGateTimeout, guardReviewThreadReplies: true, effort: request.Effort);
         await File.WriteAllTextAsync(SettingsFile(request, runDirectory), settingsContent, cancellationToken);
 
+        // The account is checked after the prompt is on disk and before any process exists: a refusal
+        // throws ClaudeAccountRefusedException, which a run's spawn site turns into a hold, and a fresh
+        // launch held this way is later started from this same prompt file.
+        if (accountGate is not null)
+        {
+            await accountGate.EnsureUsableAsync(request.Account, cancellationToken);
+        }
+
         // On macOS the claude command runs under the signal-fence seatbelt profile (task: a
         // dispatched session's own cleanup command killed processes it never started). Applied
         // here, at the one spawn site, so the process managers stay policy-free; a failed
@@ -107,8 +118,8 @@ public sealed class ClaudeExecutor(
             environment.Add(new(DispatchedRunEnvironment.SessionNameVariable, request.SessionName));
         }
 
-        SpawnedProcess spawned = processManager.Spawn(new ProcessSpawnRequest(
-            command, request.WorktreePath, environment, promptFile, streamFile, standardErrorFile));
+        SpawnedProcess spawned = processManager.Spawn(ComposeProcessRequest(
+            request, command, environment, promptFile, streamFile, standardErrorFile));
 
         logger.LogInformation(
             "Agent spawned for run {RunId}: pid {ProcessId}, session {SessionId}, mode {Mode}, model {Model}",
@@ -116,8 +127,30 @@ public sealed class ClaudeExecutor(
         return new SpawnedAgent(spawned.ProcessId, spawned.StartedAt);
     }
 
-    private static string ClaudeBinary() =>
-        Environment.GetEnvironmentVariable("HALL9K_CLAUDE_PATH") ?? "claude";
+    private static string ClaudeBinary() => ClaudeCodeBinary.Resolve();
+
+    /// <summary>
+    /// The process request for a session, with the account applied: the exact recorded directory as
+    /// <c>CLAUDE_CONFIG_DIR</c> for a bound account, and the variable removed for the default, so an
+    /// inherited value never moves an unbound project onto another login. Internal so the composed
+    /// environment can be asserted without spawning anything.
+    /// </summary>
+    internal static ProcessSpawnRequest ComposeProcessRequest(
+        AgentSpawnRequest request, string command, IReadOnlyList<KeyValuePair<string, string>> environment,
+        string? promptFile, string streamFile, string standardErrorFile)
+    {
+        List<KeyValuePair<string, string>> composed =
+            [.. environment.Where(variable => variable.Key != ClaudeConfigDirectory.Variable)];
+        if (request.Account.ConfigDirectory is { } directory)
+        {
+            composed.Add(new(ClaudeConfigDirectory.Variable, directory));
+        }
+
+        return new ProcessSpawnRequest(command, request.WorktreePath, composed, promptFile, streamFile, standardErrorFile)
+        {
+            RemovedEnvironment = request.Account.IsDefault ? [ClaudeConfigDirectory.Variable] : [],
+        };
+    }
 
     /// <summary>
     /// The settings file this spawn writes and hands its child, under <paramref name="runDirectory"/>

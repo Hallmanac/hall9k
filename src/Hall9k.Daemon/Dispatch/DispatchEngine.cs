@@ -3,6 +3,7 @@ using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.AutoPrReview;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Node;
@@ -796,6 +797,11 @@ public sealed class DispatchEngine(
             session, node.OwnerId, cancellationToken);
         IReadOnlyList<QueuedCandidate> queued = await ReadQueueAsync(
             session, archivedProjects, ownerRootFingerprint, cancellationToken);
+        // A project bound to a refused Claude Code account has none of its tasks claimed until the account
+        // passes a check again; every other project's work is claimed as usual, unlike the node-wide hold.
+        IReadOnlySet<Guid> refusedProjects = await ClaudeAccountResolution.RefusedProjectIdsAsync(
+            session, queued.Select(candidate => candidate.ProjectId), cancellationToken);
+        queued = ClaudeAccountRefusals.Admitted(queued, candidate => candidate.ProjectId, refusedProjects);
         ReportFingerprintMismatches(await ReadFingerprintMismatchedTaskIdsAsync(
             session, ownerRootFingerprint, cancellationToken));
         // Guarded on the sink rather than paid unconditionally: LogDebug's own call is a no-op at

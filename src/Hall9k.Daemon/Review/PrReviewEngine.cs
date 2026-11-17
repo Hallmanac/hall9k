@@ -4,6 +4,7 @@ using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.AutoPrReview;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
@@ -200,6 +201,12 @@ public sealed class PrReviewEngine(
         try
         {
             await DriveAsync(runId, taskId, cancellationToken);
+        }
+        catch (ClaudeAccountRefusedException refusal)
+        {
+            // Held, not failed: the account monitor resumes this loop once the run's account passes a check.
+            logger.LogWarning("Run {RunId}: pr-review loop held, its Claude Code account was refused: {Reason}", runId, refusal.Message);
+            await ClaudeAccountHolds.HoldRunAsync(store, runId, refusal, primarySession: false, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -794,6 +801,7 @@ public sealed class PrReviewEngine(
             UsesReviewPermissions = true,
             QaGateCommands = qaGateCommands,
             GitHubRepository = GitHubPullRequestReference.RepositoryOfTask(task.ExternalReference),
+            Account = await ClaudeAccountResolution.ForRunAsync(store, runId, cancellationToken),
         },
             cancellationToken);
 
@@ -893,12 +901,19 @@ public sealed class PrReviewEngine(
             // completion site this task's own launch-hold check never reached (independent
             // pre-PR review, cycle 3, conformance lens).
             string observedMessage = errorResult.Summary ?? "(no message)";
-            await launchHold.RaiseOrJoinAsync(launchHoldNodeId, runId, observedMessage, cancellationToken);
+            ClaudeAccountRefusedException? accountRefusal =
+                await launchHold.RefusedAccountOnLaunchFailureAsync(runId, cancellationToken);
+            if (accountRefusal is null)
+            {
+                await launchHold.RaiseOrJoinAsync(launchHoldNodeId, runId, observedMessage, cancellationToken);
+            }
 
             await using IDocumentSession holdSession = store.LightweightSession();
             holdSession.Events.Append(
                 runId, errorResult.ToTokensRecorded(runId, DateTimeOffset.UtcNow, run.PrReviewConformanceModel));
-            holdSession.Events.Append(runId, new RunLaunchHeld(runId, observedMessage, DateTimeOffset.UtcNow));
+            holdSession.Events.Append(runId, accountRefusal is { } refusal
+                ? new RunAccountHeld(runId, refusal.ConnectionId, refusal.Message, DateTimeOffset.UtcNow)
+                : new RunLaunchHeld(runId, observedMessage, DateTimeOffset.UtcNow));
             await holdSession.SaveChangesAsync(cancellationToken);
             return false;
         }

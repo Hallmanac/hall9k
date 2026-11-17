@@ -4,6 +4,7 @@ using System.Text.Json;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Owner;
@@ -472,9 +473,15 @@ public sealed class AutoPrReviewEngine(
     /// candidate in turn, with real GitHub fetches and <c>LinkedWorkItemImport</c> calls between
     /// them, so a hold raised mid-sweep by an earlier candidate's own failure must still be seen by
     /// a later one's decision — a value sampled once at the sweep's own start cannot see that.
+    /// <para>
+    /// The project's own Claude Code account is asked here too: while the account it is bound to is refused,
+    /// none of its sessions start, exactly as none start on this node while the node-wide hold stands, and
+    /// every other project's work goes on.
+    /// </para>
     /// </summary>
-    private async Task<bool> LaunchHoldActiveAsync(CancellationToken cancellationToken) =>
-        await launchHold.CurrentHoldAsync(node.NodeId, cancellationToken) is { LaunchHoldActive: true };
+    private async Task<bool> LaunchHoldActiveAsync(Guid projectId, CancellationToken cancellationToken) =>
+        await launchHold.CurrentHoldAsync(node.NodeId, cancellationToken) is { LaunchHoldActive: true }
+        || await ClaudeAccountResolution.IsRefusedAsync(store, projectId, cancellationToken);
 
     /// <summary>
     /// Whether this node's own period spend budget is exhausted, the roughly ten-line equivalent of
@@ -1417,7 +1424,7 @@ public sealed class AutoPrReviewEngine(
         // queue-first marker First speed uses, so it takes the next free ordinary dispatch slot
         // (behind DispatchEngine's own claim gate, which already refuses to claim into a held
         // node) rather than sitting until the next poll interval.
-        bool launchHoldActive = setting.Speed == AutoPrReviewSpeed.Now && await LaunchHoldActiveAsync(cancellationToken);
+        bool launchHoldActive = setting.Speed == AutoPrReviewSpeed.Now && await LaunchHoldActiveAsync(project.Id, cancellationToken);
         bool launchImmediately = setting.Speed == AutoPrReviewSpeed.Now && !launchHoldActive
             && ++_immediateLaunchesThisSweep <= MaxImmediateLaunchesPerSweep;
 
@@ -2477,7 +2484,7 @@ public sealed class AutoPrReviewEngine(
         // ceiling-exempt sentinel), so the hold and the shared ceiling are the only things standing
         // between this claim and a broken or already-spent node (independent pre-PR review, cycle
         // 1, adversarial lens).
-        bool launchHoldActive = await LaunchHoldActiveAsync(cancellationToken);
+        bool launchHoldActive = await LaunchHoldActiveAsync(existing.ProjectId, cancellationToken);
         bool launchImmediately = !launchHoldActive && ++_immediateLaunchesThisSweep <= MaxImmediateLaunchesPerSweep;
         if (!launchImmediately)
         {
@@ -2725,7 +2732,7 @@ public sealed class AutoPrReviewEngine(
         // identical reason: one immediate launch per sweep across BOTH triggers, since the consent
         // text a human agreed to at --auto-pr-review now still promises "an extra concurrent agent
         // session", singular, whichever trigger asked for it.
-        bool launchHoldActive = setting.Speed == AutoPrReviewSpeed.Now && await LaunchHoldActiveAsync(cancellationToken);
+        bool launchHoldActive = setting.Speed == AutoPrReviewSpeed.Now && await LaunchHoldActiveAsync(project.Id, cancellationToken);
         bool launchImmediately = setting.Speed == AutoPrReviewSpeed.Now && !launchHoldActive
             && ++_immediateLaunchesThisSweep <= MaxImmediateLaunchesPerSweep;
 

@@ -1,5 +1,6 @@
 using Hall9k.Connectors.Orchestrator;
 using Hall9k.Connectors.Replication;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Courier;
@@ -518,7 +519,8 @@ public sealed class CourierEngine(
         AgentEffort effort = _options.ResolveEffort(AgentRole.Courier, taskEffort: null, project.Effort);
         Guid runId = DomainId.New();
 
-        session.Events.StartStream(runId, new CourierRunDispatched(runId, project.Id, node.NodeId, model, now));
+        CourierRunDispatched dispatched = new(runId, project.Id, node.NodeId, model, now);
+        session.Events.StartStream(runId, dispatched);
         session.Store(CourierDaySpawnCounter.Incremented(dayCounter, project.Id, today));
         await session.SaveChangesAsync(cancellationToken);
 
@@ -548,6 +550,9 @@ public sealed class CourierEngine(
                     MaxTurns: _options.CourierMaxTurns)
                 {
                     SessionName = SessionRoleName.For(DomainId.Short(project.Id), SessionRoleName.Courier),
+                    // The courier runs in its own run directory, so its account comes from the project its
+                    // dispatch names, never from where it runs.
+                    Account = await ClaudeAccountResolution.ForCourierAsync(store, dispatched, cancellationToken),
                 },
                 cancellationToken);
 

@@ -3,6 +3,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -35,6 +36,7 @@ public sealed class ClaudeExecutorIsolationTests
             ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false,
             UntrustedWorkingDirectory: true)
         {
+            Account = ClaudeCodeAccount.Default,
             SessionName = "test-review-adversarial-1",
         };
 
@@ -55,6 +57,7 @@ public sealed class ClaudeExecutorIsolationTests
             DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", "/tmp/run", "prompt",
             ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
         {
+            Account = ClaudeCodeAccount.Default,
             SessionName = "test-build",
         };
 
@@ -71,6 +74,7 @@ public sealed class ClaudeExecutorIsolationTests
             DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", "/tmp/run", "prompt",
             ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
         {
+            Account = ClaudeCodeAccount.Default,
             SessionName = "test-build",
         };
 
@@ -105,6 +109,7 @@ public sealed class ClaudeExecutorIsolationTests
                 runId, DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
                 ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
             {
+                Account = ClaudeCodeAccount.Default,
                 SessionName = "test-build",
             };
 
@@ -143,6 +148,7 @@ public sealed class ClaudeExecutorIsolationTests
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
                 ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
             {
+                Account = ClaudeCodeAccount.Default,
                 TaskId = taskId,
                 SessionName = "test-build",
             };
@@ -180,6 +186,7 @@ public sealed class ClaudeExecutorIsolationTests
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
                 ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
             {
+                Account = ClaudeCodeAccount.Default,
                 SessionName = "test-build",
             };
 
@@ -219,6 +226,7 @@ public sealed class ClaudeExecutorIsolationTests
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
                 ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
             {
+                Account = ClaudeCodeAccount.Default,
                 SessionName = "test-build",
             };
 
@@ -261,6 +269,7 @@ public sealed class ClaudeExecutorIsolationTests
                 ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false,
                 UntrustedWorkingDirectory: true)
             {
+                Account = ClaudeCodeAccount.Default,
                 SessionName = "test-review-adversarial-1",
                 UsesReviewPermissions = true,
             };
@@ -297,6 +306,7 @@ public sealed class ClaudeExecutorIsolationTests
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
                 ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
             {
+                Account = ClaudeCodeAccount.Default,
                 SessionName = "test-build",
             };
 
@@ -333,6 +343,7 @@ public sealed class ClaudeExecutorIsolationTests
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
                 ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
             {
+                Account = ClaudeCodeAccount.Default,
                 SessionName = "test-build",
             };
 

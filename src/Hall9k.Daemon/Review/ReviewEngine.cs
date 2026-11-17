@@ -8,10 +8,12 @@ using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.AutoPrReview;
+using Hall9k.Daemon.ClaudeAccounts;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.ProjectHomes;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Owner;
@@ -239,6 +241,17 @@ public sealed class ReviewEngine(
         {
             await EndLocalLaunchLeavingHumanGateAsync(context, cancellationToken);
             return await DriveAsync(context, cancellationToken);
+        }
+        catch (ClaudeAccountRefusedException refusal)
+        {
+            // A session spawned for this run (a review, verify, or final pass, the fix session, a stack
+            // assessment, or recovery) was refused for the run's Claude Code account. Held, not failed:
+            // RunAccountHeld clears the in-flight leg the way a launch hold does, so the account monitor's
+            // resume redispatches it fresh once a check passes.
+            logger.LogWarning("Run {RunId}: review loop held, its Claude Code account was refused: {Reason}", runId, refusal.Message);
+            await TerminateInFlightSessionsAsync(runId, cancellationToken);
+            await ClaudeAccountHolds.HoldRunAsync(store, runId, refusal, primarySession: false, cancellationToken);
+            return false;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -2269,6 +2282,7 @@ public sealed class ReviewEngine(
             Environment = ReviewSessionEnvironment,
             TaskId = context.TaskId,
             SessionName = sessionName,
+            Account = context.Account,
         }, cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
@@ -2352,6 +2366,7 @@ public sealed class ReviewEngine(
             Environment = ReviewSessionEnvironment,
             TaskId = context.TaskId,
             SessionName = sessionName,
+            Account = context.Account,
         }, cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
@@ -2439,6 +2454,7 @@ public sealed class ReviewEngine(
             Environment = ReviewSessionEnvironment,
             TaskId = context.TaskId,
             SessionName = sessionName,
+            Account = context.Account,
         }, cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
@@ -2683,6 +2699,7 @@ public sealed class ReviewEngine(
         {
             TaskId = context.TaskId,
             SessionName = sessionName,
+            Account = context.Account,
         }, cancellationToken);
 
         DateTimeOffset dispatchedAt = DateTimeOffset.UtcNow;
@@ -4006,9 +4023,10 @@ public sealed class ReviewEngine(
                 {
                     TaskId = context.TaskId,
                     SessionName = sessionName,
+                    Account = context.Account,
                 }, cancellationToken);
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
+            catch (Exception exception) when (exception is not (OperationCanceledException or ClaudeAccountRefusedException))
             {
                 logger.LogWarning(exception, "Run {RunId}: the stack assessment session could not be spawned", context.RunId);
                 return await RecordStackAssessmentCompletedAsync(
@@ -4062,7 +4080,7 @@ public sealed class ReviewEngine(
                 }
             }
 
-            if (exception is OperationCanceledException)
+            if (exception is OperationCanceledException or ClaudeAccountRefusedException)
             {
                 throw;
             }
@@ -5083,6 +5101,7 @@ public sealed class ReviewEngine(
         {
             TaskId = context.TaskId,
             SessionName = sessionName,
+            Account = context.Account,
         }, cancellationToken);
 
         DateTimeOffset dispatchedAt = DateTimeOffset.UtcNow;
@@ -5644,6 +5663,7 @@ public sealed class ReviewEngine(
         {
             TaskId = context.TaskId,
             SessionName = sessionName,
+            Account = context.Account,
         }, cancellationToken);
 
         DateTimeOffset dispatchedAt = DateTimeOffset.UtcNow;
@@ -7698,7 +7718,12 @@ public sealed class ReviewEngine(
         // is not yet standing, which would let the dispatcher keep claiming new work into the
         // same broken node — RunSupervisor.CompleteRunAsync's own identical ordering states the
         // same reasoning in full.
-        if (!alreadyJoined)
+        // A launch failure under a bound account is re-checked first: a failing check holds the run for its
+        // account and leaves the node-wide hold down (a joined hold was raised by another run, so it stands).
+        ClaudeAccountRefusedException? accountRefusal = alreadyJoined
+            ? null
+            : await launchHold.RefusedAccountOnLaunchFailureAsync(runId, cancellationToken);
+        if (!alreadyJoined && accountRefusal is null)
         {
             await launchHold.RaiseOrJoinAsync(nodeId, runId, observedMessage, cancellationToken);
         }
@@ -7706,7 +7731,9 @@ public sealed class ReviewEngine(
         await using (IDocumentSession session = store.LightweightSession())
         {
             session.Events.Append(runId, erroredResult.ToTokensRecorded(runId, DateTimeOffset.UtcNow, erroredModel));
-            session.Events.Append(runId, new RunLaunchHeld(runId, observedMessage, DateTimeOffset.UtcNow));
+            session.Events.Append(runId, accountRefusal is { } refusal
+                ? new RunAccountHeld(runId, refusal.ConnectionId, refusal.Message, DateTimeOffset.UtcNow)
+                : new RunLaunchHeld(runId, observedMessage, DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
         }
 
@@ -7873,7 +7900,11 @@ public sealed class ReviewEngine(
         OwnerDetails? owner = await query.LoadAsync<OwnerDetails>(run.OwnerId, cancellationToken);
         return new ReviewContext(
             runId, taskId, run, task, project, priorRulings, priorHumanDirectedInteractions, priorBoundaryApprovals,
-            priorHumanFixes, owner?.VoiceSkill);
+            priorHumanFixes, owner?.VoiceSkill)
+        {
+            // The run's frozen account, resolved once: every session this loop spawns for the run uses it.
+            Account = await ClaudeAccountResolution.ForRunAsync(query, run, cancellationToken),
+        };
     }
 
     /// <summary>
@@ -9156,6 +9187,9 @@ public sealed class ReviewEngine(
         /// the same branch.
         /// </summary>
         public string BaseBranch => Run.BaseBranchOr(Project.BaseBranch);
+
+        /// <summary>The Claude Code account this run froze at dispatch, which every session the loop spawns for it runs under.</summary>
+        public ClaudeCodeAccount Account { get; init; } = ClaudeCodeAccount.Default;
 
         /// <summary>
         /// What <c>AppendReviewMechanics</c> needs told when this run's base is not the project's

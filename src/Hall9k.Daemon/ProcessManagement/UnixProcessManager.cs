@@ -23,10 +23,7 @@ public sealed class UnixProcessManager : ProcessManagerBase
                 UseShellExecute = false,
             },
         };
-        foreach ((string name, string value) in request.Environment)
-        {
-            process.StartInfo.Environment[name] = value;
-        }
+        ApplyEnvironment(process.StartInfo, request);
 
         process.StartInfo.ArgumentList.Add("-c");
         process.StartInfo.ArgumentList.Add($"exec {ShellRedirection.Wrap(request)}");
