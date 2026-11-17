@@ -1542,6 +1542,27 @@ work for its projects from starting (dispatch, plans, feedback steps, auto-pr-re
 delegate`, `task drive --direct-launch`, `orchestrator measure --project`) checks before it claims or
 records anything and exits non-zero with the same text.
 
+Lines a person pastes carry the bound account on the `claude` command itself, added when the line is
+printed (to a stored launch text and the computed default alike): `CLAUDE_CONFIG_DIR='<dir>' claude ...` in
+POSIX and `$env:CLAUDE_CONFIG_DIR='<dir>'; claude ...` in PowerShell, which sets it for the rest of that
+shell. That covers the window line from `orchestrator project` and `launch-text show --project`, the
+`task drive` resume, fresh, and human-gate step-in lines, the `plan show` discovery resume line, and the
+`solution init`/`solution add` line (when every member agrees on one account). The node line never carries
+one, an unbound project's lines are unchanged, a stored claude-code text with no `claude` command word
+prints as stored with a sentence naming the directory, and another CLI's text never gets it.
+`launch-text set` refuses any text containing `CLAUDE_CONFIG_DIR`, so strip the prefix from a line copied
+from `show` before setting it. `task register-session` and `task drive --direct-launch` record the
+session's account on `InteractiveSessionStarted` (a connection, the default, or unrecognized, never a
+path), and `task drive` offers a resume only when it equals the project's current binding; otherwise it
+prints the fresh line with a sentence saying the conversation lives under another account. After a
+rebind, a step-in or resume line for a session started before it (a plan's discovery session included,
+since plans record no account) will not find its conversation, and the recipe should be regenerated,
+because the generator writes the prefix into its scoped lines once. Windows on different accounts cannot
+discover or message each other (a Claude Code limit); the courier runs on its project's account, so it
+still reaches that project's window. A bare `claude` typed in a project folder is outside Hall9k. Log a
+directory in by hand with `CLAUDE_CONFIG_DIR=~/.claude-alt claude`, then `/login`. Registry reads follow
+the variable: the anchor and `register-session` read `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/`.
+
 The platform never authors a card's *content*: issue types, required fields and routing rules are
 the organisation's configuration, so `push-to-jira` dispatches a session into the project's own
 repository, where its card-authoring skills live, to work out what the card should look like — but
