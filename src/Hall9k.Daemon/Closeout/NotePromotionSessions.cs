@@ -251,7 +251,9 @@ public sealed class NotePromotionSessions(
                 {
                     TaskId = task.Id,
                     SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.NotePromoter),
-                    Account = await ClaudeAccountResolution.ForTaskAsync(store, task.Id, cancellationToken),
+                    // The merged run's frozen account, not the project's binding now: the session's tokens are
+                    // recorded on that run's stream, and the spend split reads them as that account's.
+                    Account = await ClaudeAccountResolution.ForRunAsync(store, runId, cancellationToken),
                 }, cancellationToken);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)

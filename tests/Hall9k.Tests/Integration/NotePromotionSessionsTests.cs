@@ -3,6 +3,7 @@ using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Project;
@@ -170,6 +171,35 @@ public sealed class NotePromotionSessionsTests : IClassFixture<PostgresFixture>,
         spawn.Prompt.Should().Contain("Bound the limiter").And.Contain(DomainId.Short(note));
         spawn.Prompt.Should().NotContain("the limiter resets per window", "the criteria are not part of what the step is shown")
             .And.NotContain("Some further context for the task.");
+    }
+
+    [Fact]
+    public async Task The_session_runs_under_the_account_the_merged_run_froze_at_dispatch_not_the_projects_binding_now()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seed seed = await SeedAsync(cts.Token);
+        Guid frozen = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Store(new ConnectionDetails
+            {
+                Id = frozen,
+                Provider = WorkItemProvider.ClaudeCode,
+                ExternalAccountId = "/Users/someone/.claude-frozen",
+                RegisteredAt = Now,
+            });
+            // The project is bound to the default login now; the run was dispatched while it was bound to this connection.
+            session.Events.Append(seed.RunId, new RunClaudeCodeAccountRecorded(seed.RunId, frozen, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await AddNoteAsync(seed, "a note worth reading", Now, cancellationToken: cts.Token);
+        ScriptedExecutor executor = new("NONE");
+
+        await Sessions(executor).PromoteAsync(seed.TaskId, seed.RunId, seed.ProjectId, cts.Token);
+
+        executor.Spawns.Should().ContainSingle().Which.Account.ConnectionId.Should().Be(
+            frozen, "its tokens are recorded on the merged run's stream, which the spend split reads as the frozen account's");
     }
 
     [Theory]
