@@ -109,15 +109,17 @@ State what you actually saw, not a rule you inferred from it — a pattern in fi
 standing policy, and this skill does not mint one (see *Never invent a standing rule* below).
 
 **The Claude Code account (project mode only).** `h9k project show <name>` also says whether the
-project is bound to a Claude Code account on this node, naming the account's email but not its
-directory. For a bound project, run `h9k orchestrator launch-text show --cli claude-code --project
-<name>` and find the account prefix on the window line it prints: the platform puts it immediately
-before `claude`, as `CLAUDE_CONFIG_DIR='<dir>' ` on POSIX (through the space before `claude`) or as
-`$env:CLAUDE_CONFIG_DIR='<dir>'; ` in PowerShell (through the space after the `;`). Keep that prefix
-exactly as printed, character for character, and never compose it yourself: the platform's quoting
-of the directory is what makes the line parse, and the directory is not printed anywhere else. Write
-it immediately before `claude` in every scoped spawn line, fresh-start fallback line, and step-in line
-you generate (*Spawning a scoped session* below). For an unbound project `show` prints no prefix, and
+project is bound to a Claude Code account on this node, naming the account and its directory as
+recorded. For a bound project, run `h9k orchestrator launch-text show --cli claude-code --project
+<name>` and find the account on the window line it prints. On POSIX it is a prefix immediately before
+`claude`, `CLAUDE_CONFIG_DIR='<dir>' ` (through the space before `claude`). In PowerShell it is a
+wrapper around the statement holding `claude`: `try { $env:CLAUDE_CONFIG_DIR='<dir>'; ` before it and
+` } finally { Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction Ignore }` after it, so the variable is
+cleared again once `claude` exits and never leaks into a later line pasted in the same shell. Keep
+those pieces exactly as printed, character for character, and never compose them yourself: the
+platform's quoting of the directory on that line is what makes it parse, which `project show`'s
+plain directory does not give you. Put them around `claude` the same way in every scoped spawn line,
+fresh-start fallback line, and step-in line you generate (*Spawning a scoped session* below). For an unbound project `show` prints no prefix, and
 you write those lines unchanged. A rebind later leaves these recipe lines stale, which is why the
 platform's docs say to regenerate the recipe after a binding changes.
 
@@ -654,9 +656,10 @@ line.
 The launch line in step 2, the fresh-start fallback in step 3, and the step-in line in step 4 all
 follow the same rules: `--model` and `--effort` are always explicit, the model id is always
 single-quoted, and `;` replaces `&&` between the `cd` and the launch wherever the operator's shell
-is PowerShell. For a bound project, each of the three carries the account prefix you copied in
-*The Claude Code account* above, immediately before `claude` (so `cd "<dir>" && CLAUDE_CONFIG_DIR='<dir>'
-claude ...`, or `cd "<dir>"; $env:CLAUDE_CONFIG_DIR='<dir>'; claude ...` in PowerShell); without it the
+is PowerShell. For a bound project, each of the three carries the account you copied in
+*The Claude Code account* above (so `cd "<dir>" && CLAUDE_CONFIG_DIR='<dir>' claude ...`, or
+`cd "<dir>"; try { $env:CLAUDE_CONFIG_DIR='<dir>'; claude ... } finally { Remove-Item
+Env:CLAUDE_CONFIG_DIR -ErrorAction Ignore }` in PowerShell); without it the
 session runs under whatever account the operator's terminal has, and a step-in line cannot find a
 conversation that started under the bound account. For an unbound project none of them carries one.
 None of the three is ever composed differently or left to inherit either flag from
@@ -1082,8 +1085,9 @@ ever need to restate. Instead, for each agent CLI discovery found installed:
   measure: store it explicitly, even when the discovered machine needs no change at all —
   `h9k orchestrator launch-text set --cli claude-code '<the exact line show just printed>'` (add
   `--project <name>` in project mode) — before moving on to *Finish* below. For a bound project,
-  first remove the account prefix (*The Claude Code account* above) from the line `show` printed,
-  exactly the characters you copied, and pass the line without it: `set` refuses any text containing
+  first remove the account (*The Claude Code account* above) from the line `show` printed, exactly
+  the characters you copied (in PowerShell both the `try { ...; ` before the statement and the
+  `finally` block after it), and pass the line without it: `set` refuses any text containing
   `CLAUDE_CONFIG_DIR`, because the platform adds the account when it prints the line, and the
   prefix's own single quotes are not ones the single-quote rule below should ever meet. `show` wraps its own
   output near 80 columns whenever stdout is not a TTY (*The machine* above), which is every
