@@ -113,12 +113,13 @@ public static class LaunchTextDefaults
         string openingMessage = resume
             ? string.Empty
             : $" {Quoted(launch.OpeningMessage)}";
-        return $"cd {Quoted(launch.WorktreePath)}{Separator(shell)} {AccountPrefix(launch.ConfigDirectory, shell)}claude {resumeArgument}"
+        string line = $"cd {Quoted(launch.WorktreePath)}{Separator(shell)} claude {resumeArgument}"
             + $"--name {Quoted(launch.SessionName)} "
             + $"--settings {Quoted(launch.SettingsFile)} "
             + skipPermissions
             + $"--append-system-prompt-file {Quoted(launch.AnchorFile)} "
             + $"--model {Quoted(launch.Model.Value)}{effort}{openingMessage}";
+        return WithAccount(line, launch.ConfigDirectory, shell);
     }
 
     /// <summary>
@@ -133,11 +134,14 @@ public static class LaunchTextDefaults
     /// login; a plan records no account, so a session started before a rebind will not be found under it.
     /// </remarks>
     public static string DiscoveryResumeLine(string checkout, Guid sessionId, LaunchShell shell, string? configDirectory = null) =>
-        $"cd \"{EscapeForDoubleQuotes(checkout, shell)}\"{Separator(shell)} {AccountPrefix(configDirectory, shell)}claude --resume {sessionId}";
+        WithAccount($"cd \"{EscapeForDoubleQuotes(checkout, shell)}\"{Separator(shell)} claude --resume {sessionId}", configDirectory, shell);
 
-    private static string AccountPrefix(string? configDirectory, LaunchShell shell) => configDirectory is null
-        ? string.Empty
-        : LaunchLineAccount.Prefix(configDirectory, shell);
+    /// <summary>
+    /// <paramref name="line"/> carrying <paramref name="configDirectory"/> on its claude command
+    /// (<see cref="LaunchLineAccount.Apply"/>), which a line composed here always has.
+    /// </summary>
+    private static string WithAccount(string line, string? configDirectory, LaunchShell shell) =>
+        LaunchLineAccount.Apply(line, configDirectory, shell) ?? line;
 
     private static string Separator(LaunchShell shell) => shell == LaunchShell.PowerShell
         ? ";"

@@ -24,6 +24,8 @@ public sealed class ClaudeCodeAccountLaunchLineTests
     private const string Directory = "/Users/me/.claude-alt";
     private const string QuotedDirectory = "/Users/me/it's/.claude-alt";
 
+    private const string Cleared = " } finally { Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction Ignore }";
+
     private static readonly Guid Session = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
     [Fact]
@@ -38,11 +40,12 @@ public sealed class ClaudeCodeAccountLaunchLineTests
     }
 
     [Fact]
-    public void The_default_window_line_sets_the_variable_before_claude_in_powershell()
+    public void The_default_window_line_sets_the_variable_for_the_claude_command_alone_in_powershell()
     {
         string line = Window(LaunchTextDefaults.Render("C:\\w", "hello", LaunchShell.PowerShell), "C:\\Users\\me\\.claude-alt", LaunchShell.PowerShell);
 
-        line.Should().StartWith("cd \"C:\\w\"; $env:CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-alt'; claude --strict-mcp-config ");
+        line.Should().StartWith("cd \"C:\\w\"; try { $env:CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-alt'; claude --strict-mcp-config ")
+            .And.EndWith($"\"hello\"{Cleared}");
     }
 
     [Fact]
@@ -54,7 +57,16 @@ public sealed class ClaudeCodeAccountLaunchLineTests
         Window("echo hi | claude -p", Directory, LaunchShell.Posix)
             .Should().Be($"echo hi | CLAUDE_CONFIG_DIR='{Directory}' claude -p");
         Window("cd /x; claude", Directory, LaunchShell.PowerShell)
-            .Should().Be($"cd /x; $env:CLAUDE_CONFIG_DIR='{Directory}'; claude");
+            .Should().Be($"cd /x; try {{ $env:CLAUDE_CONFIG_DIR='{Directory}'; claude{Cleared}");
+    }
+
+    [Fact]
+    public void A_powershell_text_has_the_whole_statement_holding_claude_wrapped_so_it_still_parses_and_chains()
+    {
+        Window("cd C:\\x && claude --y; echo done", Directory, LaunchShell.PowerShell)
+            .Should().Be($"try {{ $env:CLAUDE_CONFIG_DIR='{Directory}'; cd C:\\x && claude --y{Cleared}; echo done");
+        Window("echo hi | claude -p 'a; b' # note", Directory, LaunchShell.PowerShell)
+            .Should().Be($"try {{ $env:CLAUDE_CONFIG_DIR='{Directory}'; echo hi | claude -p 'a; b'{Cleared} # note");
     }
 
     [Fact]
@@ -64,7 +76,7 @@ public sealed class ClaudeCodeAccountLaunchLineTests
         string powerShell = Window("cd \"C:\\claude `\" x\"; claude --x", Directory, LaunchShell.PowerShell);
 
         posix.Should().Be($"cd \"/repos/claude\" && echo 'a; claude' && CLAUDE_CONFIG_DIR='{Directory}' claude --x");
-        powerShell.Should().Be($"cd \"C:\\claude `\" x\"; $env:CLAUDE_CONFIG_DIR='{Directory}'; claude --x");
+        powerShell.Should().Be($"cd \"C:\\claude `\" x\"; try {{ $env:CLAUDE_CONFIG_DIR='{Directory}'; claude --x{Cleared}");
     }
 
     [Fact]
@@ -81,7 +93,7 @@ public sealed class ClaudeCodeAccountLaunchLineTests
         LaunchLineAccount.Prefix(QuotedDirectory, LaunchShell.Posix)
             .Should().Be("CLAUDE_CONFIG_DIR='/Users/me/it'\\''s/.claude-alt' ");
         LaunchLineAccount.Prefix(QuotedDirectory, LaunchShell.PowerShell)
-            .Should().Be("$env:CLAUDE_CONFIG_DIR='/Users/me/it''s/.claude-alt'; ");
+            .Should().Be("try { $env:CLAUDE_CONFIG_DIR='/Users/me/it''s/.claude-alt'; ");
     }
 
     [Fact]
@@ -93,6 +105,17 @@ public sealed class ClaudeCodeAccountLaunchLineTests
         printed.Line.Should().Be("my-wrapper --start");
         printed.Notice.Should().Be(LaunchLineAccount.NoCommandWordNotice(Directory));
         printed.Notice.Should().Contain("does not carry the project's Claude Code account").And.Contain(Directory);
+    }
+
+    [Fact]
+    public void A_bound_stored_text_that_already_names_the_variable_is_printed_unchanged_with_a_notice_saying_so()
+    {
+        PrintedLaunchLine printed = LaunchLineAccount.ForWindow(
+            new LaunchText(LaunchText.DefaultCli, "cd /h && CLAUDE_CONFIG_DIR=~/.claude-old claude --x"), Directory, LaunchShell.Posix);
+
+        printed.Line.Should().Be("cd /h && CLAUDE_CONFIG_DIR=~/.claude-old claude --x");
+        printed.Notice.Should().Be(LaunchLineAccount.StoredAccountNotice(Directory));
+        printed.Notice.Should().Contain("sets CLAUDE_CONFIG_DIR itself").And.Contain(Directory).And.Contain("launch-text set");
     }
 
     [Fact]
@@ -127,7 +150,8 @@ public sealed class ClaudeCodeAccountLaunchLineTests
 
         resumed.Line.Should().StartWith($"cd \"/wt/task\" && CLAUDE_CONFIG_DIR='{Directory}' claude --resume {Session} ");
         resumed.FreshFallbackLine.Should().StartWith($"cd \"/wt/task\" && CLAUDE_CONFIG_DIR='{Directory}' claude --name ");
-        gate.Line.Should().StartWith($"cd \"/wt/task\"; $env:CLAUDE_CONFIG_DIR='{Directory}'; claude --name ");
+        gate.Line.Should().StartWith($"cd \"/wt/task\"; try {{ $env:CLAUDE_CONFIG_DIR='{Directory}'; claude --name ")
+            .And.EndWith($"\"Drive it.\"{Cleared}");
     }
 
     [Fact]
@@ -136,7 +160,7 @@ public sealed class ClaudeCodeAccountLaunchLineTests
         LaunchTextDefaults.DiscoveryResumeLine("/p", Session, LaunchShell.Posix, QuotedDirectory)
             .Should().Be($"cd \"/p\" && CLAUDE_CONFIG_DIR='/Users/me/it'\\''s/.claude-alt' claude --resume {Session}");
         LaunchTextDefaults.DiscoveryResumeLine("C:\\p", Session, LaunchShell.PowerShell, QuotedDirectory)
-            .Should().Be($"cd \"C:\\p\"; $env:CLAUDE_CONFIG_DIR='/Users/me/it''s/.claude-alt'; claude --resume {Session}");
+            .Should().Be($"cd \"C:\\p\"; try {{ $env:CLAUDE_CONFIG_DIR='/Users/me/it''s/.claude-alt'; claude --resume {Session}{Cleared}");
     }
 
     [Fact]
@@ -206,12 +230,17 @@ public sealed class ClaudeCodeAccountLaunchLineTests
         storeAsShown.Should().Throw<DomainValidationException>();
 
         string withoutPrefix = shown.Replace(LaunchLineAccount.Prefix(QuotedDirectory, shell), string.Empty, StringComparison.Ordinal);
+        if (LaunchLineAccount.Suffix(shell) is { Length: > 0 } suffix)
+        {
+            withoutPrefix = withoutPrefix.Replace(suffix, string.Empty, StringComparison.Ordinal);
+        }
+
         LaunchLineAccount.RefuseStoredAccount(withoutPrefix);
         LaunchText stored = OrchestratorLaunchTextResolution.WithText([], LaunchText.DefaultCli, withoutPrefix).Single();
         string shownAgain = LaunchLineAccount.ForWindow(stored, QuotedDirectory, shell).Line;
 
         shownAgain.Should().Be(shown);
-        CountOf(shownAgain, "CLAUDE_CONFIG_DIR").Should().Be(1);
+        CountOf(shownAgain, LaunchLineAccount.Prefix(QuotedDirectory, shell)).Should().Be(1);
     }
 
     [Fact]
