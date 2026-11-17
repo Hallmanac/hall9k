@@ -1,0 +1,43 @@
+hall9k-task-record: 1
+task-id: 01a1ea3a-1395-73df-9d25-a6d4d3920997
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#887
+objective: h9k config show splits the period's recorded spend by the Claude Code account each run on this node was frozen on, so each subscription's run usage can be read on its own, with everything it cannot attribute shown as one unattributed line
+criteria:
+  - |-
+    `h9k config show` prints, beneath the existing spend summary and by-model lines, one line per Claude Code account with spend this period: the default login and each claude-code connection, each named by `ClaudeCodeAccount.Describe()` (the default login as "the default Claude Code login", and a connection as its observed email followed by its directory). It always prints one unattributed line, even when that line is zero, and the account lines plus the unattributed line add up to the summary's total.
+  - Every input token a run recorded on its own stream, counted the way the summary counts it (fresh input plus cache reads plus cache writes), counts toward the account that run recorded at dispatch, even when its project has been rebound since. Spend from a run with no account record on this node, and all spend recorded outside a run (plan, card publication, challenge, feedback, and courier sessions, and purged-project records), counts as unattributed, and the output says in words what the unattributed line holds.
+  - |-
+    `PeriodSpend`'s total and by-model breakdown are unchanged, and so is every surface that reads them: the summary and by-model lines of `h9k config show`, `h9k status`, `h9k project show`, the plan launch gate, and the spend gates in the dispatcher, the plan engine, and auto-pr-review. The account split is computed only when `h9k config show` runs, never inside the read those gates share.
+  - |-
+    The change only reads: it adds no event type and no field to an existing event, so no directory, email, or connection id reaches a replicating event.
+  - Tests over recorded events cover runs frozen on two different claude-code connections, a run frozen on the default login, a run with no account record, and spend recorded outside a run, and assert each account line, the unattributed line, and that they sum to the total.
+  - The docs that describe `h9k config show`'s spend lines (docs/getting-started.md and the spend paragraph in docs/scope.md) say the account split exists and what the unattributed line holds.
+  - No test creates a branch, touches a remote, or calls GitHub.
+dependencies: [01a1ea38-fcb0-706a-b280-ffc4d5c94f15]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/d3920997-h9k-config-show-splits-the-per
+published: 2026-11-17 19:20:04Z
+context: |-
+  ## Why
+
+  With some projects bound to an alternate Claude Code account, the operator wants each subscription's usage visible on its own. The account binding, the per-run freeze, and the claude-code connection all shipped with the dependency (now Done), so this task only reads what is already recorded.
+
+  ## What the code has (at d87a1dfd7)
+
+  - `src/Hall9k.Domain/Features/Run/PeriodSpend.cs` sums `TokensRecorded`, `PublicationTokensRecorded`, `CourierTokensRecorded`, `PlanTokensRecorded`, and `PurgedSpendRecord` since the period start, grouped by model only. The dispatcher, the plan engine, auto-pr-review, and four CLI commands all read it, so leave it unchanged and compute the split in a separate read that only `h9k config show` calls. `TokensRecorded.Id` is the run id at every place it is recorded, so the data-only read already has what the join needs.
+  - `src/Hall9k.Cli/Commands/SpendPressure.cs` shapes the lines; `ByModelLines` is shared by `h9k status` and `h9k config show` (`ConfigShowCommand.SpendLinesAsync`). The account lines belong to `config show` only.
+  - `RunClaudeCodeAccountRecorded` (`src/Hall9k.Domain/Features/Run/Events/`) is node-scoped and rides the run stream; `ConnectionId` null means the default login. `RunDetails.ClaudeCodeAccountRecorded` and `ClaudeCodeConnectionId` project it, and `ClaudeCodeAccountBinding.ForRun` reads them. Join a run's `TokensRecorded` to its own stream's record; a run with no record on this node is unattributed, not defaulted (`ForRun` treats it as the default login for spawning, which is right for spawning and wrong for reporting).
+  - `ConnectionDetails.ClaudeCodeEmail` and `ClaudeCodeAccount.For(...).Describe()` give the label. A directory printed to this node's own terminal is fine; it must never reach an event.
+
+  ## What lands in unattributed, and why
+
+  - `TokensRecorded` is project-scoped and replicates, so the period total already includes teammates' runs. Their freeze record is node-scoped and never arrives here, so their runs are unattributed. So are this node's runs dispatched before the freeze existed.
+  - Sessions outside a run (plan refinement and discovery, challenges, card publication, feedback steps, couriers) do spawn under an account, but none of their token events records which. Recording that is a separate follow-up and is deliberately not in this task.
+  - A few sessions on a run stream (lesson picking, blocker context, note promotion) spawn under the project's current binding rather than the frozen one. Counting them toward the run's frozen account is the accepted approximation; they differ only after a mid-run rebind.
+
+  Public records: never name another project, organization, or person.
