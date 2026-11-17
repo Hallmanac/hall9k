@@ -1260,7 +1260,12 @@ current period's recorded spend, summed live from every session's own token usag
 stored counter, meets the budget, the dispatcher declines to claim further queued work until the
 period rolls — never killing or parking work already running. Unset means unbudgeted, and `h9k
 status`/`h9k config show` show the current period's own recorded spend, by model, whether or not a
-budget is set.
+budget is set. `h9k config show` also splits it by the Claude Code account each run on this node was
+frozen on at dispatch, one line per account, plus one unattributed line it always prints: runs from
+other nodes (whose account record never leaves the node that ran them), runs dispatched before
+accounts were recorded, and every session outside a run (plans, card publication, challenges,
+feedback steps, couriers, and purged projects' records), whose token events do not say which
+account they spawned under. The split is read only by that command; no spend gate reads it.
 
 Within the project the rotation and its tier hand a free slot to, which of that project's own
 ready tasks actually takes it is decided by rank before assignment age (Decisions Log
