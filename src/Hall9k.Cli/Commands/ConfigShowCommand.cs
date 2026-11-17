@@ -1,7 +1,9 @@
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Connectors.Releases;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -235,15 +237,75 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
         try
         {
             using DocumentStore store = CliStore.Open();
-            await using IQuerySession session = store.QuerySession();
-            SpendPressure spend = await SpendPressure.ReadAsync(session, report, DateTimeOffset.UtcNow, cancellationToken);
-            return [spend.SummaryLine, .. spend.ByModelLines];
+            await using SpendSnapshot snapshot = await SpendSnapshot.OpenAsync(
+                store, CliConfig.ConnectionString, cancellationToken);
+            SpendPressure spend = await SpendPressure.ReadAsync(
+                snapshot.Session, report, DateTimeOffset.UtcNow, cancellationToken);
+            IReadOnlyList<string> accountLines = await AccountSpendLinesAsync(
+                snapshot.Session, spend.PeriodStart, spend.SpentTokens, cancellationToken);
+            return [spend.SummaryLine, .. spend.ByModelLines, .. accountLines];
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return [$"spend this period: unavailable ({exception.Message})"];
         }
     }
+
+    /// <summary>
+    /// The account lines for the period <paramref name="periodStart"/> opens, split from
+    /// <paramref name="periodTotal"/>, read on the same snapshot the total was read on so the lines add up to
+    /// it. Degrades to one line of its own when the read fails, so the summary and by-model lines already read
+    /// above it still print.
+    /// </summary>
+    internal static async Task<IReadOnlyList<string>> AccountSpendLinesAsync(
+        IQuerySession session, DateTimeOffset periodStart, long periodTotal, CancellationToken cancellationToken)
+    {
+        try
+        {
+            PeriodSpendByAccount byAccount = await PeriodSpendByAccount.ReadAsync(
+                session, periodStart, periodTotal, cancellationToken);
+            Guid[] connectionIds = [.. byAccount.ByAccount
+                .Select(entry => entry.ConnectionId)
+                .OfType<Guid>()];
+            IReadOnlyList<ConnectionDetails> connections = connectionIds.Length == 0
+                ? []
+                : await session.LoadManyAsync<ConnectionDetails>(cancellationToken, connectionIds);
+            return AccountSpendLines(byAccount, connections);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return [$"by Claude Code account: unavailable ({exception.Message})"];
+        }
+    }
+
+    /// <summary>
+    /// The period's spend by the Claude Code account each run on this node was frozen on, then one
+    /// unattributed line that is always printed, so the lines add up to the summary's total. Shown on this
+    /// node's own terminal only: a connection's directory is printed here and never recorded anywhere.
+    /// </summary>
+    internal static IReadOnlyList<string> AccountSpendLines(
+        PeriodSpendByAccount byAccount, IReadOnlyList<ConnectionDetails> connections)
+    {
+        Dictionary<Guid, ConnectionDetails> connectionsById = connections.ToDictionary(connection => connection.Id);
+        return
+        [
+            "by Claude Code account (runs on this node, by the account each was dispatched under):",
+            .. byAccount.ByAccount.Select(entry =>
+                $"  {DescribeAccount(entry.ConnectionId, connectionsById)}: {entry.TotalInputTokens:N0} tokens"),
+            $"  unattributed (other nodes' runs, runs dispatched before accounts were recorded, and spend outside "
+                + $"a run: plans, card publication, challenges, feedback, couriers, purged projects): "
+                + $"{byAccount.UnattributedInputTokens:N0} tokens",
+        ];
+    }
+
+    private static string DescribeAccount(Guid? connectionId, IReadOnlyDictionary<Guid, ConnectionDetails> connectionsById) =>
+        connectionId switch
+        {
+            null => ClaudeCodeAccount.Default.Describe(),
+            { } id when connectionsById.TryGetValue(id, out ConnectionDetails? connection)
+                => ClaudeCodeAccount.For(connection).Describe(),
+            { } id => $"a claude-code connection no longer recorded on this node ({id})",
+        };
 
     /// <summary>
     /// Whether any setting in <paramref name="report"/> resolved from an environment variable —

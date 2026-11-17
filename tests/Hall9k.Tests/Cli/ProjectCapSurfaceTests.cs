@@ -242,7 +242,8 @@ public sealed class ProjectCapSurfaceTests
         Period: SpendPeriod.Week.Value,
         BudgetIsEnforced: true,
         ConfiguredBudgetTokens: 500_000,
-        ConfiguredPeriod: SpendPeriod.Week.Value);
+        ConfiguredPeriod: SpendPeriod.Week.Value,
+        PeriodStart: new DateTimeOffset(2026, 8, 31, 0, 0, 0, TimeSpan.Zero));
 
     /// <summary>One queued row of project 'alpha', against a stated node and project measurement.</summary>
     private static TaskStatusRow Compose(int? cap, int projectLiveRuns, int nodeLiveRuns, int nodeCeiling) =>

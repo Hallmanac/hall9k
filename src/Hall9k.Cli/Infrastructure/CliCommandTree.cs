@@ -955,7 +955,10 @@ public static class CliCommandTree
                     "The effective operating settings right now, and where each one came from: an environment "
                     + "variable, the platform config file, or the built-in default — the same precedence "
                     + "DaemonOptions binds by at daemon startup. --interactive-claim-stale-after-days is read "
-                    + "straight from the file instead; it binds nothing at daemon startup.")
+                    + "straight from the file instead; it binds nothing at daemon startup. Beneath the settings "
+                    + "it prints this period's recorded spend, by model and then by the Claude Code account each "
+                    + "run on this node was dispatched under, with one unattributed line for other nodes' runs, "
+                    + "older runs, and sessions outside a run.")
                 .WithExample("config", "show");
             operatingSettings.AddCommand<ConfigSetCommand>("set")
                 .WithDescription(
