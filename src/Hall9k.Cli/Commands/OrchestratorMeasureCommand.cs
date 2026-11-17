@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using System.Text.RegularExpressions;
+using Hall9k.Cli.ClaudeCode;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -65,8 +67,13 @@ public sealed class OrchestratorMeasureCommand : Hall9kAsyncCommand<Orchestrator
                 ?? throw new DomainValidationException(
                     $"No launch text for '{settings.Cli}' to measure. Set one first: h9k orchestrator launch-text set --cli {settings.Cli} \"<command>\" --project {details.Name}");
 
+            // The probe is a claude process started for this project, so it runs under the project's bound
+            // account and is refused, with nothing recorded, when that account's check fails.
+            ClaudeCodeAccount account = await CliClaudeAccount.ForProjectAsync(session, details, cancellationToken);
+            await CliClaudeAccount.EnsureUsableAsync(account, cancellationToken);
+
             int tokens = await OrchestratorMeasureProbe.RunAsync(
-                workingDirectory, AnchorPathIn(resolved.Text), SettingsPathIn(resolved.Text), cancellationToken);
+                workingDirectory, AnchorPathIn(resolved.Text), SettingsPathIn(resolved.Text), account, cancellationToken);
 
             // Re-loaded fresh rather than reused from the aggregate loaded above: the probe just
             // blocked for up to OrchestratorMeasureProbe's own timeout, and building the write
@@ -110,7 +117,8 @@ public sealed class OrchestratorMeasureCommand : Hall9kAsyncCommand<Orchestrator
                 $"No launch text for '{settings.Cli}' to measure. Set one first: h9k orchestrator launch-text set --cli {settings.Cli} \"<command>\"");
 
         int nodeTokens = await OrchestratorMeasureProbe.RunAsync(
-            OrchestratorRecipeContext.NodeWorkingDirectory, AnchorPathIn(nodeResolved.Text), SettingsPathIn(nodeResolved.Text), cancellationToken);
+            OrchestratorRecipeContext.NodeWorkingDirectory, AnchorPathIn(nodeResolved.Text), SettingsPathIn(nodeResolved.Text),
+            ClaudeCodeAccount.Default, cancellationToken);
 
         // Re-read fresh for the same reason as the project branch above: the probe just blocked
         // for up to OrchestratorMeasureProbe's own timeout, and WithMeasurement itself refuses to

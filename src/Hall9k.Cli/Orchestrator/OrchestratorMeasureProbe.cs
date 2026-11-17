@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Hall9k.Connectors.ClaudeCode;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Cli.Orchestrator;
@@ -27,9 +29,13 @@ public static class OrchestratorMeasureProbe
     /// <summary>
     /// Runs the probe against <paramref name="workingDirectory"/> using the anchor and settings
     /// files already generated there, and returns the observed turn-one input token total.
+    /// <paramref name="account"/> is the Claude Code account the probe runs under, already checked by
+    /// the caller: a bound account's directory is set as <c>CLAUDE_CONFIG_DIR</c>, and the default
+    /// account removes any inherited value.
     /// </summary>
     public static async Task<int> RunAsync(
-        string workingDirectory, string anchorRelativePath, string settingsRelativePath, CancellationToken cancellationToken)
+        string workingDirectory, string anchorRelativePath, string settingsRelativePath, ClaudeCodeAccount account,
+        CancellationToken cancellationToken)
     {
         if (!Directory.Exists(workingDirectory))
         {
@@ -43,13 +49,20 @@ public static class OrchestratorMeasureProbe
                 $"The measurement probe's working directory does not exist: {workingDirectory}");
         }
 
-        ProcessStartInfo startInfo = new("claude")
+        // A bound account runs the same binary its check ran (HALL9K_CLAUDE_PATH, else claude on the PATH), so the
+        // account the probe was checked under is the one it runs under. The default login was never checked, so
+        // it keeps the probe's own command line: claude on the PATH.
+        string binary = account.IsDefault
+            ? "claude"
+            : ClaudeCodeBinary.Resolve();
+        ProcessStartInfo startInfo = new(binary)
         {
             WorkingDirectory = workingDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+        ClaudeCodeEnvironment.Apply(startInfo.Environment, account);
         startInfo.ArgumentList.Add("--strict-mcp-config");
         startInfo.ArgumentList.Add("--setting-sources");
         startInfo.ArgumentList.Add("project");

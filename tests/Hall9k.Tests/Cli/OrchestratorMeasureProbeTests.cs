@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Cli.Orchestrator;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Shared.Exceptions;
 using Xunit;
 
@@ -51,7 +52,7 @@ public sealed class OrchestratorMeasureProbeTests
         // after the wrong problem (independent pre-PR review, cycle 3, adversarial lens).
         string missing = Path.Combine(Path.GetTempPath(), $"does-not-exist-{Guid.NewGuid():N}");
 
-        Func<Task> act = () => OrchestratorMeasureProbe.RunAsync(missing, "recipes/launch-anchor.md", "recipes/settings.json", CancellationToken.None);
+        Func<Task> act = () => OrchestratorMeasureProbe.RunAsync(missing, "recipes/launch-anchor.md", "recipes/settings.json", ClaudeCodeAccount.Default, CancellationToken.None);
 
         await act.Should().ThrowAsync<DomainValidationException>().WithMessage("*does not exist*");
     }
