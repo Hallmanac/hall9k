@@ -843,7 +843,10 @@ public static class CliCommandTree
                 + "for over an hour under a live window. When a project tracks "
                 + "its backlog in Jira, or has a Linear team bound, it also probes that connection, "
                 + "telling no connection, a rejected key, and a probe that could not confirm either "
-                + "apart; a failure there does not stop the rest of the run.")
+                + "apart; a failure there does not stop the rest of the run. Its Claude Code accounts section "
+                + "checks each bound claude-code connection, and warns when the running daemon's environment or "
+                + "doctor's own shell carries CLAUDE_CONFIG_DIR, which every session started under the default "
+                + "login ignores, naming the fix.")
             .WithExample("doctor")
             .WithExample("doctor", "--yes")
             .WithExample("doctor", "--yes", "--no-configure");

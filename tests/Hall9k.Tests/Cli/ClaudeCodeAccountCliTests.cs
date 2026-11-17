@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
@@ -282,5 +283,126 @@ public sealed class ClaudeCodeAccountCliTests
         ]);
 
         warnings.Should().ContainSingle().Which.Should().Contain("split").And.Contain("second on default");
+    }
+
+    // ---- CLAUDE_CONFIG_DIR in the daemon's environment and in doctor's own shell ----
+
+    private static readonly DaemonProcessDescriptor RunningDaemon = new(4242, DateTimeOffset.Parse("2026-11-17T10:00:00Z"));
+
+    private static bool Alive(int processId, DateTimeOffset startedAt) =>
+        processId == RunningDaemon.ProcessId && startedAt == RunningDaemon.StartedAt;
+
+    private static bool Dead(int processId, DateTimeOffset startedAt) => false;
+
+    private static readonly Func<string, string?> ShellWithVariable =
+        name => name == ClaudeConfigDirectory.Variable ? "/Users/dev/.claude-shell" : null;
+
+    private static readonly Func<string, string?> ShellWithout = _ => null;
+
+    private static DaemonPidRecord Record(string? inherited) => new(RunningDaemon, new DaemonInheritedEnvironment(inherited));
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task The_doctor_warns_when_the_running_daemon_inherited_the_variable_whatever_its_own_shell_carries(bool shellCarries)
+    {
+        IReadOnlyList<string> lines = await DoctorLinesAsync(
+            [], Record("/Users/dev/.claude-daemon"), Alive, shellCarries ? ShellWithVariable : ShellWithout);
+
+        lines.Where(line => line.Contains("h9kd")).Should().ContainSingle()
+            .Which.Should().Contain("[yellow]").And.Contain("/Users/dev/.claude-daemon")
+            .And.Contain("regardless of that value").And.Contain("runs under its own connection's directory")
+            .And.Contain("h9k connection add claude-code --config-dir \"/Users/dev/.claude-daemon\"")
+            .And.Contain("h9k project set <project> --claude-code-account <connection>")
+            .And.Contain("restart the daemon");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task The_daemon_warning_stays_silent_when_it_inherited_none_exited_or_never_ran_whatever_the_shell_carries(bool shellCarries)
+    {
+        Func<string, string?> shell = shellCarries ? ShellWithVariable : ShellWithout;
+
+        foreach ((DaemonPidRecord? record, Func<int, DateTimeOffset, bool> isAlive) in new (DaemonPidRecord?, Func<int, DateTimeOffset, bool>)[]
+        {
+            (Record(null), Alive),
+            (Record("/Users/dev/.claude-daemon"), Dead),
+            (new DaemonPidRecord(RunningDaemon, null), Dead),
+            (null, Alive),
+        })
+        {
+            IReadOnlyList<string> lines = await DoctorLinesAsync([], record, isAlive, shell);
+            lines.Should().NotContain(line => line.Contains("h9kd"));
+            lines.Should().HaveCount(shellCarries ? 2 : 0, "only the shell's own warning, under its header, may print");
+        }
+    }
+
+    [Fact]
+    public void The_doctor_says_it_cannot_tell_for_a_running_daemon_that_left_no_record()
+    {
+        ClaudeCodeDoctor.DaemonConfigDirectoryLines(new DaemonPidRecord(RunningDaemon, null), Alive).Should().ContainSingle()
+            .Which.Should().Contain("[yellow]").And.Contain("cannot tell").And.Contain("Restart the daemon");
+    }
+
+    [Fact]
+    public void The_doctor_warns_when_its_own_shell_carries_the_variable_and_not_when_it_is_absent_or_empty()
+    {
+        ClaudeCodeDoctor.ShellConfigDirectoryLines(ShellWithVariable).Should().ContainSingle()
+            .Which.Should().Contain("/Users/dev/.claude-shell").And.Contain("is set in this shell")
+            .And.Contain("h9k task start").And.Contain("h9k orchestrator measure")
+            .And.Contain("regardless of it").And.Contain("pasted into this shell")
+            .And.Contain("a daemon started directly from this shell inherits").And.Contain("Unset it");
+        ClaudeCodeDoctor.ShellConfigDirectoryLines(ShellWithout).Should().BeEmpty();
+        ClaudeCodeDoctor.ShellConfigDirectoryLines(name => name == ClaudeConfigDirectory.Variable ? "" : null).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Both_warnings_print_on_a_node_with_no_claude_code_connection_recorded()
+    {
+        IReadOnlyList<string> lines = await DoctorLinesAsync([], Record("/Users/dev/.claude-daemon"), Alive, ShellWithVariable);
+
+        lines.Should().HaveCount(3);
+        lines[0].Should().Contain("Claude Code accounts");
+        lines[1].Should().Contain("h9kd").And.Contain("/Users/dev/.claude-daemon");
+        lines[2].Should().Contain("/Users/dev/.claude-shell").And.Contain("is set in this shell");
+    }
+
+    [Fact]
+    public async Task The_section_prints_nothing_on_a_node_with_no_connection_and_nothing_to_warn_about()
+    {
+        (await DoctorLinesAsync([], Record(null), Alive, ShellWithout)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Both_warnings_print_ahead_of_a_recorded_connections_check()
+    {
+        ConnectionDetails connection = ClaudeCode();
+        IReadOnlyList<string> lines = await DoctorLinesAsync([connection], Record("/Users/dev/.claude-daemon"), Alive, ShellWithVariable);
+
+        lines.Should().HaveCount(4);
+        lines[1].Should().Contain("h9kd");
+        lines[2].Should().Contain("is set in this shell");
+        lines[3].Should().Contain("no project is bound to it");
+    }
+
+    private static async Task<IReadOnlyList<string>> DoctorLinesAsync(
+        IReadOnlyList<ConnectionDetails> connections,
+        DaemonPidRecord? record,
+        Func<int, DateTimeOffset, bool> isAlive,
+        Func<string, string?> shell)
+    {
+        List<string> lines = [];
+        await ClaudeCodeDoctor.WriteAsync(
+            new ClaudeCodeDoctorInputs(
+                connections,
+                [],
+                record,
+                isAlive,
+                shell,
+                (account, token) => Checker(new FakeProbe(LoggedIn)).CheckAsync(account, reusePass: false, token).AsTask()),
+            lines.Add,
+            CancellationToken.None);
+        return lines;
     }
 }
