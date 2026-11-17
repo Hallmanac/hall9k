@@ -298,9 +298,14 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   ```
 
 - **The shape of spend.** Prints the current period's recorded spend, by model, whether or not a
-  budget is set; a node-level budget paces dispatch rather than reducing total spend. `h9k status`
-  prints a throughput block right beneath it, for the same period: tasks merged, median and p90
-  claim-to-merge, first-pass merge share, laps per merged task, and the share of task time spent
+  budget is set; a node-level budget paces dispatch rather than reducing total spend. `h9k config
+  show` also splits that spend by Claude Code account: one line for each account a run on this node
+  ran under (the default login, or a claude-code connection by its email and directory), and one
+  unattributed line, always printed, for everything it cannot place. That covers other nodes' runs,
+  runs dispatched before accounts were recorded, and spend outside a run (plans, card publication,
+  challenges, feedback, couriers, and purged projects), so the lines add up to the total. Beneath its
+  own spend lines, `h9k status` prints a throughput block for the same period: tasks merged, median
+  and p90 claim-to-merge, first-pass merge share, laps per merged task, and the share of task time spent
   queued or waiting on a human — held back for a plain count under five merged tasks, rather than a
   median of two. `h9k project show` prints the same block scoped to its own project, current
   period beside the previous one.
