@@ -137,6 +137,14 @@ public static class LaunchTextDefaults
         WithAccount($"cd \"{EscapeForDoubleQuotes(checkout, shell)}\"{Separator(shell)} claude --resume {sessionId}", configDirectory, shell);
 
     /// <summary>
+    /// The start command a paste handoff (<c>h9k task drive --print-prompt</c>, <c>h9k pr review</c>) prints for a
+    /// bound project: <c>claude --settings</c> on the handoff's settings file, quoted as <see cref="TaskDriveLine"/>
+    /// quotes it, carrying <paramref name="configDirectory"/> the way every printed line does.
+    /// </summary>
+    public static string HandoffStartLine(string settingsFile, string configDirectory, LaunchShell shell) =>
+        WithAccount($"claude --settings \"{EscapeForDoubleQuotes(settingsFile, shell)}\"", configDirectory, shell);
+
+    /// <summary>
     /// <paramref name="line"/> carrying <paramref name="configDirectory"/> on its claude command
     /// (<see cref="LaunchLineAccount.Apply"/>), which a line composed here always has.
     /// </summary>

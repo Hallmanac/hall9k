@@ -117,8 +117,10 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         [Description(
             "Print the starting prompt to paste into a Claude Code session you start yourself, instead of the "
             + "default launch line. The pasted session self-registers (h9k task register-session), which is what "
-            + "lets the double-booking and liveness guards recognise it. Choose this or the default, not both "
-            + "with --direct-launch. Refused once the task has been delivered and the pipeline owns the "
+            + "lets the double-booking and liveness guards recognise it. For a project bound to a Claude Code "
+            + "account (h9k project set --claude-code-account), it names the account and prints a start command "
+            + "carrying it and the settings file, so the session you start runs under that account. Choose this "
+            + "or the default, not both with --direct-launch. Refused once the task has been delivered and the pipeline owns the "
             + "worktree, and for a task whose pull request is open: the default launch line is the path for those stages.")]
         public bool PrintPrompt { get; init; }
 
@@ -250,6 +252,14 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         {
             await CliClaudeAccount.EnsureUsableAsync(account, cancellationToken);
         }
+
+        // The paste flow names the project's current binding, never the account a re-entered run froze: the pasted
+        // session registers the account it runs under, and the next drive resumes it only when that equals the
+        // binding (TaskDriveResume). Read before the claim, so a binding to a connection this node does not record
+        // refuses with nothing claimed.
+        ClaudeCodeAccount handoffAccount = settings.PrintPrompt
+            ? await ProjectAccountAsync(session, task, cancellationToken)
+            : ClaudeCodeAccount.Default;
         (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork, bool crossMachineNoticeShown, Guid? previousClaudeSessionId) = task.State == TaskState.Claimed && task.IsInteractiveClaim
             ? await ReenterAsync(session, task, settings.Force, cancellationToken)
             : await ClaimAndCutAsync(
@@ -335,7 +345,9 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
                 store, session, taskId, runId, worktreePath, branch, prompt, claudeSessionId, previousClaudeSessionId,
                 settingsFile, project.SkipPermissions, sessionName, isFreshInteractiveClaim, account, cancellationToken)
             : settings.PrintPrompt
-                ? PrintPromptHandoff(taskId, worktreePath, branch, prompt, settingsFile, isFreshInteractiveClaim)
+                ? PrintPromptHandoff(
+                    taskId, worktreePath, branch, prompt, settingsFile, isFreshInteractiveClaim, handoffAccount,
+                    LaunchTextDefaults.HostShell)
                 : await PrintLaunchLineAsync(
                     taskDetails, project, currentRun, worktreePath, branch, resolvedRunDirectory, settingsFile, sessionName,
                     isFreshInteractiveClaim,
@@ -640,9 +652,15 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
     /// result. No process is started and nothing about this run is recorded here; the operator's
     /// own pasted-in session records itself through <c>h9k task register-session</c> once it
     /// exists, which is the honest reason this prints rather than launches.
+    /// <para>
+    /// For a project bound to a Claude Code account (<paramref name="account"/>, the project's current binding) it
+    /// names the account and prints a start command carrying it, and the lines that would otherwise send the reader
+    /// to start claude on their own point at that command instead. An unbound project's handoff is unchanged.
+    /// </para>
     /// </summary>
-    private static int PrintPromptHandoff(
-        Guid taskId, string worktreePath, string branch, string prompt, string settingsFile, bool isFreshInteractiveClaim)
+    internal static int PrintPromptHandoff(
+        Guid taskId, string worktreePath, string branch, string prompt, string settingsFile, bool isFreshInteractiveClaim,
+        ClaudeCodeAccount account, LaunchShell shell)
     {
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
@@ -656,13 +674,27 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         // ordinary string concatenation across lines, which an interpolated-string literal cannot
         // be split across while still binding to the handler overload that would escape it itself.
         string escapedSettingsFile = Markup.Escape(settingsFile);
-        AnsiConsole.MarkupLine(
-            $"[dim]Settings file (recommended): {escapedSettingsFile} — pass --settings {escapedSettingsFile} to "
-            + "your own claude invocation for this platform's required conventions (no co-authored-by trailers, "
-            + "longer command-tool timeouts).[/]");
-        AnsiConsole.MarkupLine(
-            "[dim]Paste the prompt below into a Claude Code session started anywhere — its own terminal, this "
-            + "one once you exit h9k, wherever suits you:[/]");
+        if (PasteHandoffAccount.StartLine(account, settingsFile, shell) is { } startLine)
+        {
+            PasteHandoffAccount.Write(account, startLine);
+            AnsiConsole.MarkupLine(
+                $"[dim]Settings file (recommended): {escapedSettingsFile}. The command above passes it with --settings, "
+                + "for this platform's required conventions (no co-authored-by trailers, longer command-tool timeouts).[/]");
+            AnsiConsole.MarkupLine(
+                "[dim]Paste the prompt below into the Claude Code session that command starts, in its own terminal "
+                + "or in this one, wherever suits you:[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]Settings file (recommended): {escapedSettingsFile} — pass --settings {escapedSettingsFile} to "
+                + "your own claude invocation for this platform's required conventions (no co-authored-by trailers, "
+                + "longer command-tool timeouts).[/]");
+            AnsiConsole.MarkupLine(
+                "[dim]Paste the prompt below into a Claude Code session started anywhere — its own terminal, this "
+                + "one once you exit h9k, wherever suits you:[/]");
+        }
+
         AnsiConsole.WriteLine();
         // WriteLine, not MarkupLine: the prompt is the operator's to paste verbatim, and Spectre
         // would try to parse any [..] it happened to contain as markup instead of printing it.
@@ -691,6 +723,16 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
             return await CliClaudeAccount.ForRunAsync(session, run, cancellationToken);
         }
 
+        return await ProjectAccountAsync(session, task, cancellationToken);
+    }
+
+    /// <summary>
+    /// The current binding of <paramref name="task"/>'s project, whatever account its run froze. Refused with
+    /// <c>ClaudeCodeAccounts.LoadAsync</c>'s own text for a connection this node does not record.
+    /// </summary>
+    internal static async Task<ClaudeCodeAccount> ProjectAccountAsync(
+        IQuerySession session, TaskAggregate task, CancellationToken cancellationToken)
+    {
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {task.Id}'s project no longer exists.");
         return await CliClaudeAccount.ForProjectAsync(session, project, cancellationToken);
