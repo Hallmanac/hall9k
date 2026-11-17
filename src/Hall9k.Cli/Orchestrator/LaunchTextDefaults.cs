@@ -79,13 +79,20 @@ public static class LaunchTextDefaults
     public static TaskDriveLaunchText RenderTaskDrive(TaskDriveLaunch launch, LaunchShell shell)
     {
         string fresh = TaskDriveLine(launch, shell, resume: false);
+        string? crossAccountNotice = launch.CrossAccountResume
+            ? CrossAccountResumeNotice
+            : null;
         string? effortNotice = launch.Effort.IsWellFormed
             ? null
             : NoEffortNotice;
         return launch.ResumeSessionId is not null
             ? new TaskDriveLaunchText(TaskDriveLine(launch, shell, resume: true), fresh, effortNotice)
-            : new TaskDriveLaunchText(fresh, null, effortNotice);
+            : new TaskDriveLaunchText(fresh, null, effortNotice, crossAccountNotice);
     }
+
+    /// <summary>Said above a fresh line printed in place of a resume the account change ruled out.</summary>
+    public const string CrossAccountResumeNotice =
+        "This task's earlier conversation lives under a different Claude Code account and cannot be resumed under this one, so this line starts a fresh session.";
 
     /// <summary>Said beside a task line that names no <c>--effort</c>, because nothing sets one for this build.</summary>
     public const string NoEffortNotice =
@@ -106,7 +113,7 @@ public static class LaunchTextDefaults
         string openingMessage = resume
             ? string.Empty
             : $" {Quoted(launch.OpeningMessage)}";
-        return $"cd {Quoted(launch.WorktreePath)}{Separator(shell)} claude {resumeArgument}"
+        return $"cd {Quoted(launch.WorktreePath)}{Separator(shell)} {AccountPrefix(launch.ConfigDirectory, shell)}claude {resumeArgument}"
             + $"--name {Quoted(launch.SessionName)} "
             + $"--settings {Quoted(launch.SettingsFile)} "
             + skipPermissions
@@ -121,8 +128,16 @@ public static class LaunchTextDefaults
     /// <c>--dangerously-skip-permissions</c>: a resumed session is a person's own, asking and answering, and writes nothing
     /// unasked.
     /// </summary>
-    public static string DiscoveryResumeLine(string checkout, Guid sessionId, LaunchShell shell) =>
-        $"cd \"{EscapeForDoubleQuotes(checkout, shell)}\"{Separator(shell)} claude --resume {sessionId}";
+    /// <remarks>
+    /// <paramref name="configDirectory"/> is the project's bound Claude Code directory, or null for the default
+    /// login; a plan records no account, so a session started before a rebind will not be found under it.
+    /// </remarks>
+    public static string DiscoveryResumeLine(string checkout, Guid sessionId, LaunchShell shell, string? configDirectory = null) =>
+        $"cd \"{EscapeForDoubleQuotes(checkout, shell)}\"{Separator(shell)} {AccountPrefix(configDirectory, shell)}claude --resume {sessionId}";
+
+    private static string AccountPrefix(string? configDirectory, LaunchShell shell) => configDirectory is null
+        ? string.Empty
+        : LaunchLineAccount.Prefix(configDirectory, shell);
 
     private static string Separator(LaunchShell shell) => shell == LaunchShell.PowerShell
         ? ";"
@@ -151,11 +166,19 @@ public enum LaunchShell
 
 /// <summary>What <see cref="LaunchTextDefaults.RenderTaskDrive"/> renders a task line from.</summary>
 /// <param name="ResumeSessionId">The conversation to resume, or null for a fresh one.</param>
+/// <param name="ConfigDirectory">The project's bound Claude Code directory, or null for the default login.</param>
+/// <param name="CrossAccountResume">
+/// True when a registered conversation exists but lives under another account than <paramref name="ConfigDirectory"/>
+/// names, so the fresh line is printed with a sentence saying why (<see cref="TaskDriveResume"/>).
+/// </param>
 public sealed record TaskDriveLaunch(
     string WorktreePath, string AnchorFile, string SettingsFile, string SessionName, string OpeningMessage,
-    AgentModel Model, AgentEffort Effort, bool SkipPermissions, Guid? ResumeSessionId);
+    AgentModel Model, AgentEffort Effort, bool SkipPermissions, Guid? ResumeSessionId,
+    string? ConfigDirectory = null, bool CrossAccountResume = false);
 
 /// <param name="Line">The line to paste: the resume line when a conversation is being resumed, otherwise the fresh one.</param>
 /// <param name="FreshFallbackLine">The fresh line, present only beneath a resume line.</param>
 /// <param name="EffortNotice">One sentence to print beside the line when it names no effort.</param>
-public sealed record TaskDriveLaunchText(string Line, string? FreshFallbackLine, string? EffortNotice);
+/// <param name="CrossAccountNotice">One sentence to print above a fresh line that stands in for a resume another account rules out.</param>
+public sealed record TaskDriveLaunchText(
+    string Line, string? FreshFallbackLine, string? EffortNotice, string? CrossAccountNotice = null);

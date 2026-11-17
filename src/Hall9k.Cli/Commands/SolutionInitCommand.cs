@@ -1,8 +1,10 @@
 using System.ComponentModel;
+using Hall9k.Cli.ClaudeCode;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Storage;
 using Marten;
@@ -33,7 +35,7 @@ public sealed class SolutionInitCommand : Hall9kAsyncCommand<SolutionInitCommand
         SolutionContext context = await SolutionContext.LoadAsync(session, cancellationToken);
         SolutionView view = SolutionRegistry.Match(context.Solutions, settings.Solution);
 
-        return await SolutionHomeInit.RunAsync(view.Membership, context, cancellationToken)
+        return await SolutionHomeInit.RunAsync(session, view.Membership, context, cancellationToken)
             ? ExitCodes.Ok
             : ExitCodes.Error;
     }
@@ -44,7 +46,7 @@ internal static class SolutionHomeInit
 {
     /// <summary>Builds the home, prints each step, and answers whether every step got through.</summary>
     public static async Task<bool> RunAsync(
-        SolutionMembership membership, SolutionContext context, CancellationToken cancellationToken)
+        IQuerySession session, SolutionMembership membership, SolutionContext context, CancellationToken cancellationToken)
     {
         string home = SolutionHomePaths.For(membership.Name, membership.Key);
         bool succeeded = ProjectHomeRecipe.Report(await SolutionHomeRecipe.BuildAsync(
@@ -56,10 +58,25 @@ internal static class SolutionHomeInit
 
             // Written past the console's word wrap, like the Home line of h9k solution show: a
             // wrapped launch line is not one line the operator can paste.
-            AnsiConsole.Profile.Out.Writer.WriteLine(LaunchTextDefaults.Render(
-                home, OrchestratorRecipeContext.SolutionOpeningMessage(membership.Name)));
+            // The account every member agrees on, or none when they disagree or none is bound.
+            string? configDirectory = await CliClaudeAccount.PrintedSolutionLineDirectoryAsync(
+                session, HeldMembers(membership, context), cancellationToken);
+            AnsiConsole.Profile.Out.Writer.WriteLine(SolutionLine(home, membership.Name, configDirectory, LaunchTextDefaults.HostShell));
         }
 
         return succeeded;
     }
+
+    /// <summary>The solution window line, carrying <paramref name="configDirectory"/> when the members agree on one.</summary>
+    internal static string SolutionLine(string home, string solutionName, string? configDirectory, LaunchShell shell)
+    {
+        string line = LaunchTextDefaults.Render(home, OrchestratorRecipeContext.SolutionOpeningMessage(solutionName), shell);
+        return LaunchLineAccount.Apply(line, configDirectory, shell) ?? line;
+    }
+
+    /// <summary>The members of <paramref name="membership"/> this node holds, whose bindings the solution line follows.</summary>
+    internal static IReadOnlyList<ProjectDetails> HeldMembers(SolutionMembership membership, SolutionContext context) =>
+        [.. membership.Members
+            .Select(member => SolutionDecider.HeldProject(member, context.Projects, context.RootFingerprintOf))
+            .OfType<ProjectDetails>()];
 }

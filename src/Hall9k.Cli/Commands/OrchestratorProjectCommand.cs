@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using Hall9k.Cli.ClaudeCode;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Orchestrator;
@@ -75,7 +76,9 @@ public sealed class OrchestratorProjectCommand : Hall9kAsyncCommand<Orchestrator
                 ? ProjectHomePaths.RecipeJournalFile(project.HomeDirectory.Value)
                 : $"<no home recorded yet - run h9k project init {project.Name}>";
 
-            OrchestratorReport.Print(settings.Cli, resolved, recipePath, journalPath);
+            OrchestratorReport.Print(
+                settings.Cli, resolved, recipePath, journalPath,
+                await CliClaudeAccount.PrintedLineDirectoryAsync(session, project, cancellationToken));
         }
 
         return ExitCodes.Ok;

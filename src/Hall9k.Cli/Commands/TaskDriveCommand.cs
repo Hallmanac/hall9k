@@ -345,6 +345,7 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
                     await TaskNoteFeed.LoadForPromptAsync(
                         session, taskId, new LocalFleetSource(session, project, context.OwnerId).LessonReader,
                         onFailure: null, cancellationToken),
+                    await CliClaudeAccount.PrintedLineDirectoryAsync(session, project, cancellationToken),
                     cancellationToken);
     }
 
@@ -423,7 +424,8 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
                 run.WorktreePath, anchorFile, Path.GetFullPath(settingsFile), sessionName,
                 $"You are at task {DomainId.Short(task.Id)}'s ({task.Id}) human gate. Follow the task anchor: read the "
                 + "briefing, tell me what changed and where it stands, and wait for my word before you move it.",
-                model, effort, project.SkipPermissions, ResumeSessionId: null),
+                model, effort, project.SkipPermissions, ResumeSessionId: null,
+                ConfigDirectory: await CliClaudeAccount.PrintedLineDirectoryAsync(session, project, cancellationToken)),
             LaunchTextDefaults.HostShell);
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Task {task.Id} is stopped at its human gate. Nothing was claimed or recorded: this session registers nothing, and entering or leaving it changes neither the claim, the interactive flag, nor the stop.[/]");
@@ -553,7 +555,7 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         TaskDetails task, ProjectDetails project, RunDetails run, string worktreePath, string branch,
         string runDirectory, string settingsFile, string sessionName, bool isFreshInteractiveClaim,
         TaskDriveAnchorBuilder.PullRequestStage? pullRequestStage, InjectedTaskNotes? taskNotes,
-        CancellationToken cancellationToken)
+        string? configDirectory, CancellationToken cancellationToken)
     {
         string anchorFile = Path.GetFullPath(RunPaths.TaskAnchorFile(runDirectory));
         string? recipeFile = project.HomeDirectory.HasValue
@@ -574,14 +576,16 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         AgentEffort effort = await TaskStartCommand.ResolveBuildEffortAsync(task, project, cancellationToken);
 
         // Only the conversation a person's own session registered is worth resuming. The run's latest
-        // started session is not that: a headless build or a delegated contractor records one too.
-        Guid? resumeSessionId = run.RegisteredInteractiveClaudeSessionId;
+        // started session is not that: a headless build or a delegated contractor records one too. And only
+        // under the account the line carries: another account's transcripts are not where --resume looks.
+        TaskDriveResume.Decision resume = TaskDriveResume.For(run, ClaudeCodeAccountBinding.ForProject(project));
         TaskDriveLaunchText text = LaunchTextDefaults.RenderTaskDrive(
             new TaskDriveLaunch(
                 worktreePath, anchorFile, Path.GetFullPath(settingsFile), sessionName,
                 $"You are driving task {DomainId.Short(task.Id)} ({task.Id}). Follow the task anchor: register this "
                 + "session, read the task, tell me where it stands, and wait for my word before you move it.",
-                model, effort, project.SkipPermissions, resumeSessionId),
+                model, effort, project.SkipPermissions, resume.ResumeSessionId,
+                configDirectory, resume.CrossAccount),
             LaunchTextDefaults.HostShell);
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
@@ -603,6 +607,11 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         if (text.EffortNotice is not null)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]{text.EffortNotice}[/]");
+        }
+
+        if (text.CrossAccountNotice is not null)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[yellow]{text.CrossAccountNotice}[/]");
         }
 
         AnsiConsole.MarkupLine(text.FreshFallbackLine is null
@@ -764,7 +773,8 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
                     // second h9k task drive from another terminal could pass
                     // EnsureNotAttachedElsewhere and launch a second claude into this worktree).
                     (processId, startedAt) => AppendSessionStartedAsync(
-                        store, runId, sessionIdToLaunch, processId, startedAt, sessionName, pendingEndedSession, CancellationToken.None),
+                        store, runId, sessionIdToLaunch, processId, startedAt, sessionName, pendingEndedSession,
+                        ClaudeCodeSessionAccount.For(account), CancellationToken.None),
                     cancellationToken);
             }
             catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
@@ -2037,7 +2047,8 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
 
     private static async Task AppendSessionStartedAsync(
         DocumentStore store, Guid runId, Guid claudeSessionId, int processId, DateTimeOffset startedAt,
-        string sessionName, (Guid SessionId, DateTimeOffset EndedAt)? pendingEndedSession, CancellationToken cancellationToken)
+        string sessionName, (Guid SessionId, DateTimeOffset EndedAt)? pendingEndedSession,
+        ClaudeCodeSessionAccount account, CancellationToken cancellationToken)
     {
         await using IDocumentSession startSession = store.LightweightSession();
         if (pendingEndedSession is { } pending)
@@ -2060,8 +2071,10 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         // carries no usable node identity (NodeId is deliberately the Guid.Empty sentinel, so
         // NodeLoad's ceiling never counts it), so this event is the only place that identity is
         // ever recorded.
+        // The account it spawned under, so a later h9k task drive offers to resume this conversation only
+        // under the account whose transcripts hold it.
         startSession.Events.Append(runId, new InteractiveSessionStarted(
-            runId, claudeSessionId, startedAt, processId, Environment.MachineName, sessionName));
+            runId, claudeSessionId, startedAt, processId, Environment.MachineName, sessionName, account));
         await startSession.SaveChangesAsync(cancellationToken);
     }
 
