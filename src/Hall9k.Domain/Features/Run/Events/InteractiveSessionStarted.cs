@@ -1,3 +1,5 @@
+using Hall9k.Domain.Features.Connection;
+
 namespace Hall9k.Domain.Features.Run.Events;
 
 /// <summary>
@@ -29,7 +31,14 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// recorded pid names a process in a process table it cannot see, and would answer about a
 /// stranger (adversarial review, cycle 2). Blank on a stream written before this field existed.
 /// </para>
+/// <para>
+/// ClaudeCodeAccount is the Claude Code account the session runs under, recorded by <c>h9k task register-session</c>
+/// (from its own <c>CLAUDE_CONFIG_DIR</c>) and <c>h9k task drive --direct-launch</c> (the account it spawned
+/// under): a connection id, the default, or unrecognized, never a path or an email, which is safe here because
+/// this event is node-scoped. Null on a stream written before the field existed, and on the appends that never
+/// feed a resume (<c>h9k task start</c>, <c>h9k task delegate</c>); a null reads as the default.
+/// </para>
 /// </summary>
 public sealed record InteractiveSessionStarted(
     Guid Id, Guid ClaudeSessionId, DateTimeOffset StartedAt, int ProcessId, string MachineName = "",
-    string SessionName = "");
+    string SessionName = "", ClaudeCodeSessionAccount? ClaudeCodeAccount = null);

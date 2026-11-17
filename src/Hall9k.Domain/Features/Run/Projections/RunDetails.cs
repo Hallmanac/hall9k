@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -969,6 +970,14 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// until a human's session registers, and on a run recorded before this field existed.
     /// </summary>
     public Guid? RegisteredInteractiveClaudeSessionId { get; set; }
+
+    /// <summary>
+    /// The Claude Code account the registration <see cref="RegisteredInteractiveClaudeSessionId"/> names runs
+    /// under, set beside it. A registration written before the account was recorded counts as the default, as
+    /// does a document written before this field existed. <c>h9k task drive</c> offers a resume only when this
+    /// matches the project's current binding.
+    /// </summary>
+    public ClaudeCodeSessionAccount RegisteredInteractiveClaudeAccount { get; set; } = ClaudeCodeSessionAccount.Default;
     /// <summary>How many interactive attach/detach cycles this run has recorded (h9k task drive, held and re-entered).</summary>
     public int InteractiveSessionCount { get; set; }
     /// <summary>
@@ -2465,6 +2474,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         {
             view.RegisteredInteractiveSessionName = @event.Data.SessionName;
             view.RegisteredInteractiveClaudeSessionId = @event.Data.ClaudeSessionId;
+            view.RegisteredInteractiveClaudeAccount = @event.Data.ClaudeCodeAccount ?? ClaudeCodeSessionAccount.Default;
         }
         view.InteractiveSessionCount++;
         // A live session is now actually recorded against this run, whether this append is

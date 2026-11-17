@@ -50,6 +50,8 @@ public sealed class EventScopeRegistryTests
     [
         // The account a claude-code connection names, resolved from its projection for a spawn: never appended.
         "Hall9k.Domain.Features.Connection.ClaudeCodeAccount",
+        // The account an interactive session recorded: a field on InteractiveSessionStarted, never an event of its own.
+        "Hall9k.Domain.Features.Connection.ClaudeCodeSessionAccount",
         "Hall9k.Domain.Features.Connection.CredentialKind",
         "Hall9k.Domain.Features.Connection.CredentialReference",
         "Hall9k.Domain.Features.Decision.DecisionStatus",

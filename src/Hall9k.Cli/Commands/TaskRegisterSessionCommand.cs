@@ -2,6 +2,8 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text.Json;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.ClaudeCode;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -195,6 +197,14 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
         // this exact field (independent pre-PR review, conformance lens, cycle 1).
         string sessionName = ReadClaudeSessionName(processId) ?? string.Empty;
 
+        // The account this session runs under, read from its own CLAUDE_CONFIG_DIR, so a later h9k task drive
+        // offers to resume it only under that account. Recorded as a connection id, the default, or
+        // unrecognized, never the path.
+        ClaudeCodeSessionAccount account = ClaudeCodeSessionAccount.Derive(
+            Environment.GetEnvironmentVariable(ClaudeConfigDirectory.Variable),
+            await ClaudeCodeAccounts.ListAsync(session, cancellationToken),
+            UserHome);
+
         // The fence fetched above, before the RunDetails load and the double-booking check both
         // read: not left as a bare check-then-act, and not refetched here either — see that
         // fetch's own comment for why refetching immediately before the append would only fence
@@ -203,7 +213,7 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
         // same way, immediately before it, because neither reads a stale projection the way the
         // double-booking check above does first.
         session.Events.Append(runId, expectedVersion: fence.Version + 1, new InteractiveSessionStarted(
-            runId, claudeSessionId, startedAt, processId, Environment.MachineName, sessionName));
+            runId, claudeSessionId, startedAt, processId, Environment.MachineName, sessionName, account));
         return (runId, processId);
     }
 
@@ -279,7 +289,7 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
 
     /// <summary>
     /// The session's own real display name, read from the same file Claude Code itself writes it
-    /// to — <c>~/.claude/sessions/&lt;pid&gt;.json</c>, <see cref="SessionRoleName"/>'s own doc
+    /// to — <c>sessions/&lt;pid&gt;.json</c> under <c>CLAUDE_CONFIG_DIR</c> (<c>~/.claude</c> when unset, <see cref="SessionsDirectory"/>), <see cref="SessionRoleName"/>'s own doc
     /// comment already names this file's shape (<c>name</c>/<c>nameSource</c>) as verified against
     /// a live session — keyed by the identical pid <see cref="ReadClaudeProcess"/> just read from
     /// <c>CLAUDE_PID</c>, not a second, independent lookup. Recording the task-shortid-role guess
@@ -300,12 +310,24 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
     /// </para>
     /// </summary>
     internal static string? ReadClaudeSessionName(int processId) =>
-        ReadClaudeSessionName(processId, Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "sessions"));
+        ReadClaudeSessionName(processId, SessionsDirectory(
+            Environment.GetEnvironmentVariable(ClaudeConfigDirectory.Variable), UserHome));
+
+    private static string UserHome => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+    /// <summary>
+    /// Where Claude Code keeps its session registry for a session whose <c>CLAUDE_CONFIG_DIR</c> is
+    /// <paramref name="configDirectoryVariable"/>: <c>sessions/</c> under that directory, beside the transcripts
+    /// in <c>projects/</c>, or <c>~/.claude/sessions</c> when the variable is unset or blank.
+    /// </summary>
+    internal static string SessionsDirectory(string? configDirectoryVariable, string homeDirectory) =>
+        string.IsNullOrWhiteSpace(configDirectoryVariable)
+            ? Path.Combine(homeDirectory, ".claude", "sessions")
+            : Path.Combine(configDirectoryVariable, "sessions");
 
     /// <summary>
     /// <see cref="ReadClaudeSessionName(int)"/>'s own implementation, with the real
-    /// <c>~/.claude/sessions</c> directory pulled out as a parameter so this is testable against a
+    /// sessions directory pulled out as a parameter so this is testable against a
     /// scratch directory rather than the operator's own live Claude Code state.
     /// </summary>
     internal static string? ReadClaudeSessionName(int processId, string sessionsDirectory)
