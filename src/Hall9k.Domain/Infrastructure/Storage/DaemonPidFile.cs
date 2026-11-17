@@ -9,6 +9,22 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 public sealed record DaemonProcessDescriptor(int ProcessId, DateTimeOffset StartedAt);
 
 /// <summary>
+/// What the daemon inherited of <c>CLAUDE_CONFIG_DIR</c> and nothing else: the value, or null when it
+/// inherited none (an empty value counts as none, since Claude Code treats it as unset).
+/// </summary>
+public sealed record DaemonInheritedEnvironment(string? ClaudeConfigDirectory)
+{
+    public static DaemonInheritedEnvironment Read(Func<string, string?> read) =>
+        new(read(Features.Connection.ClaudeConfigDirectory.Variable) is { Length: > 0 } value ? value : null);
+}
+
+/// <summary>
+/// The pid file read whole. <see cref="Inherited"/> is null only for a file an older build wrote, which
+/// recorded nothing about its environment, so it reads differently from a daemon that inherited none.
+/// </summary>
+public sealed record DaemonPidRecord(DaemonProcessDescriptor Daemon, DaemonInheritedEnvironment? Inherited);
+
+/// <summary>
 /// Reads and writes the daemon's pid file. Paths are parameters so tests work against
 /// temp files; callers pass <see cref="DaemonRuntime.PidFile"/> in production.
 /// </summary>
@@ -16,10 +32,24 @@ public static class DaemonPidFile
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
+    /// <summary>
+    /// The pid file's own shape. The descriptor stays apart from it, so the stop-request file, which
+    /// serializes a bare descriptor, never carries the inherited environment.
+    /// </summary>
+    private sealed record PidFileContent(int ProcessId, DateTimeOffset StartedAt, DaemonInheritedEnvironment? InheritedEnvironment);
+
     public static void Write(string path, DaemonProcessDescriptor descriptor)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, JsonSerializer.Serialize(descriptor, SerializerOptions));
+    }
+
+    /// <summary>The daemon's own write: its identity plus what it inherited of <c>CLAUDE_CONFIG_DIR</c>.</summary>
+    public static void Write(string path, DaemonProcessDescriptor descriptor, DaemonInheritedEnvironment inherited)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, JsonSerializer.Serialize(
+            new PidFileContent(descriptor.ProcessId, descriptor.StartedAt, inherited), SerializerOptions));
     }
 
     /// <summary>
@@ -53,6 +83,26 @@ public static class DaemonPidFile
             return File.Exists(path)
                 ? JsonSerializer.Deserialize<DaemonProcessDescriptor>(File.ReadAllText(path), SerializerOptions)
                 : null;
+        }
+        catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// <see cref="TryRead"/> with the inherited environment, under the same rule: a missing, corrupt or
+    /// unreadable file reads as null. Says nothing about whether the daemon is alive; check that against
+    /// <see cref="DaemonPidRecord.Daemon"/> before trusting it.
+    /// </summary>
+    public static DaemonPidRecord? TryReadRecord(string path)
+    {
+        try
+        {
+            return File.Exists(path)
+                && JsonSerializer.Deserialize<PidFileContent>(File.ReadAllText(path), SerializerOptions) is { } content
+                    ? new DaemonPidRecord(new DaemonProcessDescriptor(content.ProcessId, content.StartedAt), content.InheritedEnvironment)
+                    : null;
         }
         catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException)
         {
