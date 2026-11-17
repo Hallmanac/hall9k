@@ -2609,6 +2609,32 @@ warns when one of the override variables above is set in its own environment, wh
 members are bound to different accounts (a solution follows its members, so it resolves to their shared
 account when they all agree and to the default login otherwise).
 
+Doctor also warns about an inherited `CLAUDE_CONFIG_DIR`, whether or not this node records any claude-code
+connection. Every session that resolves to the default login has that variable removed, so a node that used to
+run everything under the directory it names now runs those sessions under the default login without a word.
+Neither warning changes doctor's exit code.
+
+- **The daemon carries it.** When the running h9kd inherited a non-empty `CLAUDE_CONFIG_DIR` (it was started by
+  hand or by `h9k daemon start` from a shell that exports it with no autostart registered, or under the AppHost
+  dev loop), doctor names the daemon and the value, whatever its own shell carries. Every session the daemon
+  starts under the default login (for a project with no bound account, or for a solution whose members do not
+  all share one) runs under the default login regardless of that value, while a bound project's sessions run
+  under their own connection's directory. To use that directory, register it with `h9k connection add
+  claude-code --config-dir <dir>` and bind the projects that should use it with `h9k project set <project>
+  --claude-code-account <connection>`. Otherwise remove the variable from the daemon's environment and restart
+  the daemon. The daemon records the value it inherited, or that it inherited none, in its pid file beside its
+  pid and start time, and no other variable. Doctor trusts it only for a daemon that is still running, so a pid
+  file a stopped daemon left behind never warns.
+- **The daemon cannot be read.** A running daemon started from a build that predates the record (after `h9k
+  update --no-restart`, for instance) left nothing to read, so doctor prints one line saying it cannot tell
+  whether the daemon carries the variable and that restarting the daemon lets it tell.
+- **Doctor's own shell carries it.** Every Claude Code session h9k itself starts from that shell under the
+  default login (for example `h9k task start`, `h9k task delegate`, `h9k task drive --direct-launch`, and `h9k
+  orchestrator measure`) runs under the default login regardless of it. A line printed for a project with no
+  bound account, or for the node's own window, carries no account, so pasted into that shell it runs under the
+  directory the variable names, and a daemon started directly from that shell inherits the variable. Unset it
+  before pasting such a line or starting the daemon.
+
 ### Install and the daemon
 
 `h9k install` · `h9k update` · `h9k uninstall [--purge-data]` · `h9k daemon start | stop | status` ·
