@@ -2522,21 +2522,34 @@ resume and fresh lines and the human-gate step-in line from `h9k task drive`, an
 cd "/path/to/home" && CLAUDE_CONFIG_DIR='/Users/you/.claude-alt' claude --strict-mcp-config ...   # ~/.claude-alt, as recorded
 ```
 
-In PowerShell the line reads `cd "..."; $env:CLAUDE_CONFIG_DIR='C:\Users\you\.claude-alt'; claude ...`.
-PowerShell has no way to set a variable for one command, so this sets it for the rest of that shell: a later
-bare `claude` typed in the same window runs under the bound account too. The path is single-quoted, so any
-directory survives (a quote in it is written `'\''` in POSIX and `''` in PowerShell). A line for an unbound
-project is exactly what it was before. The prefix is added when the line is printed, to a stored launch text
-and the computed default alike, before the first unquoted `claude` that begins the line or follows `&&`, `||`,
-`;`, or `|`. A stored claude-code text with no such word is printed as stored, followed by a sentence naming
-the directory to set yourself, and a text stored for any other CLI never gets the prefix. The node window line
+PowerShell has no way to set a variable for one command, and a plain `$env:` assignment would stay set for
+the rest of that shell, so every Hall9k line you pasted there afterwards (an unbound project's, or the node
+window's) would run under the bound account too. So in PowerShell the statement holding `claude` is wrapped
+in a `try` block that sets the variable and a `finally` block that clears it again, however `claude` exits:
+
+```powershell
+cd "C:\path\to\home"; try { $env:CLAUDE_CONFIG_DIR='C:\Users\you\.claude-alt'; claude --strict-mcp-config ... } finally { Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction Ignore }
+```
+
+The wrapper takes the whole statement, so a stored `cd C:\x && claude ...` keeps its `cd` as the guard and a
+stored `echo hi | claude -p` still parses. The `finally` clears the variable rather than restoring an earlier
+value, so a `CLAUDE_CONFIG_DIR` you had set in that window yourself is gone afterwards too. The path is
+single-quoted, so any directory survives (a quote in it is written `'\''` in POSIX and `''` in PowerShell).
+A line for an unbound project is exactly what it was before. The account is added when the line is printed,
+to a stored launch text and the computed default alike, on the first unquoted `claude` that begins the line or
+follows `&&`, `||`, `;`, or `|`. A stored claude-code text with no such word is printed as stored, followed by
+a sentence naming the directory to set yourself. A stored text that already names `CLAUDE_CONFIG_DIR`, which
+one stored before `launch-text set` refused it can, is also printed as stored, followed by a sentence saying it
+sets the variable itself and should be stored again without it. A text stored for any other CLI never gets
+the account. The node window line
 (`h9k orchestrator node`, and `launch-text show` without `--project`) never carries one, because the node has
 no binding. The solution window line printed by `h9k solution init` and `h9k solution add` carries the account
 every member agrees on, and nothing when they disagree or none is bound.
 
 Because the prefix is added at print time, `h9k orchestrator launch-text set` refuses any text containing
-`CLAUDE_CONFIG_DIR`. To store a line you copied from `launch-text show`, remove its prefix first; `show`
-prints it with the prefix again. Bind the account with `h9k project set <p> --claude-code-account` instead.
+`CLAUDE_CONFIG_DIR`. To store a line you copied from `launch-text show`, remove what Hall9k added first (the
+prefix in POSIX, and in PowerShell both the `try { $env:...; ` before the statement and the `finally` block
+after it); `show` prints it with the account again. Bind the account with `h9k project set <p> --claude-code-account` instead.
 
 A conversation lives in the transcripts of the config directory it started under, and `claude --resume` looks
 only in the directory it runs under. So `h9k task drive` records the account a registered session runs under

@@ -1544,14 +1544,17 @@ records anything and exits non-zero with the same text.
 
 Lines a person pastes carry the bound account on the `claude` command itself, added when the line is
 printed (to a stored launch text and the computed default alike): `CLAUDE_CONFIG_DIR='<dir>' claude ...` in
-POSIX and `$env:CLAUDE_CONFIG_DIR='<dir>'; claude ...` in PowerShell, which sets it for the rest of that
-shell. That covers the window line from `orchestrator project` and `launch-text show --project`, the
+POSIX, and in PowerShell `try { $env:CLAUDE_CONFIG_DIR='<dir>'; <statement> } finally { Remove-Item
+Env:CLAUDE_CONFIG_DIR -ErrorAction Ignore }` around the statement holding `claude`, so the variable never
+outlives that command and later pasted lines in the same shell keep their own account. That covers the window line from `orchestrator project` and `launch-text show --project`, the
 `task drive` resume, fresh, and human-gate step-in lines, the `plan show` discovery resume line, and the
 `solution init`/`solution add` line (when every member agrees on one account). The node line never carries
 one, an unbound project's lines are unchanged, a stored claude-code text with no `claude` command word
-prints as stored with a sentence naming the directory, and another CLI's text never gets it.
-`launch-text set` refuses any text containing `CLAUDE_CONFIG_DIR`, so strip the prefix from a line copied
-from `show` before setting it. `task register-session` and `task drive --direct-launch` record the
+prints as stored with a sentence naming the directory, a stored text that already names
+`CLAUDE_CONFIG_DIR` prints as stored with a sentence saying to store it again without it, and another
+CLI's text never gets it.
+`launch-text set` refuses any text containing `CLAUDE_CONFIG_DIR`, so strip what Hall9k added (the prefix, and in
+PowerShell the `try`/`finally` wrapper) from a line copied from `show` before setting it. `task register-session` and `task drive --direct-launch` record the
 session's account on `InteractiveSessionStarted` (a connection, the default, or unrecognized, never a
 path), and `task drive` offers a resume only when it equals the project's current binding; otherwise it
 prints the fresh line with a sentence saying the conversation lives under another account. After a
