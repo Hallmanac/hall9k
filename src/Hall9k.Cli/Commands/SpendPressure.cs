@@ -32,7 +32,8 @@ internal sealed record SpendPressure(
     string Period,
     bool BudgetIsEnforced,
     long? ConfiguredBudgetTokens,
-    string ConfiguredPeriod)
+    string ConfiguredPeriod,
+    DateTimeOffset PeriodStart)
 {
     /// <summary>
     /// Whether this period's recorded spend has reached a budget a daemon has confirmed it is
@@ -109,6 +110,6 @@ internal sealed record SpendPressure(
         return new SpendPressure(
             spend.TotalInputTokens, budgetTokens, spend.ByModel,
             period.NextRolloverAfter(now), period.Value, budgetIsEnforced, report.SpendBudgetTokens.Value,
-            report.SpendPeriod.Value);
+            report.SpendPeriod.Value, periodStart);
     }
 }
