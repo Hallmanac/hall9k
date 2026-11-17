@@ -2508,9 +2508,59 @@ status` still reports the recorded email and org id. A pass is reused for at mos
 logged-out, or different login refuses the spawn and never falls back to the default login, and the
 refusal names the directory and the fix. A run keeps the account it was dispatched under (frozen at
 dispatch, at `h9k task start`, at `h9k task drive`, and at `h9k pr review`), so changing a binding moves only
-work dispatched afterwards; a run dispatched before this existed keeps the default login. The launch line
-`h9k task drive` prints for a session you start yourself does not set `CLAUDE_CONFIG_DIR` yet, so start that
-session with the bound directory set, or use `--direct-launch`, which does.
+work dispatched afterwards; a run dispatched before this existed keeps the default login.
+
+#### Lines you paste
+
+Hall9k starts nothing from a line it prints for you to paste, so a bound project's account rides on the line
+itself. The window line from `h9k orchestrator project` and `h9k orchestrator launch-text show --project`, the
+resume and fresh lines and the human-gate step-in line from `h9k task drive`, and the discovery resume line in
+`h9k plan show` all set `CLAUDE_CONFIG_DIR` to the binding's recorded directory, immediately before the
+`claude` command:
+
+```bash
+cd "/path/to/home" && CLAUDE_CONFIG_DIR='/Users/you/.claude-alt' claude --strict-mcp-config ...   # ~/.claude-alt, as recorded
+```
+
+In PowerShell the line reads `cd "..."; $env:CLAUDE_CONFIG_DIR='C:\Users\you\.claude-alt'; claude ...`.
+PowerShell has no way to set a variable for one command, so this sets it for the rest of that shell: a later
+bare `claude` typed in the same window runs under the bound account too. The path is single-quoted, so any
+directory survives (a quote in it is written `'\''` in POSIX and `''` in PowerShell). A line for an unbound
+project is exactly what it was before. The prefix is added when the line is printed, to a stored launch text
+and the computed default alike, before the first unquoted `claude` that begins the line or follows `&&`, `||`,
+`;`, or `|`. A stored claude-code text with no such word is printed as stored, followed by a sentence naming
+the directory to set yourself, and a text stored for any other CLI never gets the prefix. The node window line
+(`h9k orchestrator node`, and `launch-text show` without `--project`) never carries one, because the node has
+no binding. The solution window line printed by `h9k solution init` and `h9k solution add` carries the account
+every member agrees on, and nothing when they disagree or none is bound.
+
+Because the prefix is added at print time, `h9k orchestrator launch-text set` refuses any text containing
+`CLAUDE_CONFIG_DIR`. To store a line you copied from `launch-text show`, remove its prefix first; `show`
+prints it with the prefix again. Bind the account with `h9k project set <p> --claude-code-account` instead.
+
+A conversation lives in the transcripts of the config directory it started under, and `claude --resume` looks
+only in the directory it runs under. So `h9k task drive` records the account a registered session runs under
+(a connection, the default, or unrecognized, never the path) and offers a resume line only when that equals
+the project's current binding. Otherwise it prints the fresh line as the line to paste, preceded by a sentence
+saying the earlier conversation lives under a different Claude Code account. A session whose
+`CLAUDE_CONFIG_DIR` names no claude-code connection is never offered a resume. Hall9k never copies transcripts
+between directories.
+
+After you change a binding, a few lines can still point at a conversation they will not find. A step-in or
+resume line printed after the change, for a session started before it, carries the new directory, and the
+old conversation is not there. `h9k task drive` catches this for its own resume line, as described above,
+but nothing records the account of a plan's discovery session, so the discovery resume line in `h9k plan
+show` is one of these lines, as are the step-in lines a recipe holds. Start a fresh session instead. Regenerate the project's orchestrator recipe (the
+orchestrator-recipe-generator skill) after a binding changes too: the generator writes the account prefix
+into the recipe's scoped spawn, fallback, and step-in lines once, when it runs.
+
+Windows on different Claude Code accounts cannot discover or message each other. That is a Claude Code limit
+Hall9k does not work around. The feed courier runs under its project's account, so it still reaches that
+project's window when the window was started from the line Hall9k printed. A bare `claude` you type in a
+project folder yourself is outside Hall9k and runs under whatever account that terminal has.
+
+To log a directory in by hand, run `CLAUDE_CONFIG_DIR=~/.claude-alt claude` and then `/login` inside the
+session, before you register it with `h9k connection add claude-code --config-dir ~/.claude-alt`.
 
 When the daemon refuses an account, `h9k status` prints one needs-you line per refused connection. Until
 the account passes again, no new work starts for the projects bound to it: the dispatcher leaves their

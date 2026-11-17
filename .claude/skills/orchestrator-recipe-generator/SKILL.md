@@ -108,6 +108,19 @@ on its own once gates and review are satisfied) or does the owner merge each pul
 State what you actually saw, not a rule you inferred from it — a pattern in five tasks is not a
 standing policy, and this skill does not mint one (see *Never invent a standing rule* below).
 
+**The Claude Code account (project mode only).** `h9k project show <name>` also says whether the
+project is bound to a Claude Code account on this node, naming the account's email but not its
+directory. For a bound project, run `h9k orchestrator launch-text show --cli claude-code --project
+<name>` and find the account prefix on the window line it prints: the platform puts it immediately
+before `claude`, as `CLAUDE_CONFIG_DIR='<dir>' ` on POSIX (through the space before `claude`) or as
+`$env:CLAUDE_CONFIG_DIR='<dir>'; ` in PowerShell (through the space after the `;`). Keep that prefix
+exactly as printed, character for character, and never compose it yourself: the platform's quoting
+of the directory is what makes the line parse, and the directory is not printed anywhere else. Write
+it immediately before `claude` in every scoped spawn line, fresh-start fallback line, and step-in line
+you generate (*Spawning a scoped session* below). For an unbound project `show` prints no prefix, and
+you write those lines unchanged. A rebind later leaves these recipe lines stale, which is why the
+platform's docs say to regenerate the recipe after a binding changes.
+
 **The solution (solution mode only).**
 
 `h9k solution show "<name>"` for the board and the `Home:` line, and `AGENTS.md` at the solution
@@ -641,7 +654,12 @@ line.
 The launch line in step 2, the fresh-start fallback in step 3, and the step-in line in step 4 all
 follow the same rules: `--model` and `--effort` are always explicit, the model id is always
 single-quoted, and `;` replaces `&&` between the `cd` and the launch wherever the operator's shell
-is PowerShell. None of the three is ever composed differently or left to inherit either flag from
+is PowerShell. For a bound project, each of the three carries the account prefix you copied in
+*The Claude Code account* above, immediately before `claude` (so `cd "<dir>" && CLAUDE_CONFIG_DIR='<dir>'
+claude ...`, or `cd "<dir>"; $env:CLAUDE_CONFIG_DIR='<dir>'; claude ...` in PowerShell); without it the
+session runs under whatever account the operator's terminal has, and a step-in line cannot find a
+conversation that started under the bound account. For an unbound project none of them carries one.
+None of the three is ever composed differently or left to inherit either flag from
 `recipes/settings.json` or from this window's own setting.
 
 `claude --help` does not state how `--model`, `--effort`, and `--settings` behave on `--resume`.
@@ -861,7 +879,10 @@ tasks of its own, and the act that belongs to a member is always that member's o
 - **Spawning a scoped session** follows the project recipe's procedure, step for step, including the
   stated exception that the scoped-session launch line is written into this recipe, with the working
   directory being the solution home and the opening message naming the member project and the idea or
-  draft. Its hand-off `journal.md` lives where that subject's own working state does (read the path
+  draft. The account prefix comes from the line `h9k solution init <name>` printed: when it carries
+  one (every member is bound to the same account), copy it exactly as printed into the spawn,
+  fallback, and step-in lines as the project procedure does; when it carries none, write them
+  unchanged. Its hand-off `journal.md` lives where that subject's own working state does (read the path
   from `h9k idea show` or `h9k task show`).
 - **Clocks, standing rules, ideas and drift, feedback about this recipe**: carry them as the project
   recipe states them, with feedback written into this home's `notes/prototype-feedback.md`.
@@ -1060,7 +1081,11 @@ ever need to restate. Instead, for each agent CLI discovery found installed:
   project, `show`'s output is a computed default, not a stored one, and there is nothing yet to
   measure: store it explicitly, even when the discovered machine needs no change at all —
   `h9k orchestrator launch-text set --cli claude-code '<the exact line show just printed>'` (add
-  `--project <name>` in project mode) — before moving on to *Finish* below. `show` wraps its own
+  `--project <name>` in project mode) — before moving on to *Finish* below. For a bound project,
+  first remove the account prefix (*The Claude Code account* above) from the line `show` printed,
+  exactly the characters you copied, and pass the line without it: `set` refuses any text containing
+  `CLAUDE_CONFIG_DIR`, because the platform adds the account when it prints the line, and the
+  prefix's own single quotes are not ones the single-quote rule below should ever meet. `show` wraps its own
   output near 80 columns whenever stdout is not a TTY (*The machine* above), which is every
   invocation this session makes, so the line it just printed may already be broken across several
   lines; reassemble only those wrapped launch-line lines into one line before pasting it into
