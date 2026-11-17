@@ -5,12 +5,15 @@ namespace Hall9k.Domain.Features.Connection;
 
 /// <summary>
 /// Structured pointer to where a credential lives — never the secret itself.
-/// Canonical forms: "gh-cli", "keychain:&lt;name&gt;", "env:&lt;variable&gt;", "file:&lt;name&gt;".
+/// Canonical forms: "gh-cli", "claude-config-dir", "keychain:&lt;name&gt;", "env:&lt;variable&gt;", "file:&lt;name&gt;".
 /// </summary>
 [JsonConverter(typeof(CredentialReferenceJsonConverter))]
 public sealed record CredentialReference(CredentialKind Kind, string? Identifier)
 {
     public static readonly CredentialReference GhCli = new(CredentialKind.GhCli, null);
+
+    /// <summary>The pointer a claude-code connection records: the directory itself is its external account id.</summary>
+    public static readonly CredentialReference ClaudeConfigDirectory = new(CredentialKind.ClaudeConfigDirectory, null);
 
     public static CredentialReference Keychain(string name) => new(CredentialKind.Keychain, name);
 

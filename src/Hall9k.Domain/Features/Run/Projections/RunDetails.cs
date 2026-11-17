@@ -768,6 +768,30 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// every one of them each sweep rather than picking just one.
     /// </summary>
     public DateTimeOffset? LaunchHeldAt { get; set; }
+
+    /// <summary>
+    /// Whether this run recorded its Claude Code account at dispatch (<see cref="RunClaudeCodeAccountRecorded"/>).
+    /// False for a run dispatched before the binding existed, which runs under the default login.
+    /// </summary>
+    public bool ClaudeCodeAccountRecorded { get; set; }
+
+    /// <summary>The claude-code connection this run is frozen to, or null for the default login.</summary>
+    public Guid? ClaudeCodeConnectionId { get; set; }
+
+    /// <summary>
+    /// The claude-code connection whose refusal is holding this run (<see cref="RunAccountHeld"/>), or null when
+    /// it is not held for an account. Read only together with <see cref="RunState.LaunchHeld"/>: the node-wide
+    /// hold skips a run this names, and the account monitor resumes it once that connection is cleared.
+    /// </summary>
+    public Guid? AccountHeldConnectionId { get; set; }
+
+    /// <summary>
+    /// The state this run was in when its account's refusal first held it, so the resume re-enters there: the
+    /// gates for a run held while <see cref="RunState.Verifying"/>, the review loop for one held while
+    /// <see cref="RunState.UnderReview"/>, and the primary session otherwise. A second refusal while still held
+    /// keeps the first value.
+    /// </summary>
+    public RunState? AccountHeldFromState { get; set; }
     /// <summary>
     /// Whether the review park just recorded in <see cref="ParkedReason"/> is one where granting
     /// <c>--needs-fixes</c> cannot clear the park (a per-track cap-0 takeover park, a
@@ -2300,8 +2324,53 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.State = RunState.BudgetParked;
     }
 
+    public void Apply(IEvent<RunClaudeCodeAccountRecorded> @event, RunDetails view)
+    {
+        view.ClaudeCodeAccountRecorded = true;
+        view.ClaudeCodeConnectionId = @event.Data.ConnectionId;
+    }
+
+    public void Apply(IEvent<RunAccountHeld> @event, RunDetails view)
+    {
+        // Where the resume re-enters: nowhere special for a primary session (it starts again), the state the
+        // run was in for a pipeline leg, and unchanged for a second refusal of a run that was already held.
+        if (@event.Data.PrimarySession)
+        {
+            view.AccountHeldFromState = null;
+        }
+        else if (view.State != RunState.LaunchHeld)
+        {
+            view.AccountHeldFromState = view.State;
+        }
+
+        EndPipelineSessions(view);
+        view.ParkedReason = $"waiting on its Claude Code account - {@event.Data.Reason}";
+        view.Delivered = view.State.DeliveredAfterPark(view.Delivered);
+        view.State = RunState.LaunchHeld;
+        view.LaunchHeldAt = @event.Data.HeldAt;
+        view.AccountHeldConnectionId = @event.Data.ConnectionId;
+        // Mirrors RunAggregate: a refused stack assessment never ran, so the run's one assessment is given back.
+        if (view.HasDispatchedStackAssessment && view.LastStackAssessmentVerdict is null)
+        {
+            view.HasDispatchedStackAssessment = false;
+            view.LastStackAssessmentParkKind = null;
+        }
+    }
+
+    // The account's check passed and the run went back to the stage it was held at, so it reads as live again
+    // (and counts against the node's ceiling) while the resumed gates or review run.
+    public void Apply(IEvent<RunAccountHoldResumed> @event, RunDetails view)
+    {
+        view.ParkedReason = null;
+        view.State = @event.Data.ResumedState;
+        view.AccountHeldConnectionId = null;
+        view.AccountHeldFromState = null;
+    }
+
     public void Apply(IEvent<RunLaunchHeld> @event, RunDetails view)
     {
+        view.AccountHeldConnectionId = null;
+        view.AccountHeldFromState = null;
         // Sessions cleared here too, matching RunCompleted and ContextSynthesisCompleted above
         // (Copilot review, PR #317): this event can land directly after a review, fix,
         // rebase-recovery, or pr-review dispatch event with no generic leg-completed event first,

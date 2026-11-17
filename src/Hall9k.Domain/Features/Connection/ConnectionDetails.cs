@@ -33,6 +33,21 @@ public sealed class ConnectionDetails
     public string? GitHubLogin { get; set; }
     /// <summary>When <see cref="GitHubAccountId"/>/<see cref="GitHubLogin"/> were last read from GitHub; null while unobserved.</summary>
     public DateTimeOffset? GitHubIdentityObservedAt { get; set; }
+    /// <summary>
+    /// The email <c>claude auth status</c> reported for a claude-code connection's directory (its
+    /// <see cref="ExternalAccountId"/>), or null for any other provider. Node-scoped with the rest of the
+    /// connection stream, so it never reaches another node.
+    /// </summary>
+    public string? ClaudeCodeEmail { get; set; }
+    public string? ClaudeCodeOrganizationId { get; set; }
+    public string? ClaudeCodeOrganizationName { get; set; }
+    public string? ClaudeCodeSubscriptionType { get; set; }
+    public DateTimeOffset? ClaudeCodeObservedAt { get; set; }
+    /// <summary>Whether this claude-code connection's last check failed; while true nothing starts under it.</summary>
+    public bool ClaudeCodeRefused { get; set; }
+    /// <summary>The refusal's text, naming the directory and the fix, which <c>h9k status</c> prints.</summary>
+    public string? ClaudeCodeRefusedReason { get; set; }
+    public DateTimeOffset? ClaudeCodeRefusedAt { get; set; }
 }
 
 public sealed partial class ConnectionDetailsProjection : SingleStreamProjection<ConnectionDetails, Guid>
@@ -68,5 +83,28 @@ public sealed partial class ConnectionDetailsProjection : SingleStreamProjection
         view.GitHubAccountId = @event.Data.GitHubAccountId;
         view.GitHubLogin = @event.Data.GitHubLogin;
         view.GitHubIdentityObservedAt = @event.Data.ObservedAt;
+    }
+
+    public void Apply(IEvent<ConnectionClaudeCodeAccountObserved> @event, ConnectionDetails view)
+    {
+        view.ClaudeCodeEmail = @event.Data.Email;
+        view.ClaudeCodeOrganizationId = @event.Data.OrganizationId;
+        view.ClaudeCodeOrganizationName = @event.Data.OrganizationName;
+        view.ClaudeCodeSubscriptionType = @event.Data.SubscriptionType;
+        view.ClaudeCodeObservedAt = @event.Data.ObservedAt;
+    }
+
+    public void Apply(IEvent<ConnectionClaudeCodeAccountRefused> @event, ConnectionDetails view)
+    {
+        view.ClaudeCodeRefused = true;
+        view.ClaudeCodeRefusedReason = @event.Data.Reason;
+        view.ClaudeCodeRefusedAt = @event.Data.RefusedAt;
+    }
+
+    public void Apply(IEvent<ConnectionClaudeCodeAccountCleared> @event, ConnectionDetails view)
+    {
+        view.ClaudeCodeRefused = false;
+        view.ClaudeCodeRefusedReason = null;
+        view.ClaudeCodeRefusedAt = null;
     }
 }

@@ -74,6 +74,8 @@ public sealed class ProjectAggregate
     /// <c>--orchestrator-effort</c>, then the model's own default.
     /// </summary>
     public AgentEffort OrchestratorEffort { get; private set; } = AgentEffort.Unknown;
+    /// <summary>The claude-code connection this project's spawns run under on this node; null is the default login.</summary>
+    public Guid? ClaudeCodeConnectionId { get; private set; }
     /// <summary>
     /// Whether closeout asks this project's reviewers for another pass after a fix follow-up
     /// pushed (Decisions Log #62). Outranks the owner's preference; Unknown defers to it.
@@ -343,6 +345,11 @@ public sealed class ProjectAggregate
         if (@event.OrchestratorEffort.HasValue)
         {
             OrchestratorEffort = @event.OrchestratorEffort.Value ?? AgentEffort.Unknown;
+        }
+
+        if (@event.ClaudeCodeConnectionId.HasValue)
+        {
+            ClaudeCodeConnectionId = @event.ClaudeCodeConnectionId.Value;
         }
 
         if (@event.ReviewRerequest.HasValue)

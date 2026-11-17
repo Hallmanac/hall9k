@@ -29,7 +29,42 @@ public static class ConnectionDecider
         // machine's gh is logged in as" — every other kind names a variable, a keychain entry, or
         // a file, and a connection registered without that name would be a credential reference
         // that cannot be resolved, discovered at the first import rather than here.
-        if (credentialReference.Kind != CredentialKind.GhCli && credentialReference.Identifier.IsBlank())
+        // A Claude Code config directory is the other kind with no identifier: the directory is the
+        // external account id, so recording it again here would record it twice. The pair is exclusive
+        // both ways, because a claude-code connection holds no secret any other kind could point at.
+        bool isClaudeCode = provider == WorkItemProvider.ClaudeCode;
+        if (isClaudeCode != (credentialReference.Kind == CredentialKind.ClaudeConfigDirectory))
+        {
+            throw new DomainValidationException(
+                isClaudeCode
+                    ? "A claude-code connection records its Claude Code config directory and no secret, so its "
+                      + "credential reference is 'claude-config-dir'. Register it with: h9k connection add claude-code --config-dir ~/.claude-alt"
+                    : $"A '{provider.Value}' connection cannot use a Claude Code config directory as its credential; "
+                      + "'claude-config-dir' belongs to claude-code connections alone.");
+        }
+
+        if (isClaudeCode)
+        {
+            if (credentialReference.Identifier.IsNotBlank())
+            {
+                throw new DomainValidationException(
+                    "A claude-code connection records its directory once, as its external account id, and its "
+                    + "credential reference names nothing.");
+            }
+
+            if (!Path.IsPathFullyQualified(externalAccountId)
+                || externalAccountId.EndsWith(Path.DirectorySeparatorChar)
+                || externalAccountId.EndsWith(Path.AltDirectorySeparatorChar))
+            {
+                throw new DomainValidationException(
+                    $"A claude-code connection records an absolute directory with no trailing separator, and "
+                    + $"'{externalAccountId}' is not one (ClaudeConfigDirectory.Normalize is the rule).");
+            }
+        }
+
+        if (credentialReference.Kind != CredentialKind.GhCli
+            && credentialReference.Kind != CredentialKind.ClaudeConfigDirectory
+            && credentialReference.Identifier.IsBlank())
         {
             throw new DomainValidationException(
                 $"A '{credentialReference.Kind.Value}' credential reference names where the secret lives "
@@ -160,5 +195,37 @@ public static class ConnectionDecider
         return connection.GitHubAccountId == gitHubAccountId && connection.GitHubLogin == login
             ? null
             : new ConnectionGitHubIdentityObserved(connection.Id, gitHubAccountId, login, observedAt);
+    }
+
+    /// <summary>
+    /// What <c>claude auth status</c> reported for a claude-code connection's directory, or null when it
+    /// is the identity already recorded. Refused on any other provider, and refused without an email and
+    /// an org id: that is the shape an override credential in the environment produces, and recording it
+    /// would bind the connection to nobody.
+    /// </summary>
+    public static ConnectionClaudeCodeAccountObserved? ObserveClaudeCodeAccount(
+        ConnectionAggregate connection, string email, string organizationId, string? organizationName,
+        string? subscriptionType, DateTimeOffset observedAt)
+    {
+        if (connection.Provider != WorkItemProvider.ClaudeCode)
+        {
+            throw new DomainValidationException(
+                $"Connection {connection.Id} is a '{connection.Provider}' connection, and a Claude Code account "
+                + "observation only ever applies to a claude-code one.");
+        }
+
+        if (email.IsBlank() || organizationId.IsBlank())
+        {
+            throw new DomainValidationException(
+                "A Claude Code account observation requires the email and org id claude auth status reported.");
+        }
+
+        return connection.ClaudeCodeEmail == email
+            && connection.ClaudeCodeOrganizationId == organizationId
+            && connection.ClaudeCodeOrganizationName == organizationName
+            && connection.ClaudeCodeSubscriptionType == subscriptionType
+                ? null
+                : new ConnectionClaudeCodeAccountObserved(
+                    connection.Id, email, organizationId, organizationName, subscriptionType, observedAt);
     }
 }

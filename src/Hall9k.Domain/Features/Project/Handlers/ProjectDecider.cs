@@ -98,7 +98,8 @@ public static class ProjectDecider
         Optional<SolutionMembership?> solution = default,
         Optional<LinearTeamKey> linearTeam = default,
         Optional<bool> requireChallenge = default,
-        Optional<bool> takesFeedbackStep = default)
+        Optional<bool> takesFeedbackStep = default,
+        Optional<Guid?> claudeCodeConnectionId = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -524,7 +525,8 @@ public static class ProjectDecider
             Solution: solution,
             LinearTeam: linearTeam,
             RequireChallenge: requireChallenge,
-            TakesFeedbackStep: takesFeedbackStep);
+            TakesFeedbackStep: takesFeedbackStep,
+            ClaudeCodeConnectionId: claudeCodeConnectionId);
     }
 
     /// <summary>

@@ -381,4 +381,12 @@ public sealed record ProjectSettingsChanged(
     /// <see cref="ProjectTeamSettingsChanged.TakesFeedbackStep"/>, because the dependency sweep runs on every node and each must
     /// decide the hold the same way. Trailing and optional so every stream written before it replays unchanged.
     /// </summary>
-    Optional<bool> TakesFeedbackStep = default);
+    Optional<bool> TakesFeedbackStep = default,
+    /// <summary>
+    /// The claude-code connection every claude process Hall9k starts for this project runs under on this
+    /// node; present-with-null clears it back to the default login (<c>h9k project set --claude-code-account
+    /// default</c>). A node field and never a team one: the connection names a directory on this machine
+    /// alone, so <see cref="ProjectTeamSettingsChanged.From"/> never carries it. Trailing and optional so every
+    /// stream written before it replays unchanged.
+    /// </summary>
+    Optional<Guid?> ClaudeCodeConnectionId = default);

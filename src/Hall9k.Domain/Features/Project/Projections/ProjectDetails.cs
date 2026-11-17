@@ -62,6 +62,11 @@ public sealed class ProjectDetails
     /// </summary>
     public AgentEffort OrchestratorEffort { get; set; } = AgentEffort.Unknown;
     /// <summary>
+    /// The claude-code connection this project's spawns run under on this node, or null for the default login.
+    /// Recorded on <see cref="Events.ProjectSettingsChanged"/> alone, so it never replicates.
+    /// </summary>
+    public Guid? ClaudeCodeConnectionId { get; set; }
+    /// <summary>
     /// Whether closeout asks this project's reviewers for another pass after a fix follow-up
     /// pushed (Decisions Log #62). Outranks the owner's preference; Unknown defers to it.
     /// </summary>
@@ -428,6 +433,11 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
         if (@event.Data.OrchestratorEffort.HasValue)
         {
             view.OrchestratorEffort = @event.Data.OrchestratorEffort.Value ?? AgentEffort.Unknown;
+        }
+
+        if (@event.Data.ClaudeCodeConnectionId.HasValue)
+        {
+            view.ClaudeCodeConnectionId = @event.Data.ClaudeCodeConnectionId.Value;
         }
 
         if (@event.Data.ReviewRerequest.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ReviewRerequest), @event.Data.ChangedAt))
