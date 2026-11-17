@@ -1,5 +1,6 @@
 using System.Reflection;
 using FluentAssertions;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Infrastructure.Persistence;
@@ -47,6 +48,8 @@ public sealed class EventScopeRegistryTests
     /// </summary>
     private static readonly string[] KnownNonEventValueTypesInFlatNamespaces =
     [
+        // The account a claude-code connection names, resolved from its projection for a spawn: never appended.
+        "Hall9k.Domain.Features.Connection.ClaudeCodeAccount",
         "Hall9k.Domain.Features.Connection.CredentialKind",
         "Hall9k.Domain.Features.Connection.CredentialReference",
         "Hall9k.Domain.Features.Decision.DecisionStatus",
@@ -179,6 +182,20 @@ public sealed class EventScopeRegistryTests
     [InlineData(typeof(PrReviewPreflightReclaimed))]
     [InlineData(typeof(PrReviewPreflightProcessStarted))]
     public void Pre_flight_events_stay_node_scoped(Type eventType) =>
+        EventScopeRegistry.ClassificationOf(eventType).Should().Be(EventScope.NodeScoped);
+
+    /// <summary>
+    /// A claude-code connection names a directory on this node, and a run's account and its account hold name
+    /// that connection, so none of them means anything on a peer: every one stays on the node that recorded it.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(ConnectionClaudeCodeAccountObserved))]
+    [InlineData(typeof(ConnectionClaudeCodeAccountRefused))]
+    [InlineData(typeof(ConnectionClaudeCodeAccountCleared))]
+    [InlineData(typeof(RunClaudeCodeAccountRecorded))]
+    [InlineData(typeof(RunAccountHeld))]
+    [InlineData(typeof(RunAccountHoldResumed))]
+    public void Claude_code_account_events_stay_node_scoped(Type eventType) =>
         EventScopeRegistry.ClassificationOf(eventType).Should().Be(EventScope.NodeScoped);
 
     [Fact]

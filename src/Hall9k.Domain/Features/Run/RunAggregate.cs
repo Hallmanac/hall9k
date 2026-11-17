@@ -2646,7 +2646,37 @@ public sealed class RunAggregate
     /// park's own State — the node-wide hold's own probe is what resumes this, never the hourly
     /// budget-retry sweep, and never this run's own SessionErrorRetryBackoff timer.
     /// </summary>
-    public void Apply(RunLaunchHeld @event)
+    public void Apply(RunLaunchHeld @event) => HoldForRelaunch();
+
+    /// <summary>The account's refusal holds the run exactly as a launch hold does, so it resumes through the same re-entry paths.</summary>
+    public void Apply(RunAccountHeld @event)
+    {
+        HoldForRelaunch();
+        ReleaseUnstartedStackAssessment();
+    }
+
+    /// <summary>The run went back to the stage its account's refusal held it at, so it is live there again.</summary>
+    public void Apply(RunAccountHoldResumed @event) => State = @event.ResumedState;
+
+    /// <summary>
+    /// A stack assessment whose spawn was refused for its account never ran, so the run's one assessment is
+    /// given back: the resumed loop dispatches it again instead of waiting on a session that never existed.
+    /// </summary>
+    private void ReleaseUnstartedStackAssessment()
+    {
+        if (HasDispatchedStackAssessment && LastStackAssessmentVerdict is null)
+        {
+            HasDispatchedStackAssessment = false;
+            LastStackAssessmentParkKind = null;
+        }
+    }
+
+    /// <summary>The frozen Claude Code account (<see cref="RunClaudeCodeAccountRecorded"/>); null is the default login.</summary>
+    public Guid? ClaudeCodeConnectionId { get; private set; }
+
+    public void Apply(RunClaudeCodeAccountRecorded @event) => ClaudeCodeConnectionId = @event.ConnectionId;
+
+    private void HoldForRelaunch()
     {
         Delivered = State.DeliveredAfterPark(Delivered);
         State = RunState.LaunchHeld;

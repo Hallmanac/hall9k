@@ -16,6 +16,11 @@ public sealed record WorkItemProvider
     public static readonly WorkItemProvider Linear = new("linear");
     /// <summary>A GitHub pull request under review (a pr-review task's target), never a backlog item.</summary>
     public static readonly WorkItemProvider GitHubPullRequest = new("github-pr");
+    /// <summary>
+    /// A Claude Code account on this node, a connection provider only and never a work-item source: every
+    /// tracker lookup selects its own provider, so nothing that reads or links work items ever chooses one.
+    /// </summary>
+    public static readonly WorkItemProvider ClaudeCode = new("claude-code");
 
     /// <summary>Provider not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly WorkItemProvider Unknown = new("");

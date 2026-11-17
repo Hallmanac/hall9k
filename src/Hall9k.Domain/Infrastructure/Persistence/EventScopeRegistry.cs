@@ -295,6 +295,11 @@ public static class EventScopeRegistry
         [typeof(RunGateSetAcceptanceWaitStarted)] = EventScope.NodeScoped,
         [typeof(RunKilled)] = EventScope.ProjectScoped,
         [typeof(RunLaunchHeld)] = EventScope.NodeScoped,
+        // The account a run froze at dispatch, the hold its refusal put the run in, and that hold's resume all name a
+        // connection that exists on this node alone; RunDispatched replicates, so none of them rides on it.
+        [typeof(RunClaudeCodeAccountRecorded)] = EventScope.NodeScoped,
+        [typeof(RunAccountHeld)] = EventScope.NodeScoped,
+        [typeof(RunAccountHoldResumed)] = EventScope.NodeScoped,
         [typeof(RunPermissionDenialsRecorded)] = EventScope.ProjectScoped,
         [typeof(RunPhaseDelegated)] = EventScope.ProjectScoped,
         [typeof(RunProcessStarted)] = EventScope.NodeScoped,
@@ -536,6 +541,11 @@ public static class EventScopeRegistry
         [typeof(ConnectionReregistered)] = EventScope.NodeScoped,
         [typeof(ConnectionTrackerIdentityObserved)] = EventScope.NodeScoped,
         [typeof(ConnectionGitHubIdentityObserved)] = EventScope.NodeScoped,
+        // A claude-code connection's observed email and its refused state name a directory and an account
+        // on this machine alone (task d5c94f15), so they stay here with the rest of the stream.
+        [typeof(ConnectionClaudeCodeAccountObserved)] = EventScope.NodeScoped,
+        [typeof(ConnectionClaudeCodeAccountRefused)] = EventScope.NodeScoped,
+        [typeof(ConnectionClaudeCodeAccountCleared)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Epic — a work-organization concept over tasks; team-visible.
         [typeof(EpicAdded)] = EventScope.ProjectScoped,

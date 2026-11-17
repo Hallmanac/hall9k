@@ -221,6 +221,18 @@ public sealed partial class RunListItemProjection : SingleStreamProjection<RunLi
         view.State = RunState.LaunchHeld;
     }
 
+    // Mirrors RunDetails: a run held for its account runs no process, so it gives its NodeLoad.LiveSlots slot
+    // back for as long as the account stays refused, wherever the hold caught it. A held primary session takes
+    // the slot again through RunResumed; a run held at its gates or review takes it again through
+    // RunAccountHoldResumed, which the account monitor appends before the resumed pipeline starts.
+    public void Apply(IEvent<RunAccountHeld> @event, RunListItem view)
+    {
+        view.Delivered = view.State.DeliveredAfterPark(view.Delivered);
+        view.State = RunState.LaunchHeld;
+    }
+
+    public void Apply(IEvent<RunAccountHoldResumed> @event, RunListItem view) => view.State = @event.Data.ResumedState;
+
     // Mirrors RunDetails/RunAggregate: a pre-final-pass rebase-recovery session is a live agent
     // process the same way ReviewFixDispatched's is, so this lean row needs the identical
     // transition off whatever state preceded it (including BudgetParked, on a retried recovery) —

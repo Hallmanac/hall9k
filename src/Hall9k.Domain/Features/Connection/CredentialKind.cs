@@ -23,6 +23,13 @@ public sealed record CredentialKind
     /// </summary>
     public static readonly CredentialKind File = new("file");
 
+    /// <summary>
+    /// A Claude Code config directory, valid for a claude-code connection only. It names no secret and
+    /// carries no identifier: the directory is the connection's external account id, recorded once, and
+    /// Hall9k never reads the login inside it.
+    /// </summary>
+    public static readonly CredentialKind ClaudeConfigDirectory = new("claude-config-dir");
+
     /// <summary>Kind not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly CredentialKind Unknown = new("");
 
