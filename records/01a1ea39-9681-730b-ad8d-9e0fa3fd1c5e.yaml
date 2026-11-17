@@ -46,3 +46,7 @@ context: |-
   **Docs.** Say plainly that windows on different accounts cannot discover or message each other (a Claude Code limit Hall9k does not work around), that the courier runs on its project's account so it still reaches that project's window, that a bare claude typed in a project folder is outside Hall9k, and how to log a directory in by hand (`CLAUDE_CONFIG_DIR='<dir>' claude`, then /login). Also say that a resume or step-in line printed after a binding change will not find a conversation started before it (plans record no account, so the discovery line is in this case), and that the recipe should be regenerated after rebinding, because the generator writes its scoped lines into the recipe once.
 
   **Boundaries.** Do not change spawn environments, the connection, the binding, the run freeze, or doctor; those belong to the stacked-on task. Recording the account on InteractiveSessionStarted is this task's, at `register-session` and at `drive --direct-launch`; `task start` and `task delegate` are not touched by this task. Public records: examples use ~/.claude-alt and never name another project, organization, or person.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-11-17 18:57:26Z
