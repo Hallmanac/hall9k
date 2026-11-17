@@ -279,6 +279,7 @@ internal static class DispatchedSessionCommandClassification
             // ---- connection (wholesale) ----
             [typeof(ConnectionAddJiraCommand.Settings)] = (DispatchedSessionAccess.Refused, "connection add jira"),
             [typeof(ConnectionAddLinearCommand.Settings)] = (DispatchedSessionAccess.Refused, "connection add linear"),
+            [typeof(ConnectionAddClaudeCodeCommand.Settings)] = (DispatchedSessionAccess.Refused, "connection add claude-code"),
             [typeof(ConnectionListCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "connection list"),
 
             // ---- config (wholesale) ----

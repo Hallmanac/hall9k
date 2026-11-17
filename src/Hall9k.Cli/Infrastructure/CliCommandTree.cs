@@ -562,6 +562,22 @@ public static class CliCommandTree
                     .WithExample("connection", "add", "linear")
                     .WithExample("connection", "add", "linear", "--token-env", "LINEAR_API_KEY")
                     .WithExample("connection", "add", "linear", "--token-env", "LINEAR_API_KEY", "--change-workspace");
+                add.AddCommand<ConnectionAddClaudeCodeCommand>("claude-code")
+                    .WithDescription(
+                        "Register a Claude Code config directory as a claude-code connection on this node, so a "
+                        + "project bound to it (h9k project set <project> --claude-code-account) runs every Claude "
+                        + "Code session Hall9k starts for it under that directory's login, with CLAUDE_CONFIG_DIR "
+                        + "set to the recorded path. Log in yourself first (CLAUDE_CONFIG_DIR='<dir>' claude, then "
+                        + "/login): Hall9k never logs in, never reads the login's Keychain item or credentials file, "
+                        + "and never handles a token. Before anything is recorded the directory must exist and "
+                        + "claude auth status, run under it, must report a logged-in account with an email and an "
+                        + "org id; a logged-out directory is refused with its login line, and a status with no "
+                        + "account is refused naming the override credential (ANTHROPIC_API_KEY, "
+                        + "CLAUDE_CODE_OAUTH_TOKEN, or similar) that hid it. The email, org, and subscription are "
+                        + "recorded on this node only. Registering the same directory again re-observes the "
+                        + "existing connection, which is how a deliberately changed login is accepted and how a "
+                        + "refused account is cleared at once.")
+                    .WithExample("connection", "add", "claude-code", "--config-dir", "~/.claude-alt");
             });
             connection.AddCommand<ConnectionListCommand>("list")
                 .WithDescription(

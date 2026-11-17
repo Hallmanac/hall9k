@@ -2,6 +2,7 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Spectre.Console;
@@ -40,20 +41,20 @@ public sealed class ConnectionListCommand : Hall9kAsyncCommand<ConnectionListCom
             .ToListAsync(cancellationToken);
 
         Table table = new Table().Border(TableBorder.Rounded);
+        table.AddColumn(new TableColumn("Id").NoWrap());
         table.AddColumn(new TableColumn("Provider").NoWrap());
         table.AddColumn("Account");
-        table.AddColumn("Site");
+        table.AddColumn("Site or directory");
         table.AddColumn("Credential");
         table.AddColumn(new TableColumn("Projects").NoWrap());
         foreach (ConnectionDetails connection in connections)
         {
             int bound = BoundProjects(connection, projects);
             table.AddRow(
+                DomainId.Short(connection.Id),
                 connection.Provider.Value.EscapeMarkup(),
-                ExternalText.OneLineMarkup(connection.ExternalAccountId),
-                connection.SiteUrl is { } site
-                    ? site.ToString().EscapeMarkup()
-                    : "[dim]—[/]",
+                AccountCell(connection),
+                SiteCell(connection),
                 $"[dim]{connection.CredentialReference.EscapeMarkup()}[/]",
                 bound == 0 ? "[dim]none[/]" : bound.ToString());
         }
@@ -61,7 +62,9 @@ public sealed class ConnectionListCommand : Hall9kAsyncCommand<ConnectionListCom
         AnsiConsole.Write(table);
         AnsiConsole.MarkupLine(
             "[dim]A credential column names where the secret lives, never the secret (PLAN.md §10). "
-            + "Rotating a Jira token is h9k connection add jira again, and a Linear key is h9k connection add linear again.[/]");
+            + "Rotating a Jira token is h9k connection add jira again, and a Linear key is h9k connection add linear again. "
+            + "A claude-code connection is recorded on this node only; bind a project to it with "
+            + "h9k project set <project> --claude-code-account <id>.[/]");
         return ExitCodes.Ok;
     }
 
@@ -84,8 +87,27 @@ public sealed class ConnectionListCommand : Hall9kAsyncCommand<ConnectionListCom
     internal static int BoundProjects(ConnectionDetails connection, IReadOnlyList<ProjectDetails> projects) =>
         connection.Provider switch
         {
+            var provider when provider == WorkItemProvider.ClaudeCode => projects.Count(project => project.ClaudeCodeConnectionId == connection.Id),
             var provider when provider == WorkItemProvider.Jira => projects.Count(project => project.JiraProjectKey.HasValue),
             var provider when provider == WorkItemProvider.Linear => projects.Count(project => ProjectTracker.IsLinear(project.LinearTeam)),
             _ => projects.Count(project => project.ConnectionId == connection.Id),
         };
+
+    /// <summary>
+    /// The account a connection authenticates as. A claude-code connection's external account id is its
+    /// directory, which the next column shows, so this column shows the email claude auth status reported.
+    /// </summary>
+    private static string AccountCell(ConnectionDetails connection) =>
+        connection.Provider == WorkItemProvider.ClaudeCode
+            ? connection.ClaudeCodeEmail is { } email
+                ? ExternalText.OneLineMarkup(email) + (connection.ClaudeCodeRefused ? " [red](refused)[/]" : string.Empty)
+                : "[dim]not observed[/]"
+            : ExternalText.OneLineMarkup(connection.ExternalAccountId);
+
+    private static string SiteCell(ConnectionDetails connection) =>
+        connection.Provider == WorkItemProvider.ClaudeCode
+            ? connection.ExternalAccountId.EscapeMarkup()
+            : connection.SiteUrl is { } site
+                ? site.ToString().EscapeMarkup()
+                : "[dim]—[/]";
 }

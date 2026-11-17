@@ -1,10 +1,12 @@
 using System.ComponentModel;
+using Hall9k.Cli.ClaudeCode;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Connectors.Verification;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -285,6 +287,19 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "template alone. 'none' clears the binding, and is refused while the backlog policy is "
             + "still linear (--linear none --backlog none clears both)")]
         public string? Linear { get; init; }
+
+        [CommandOption("--claude-code-account <CONNECTION>")]
+        [Description(
+            "Run every Claude Code session Hall9k starts for this project under a claude-code connection's "
+            + "account (h9k connection add claude-code --config-dir ~/.claude-alt): its id, the short id h9k "
+            + "connection list prints, or its directory. Each session is started with CLAUDE_CONFIG_DIR set to the "
+            + "recorded directory, after a check that the directory is still logged in as the recorded email and "
+            + "org; a missing, logged-out, or different login refuses the session rather than falling back to the "
+            + "default login. A run keeps the account it was dispatched under, so changing this moves only work "
+            + "dispatched afterwards. 'default' clears it: sessions then run under the default login, with any "
+            + "inherited CLAUDE_CONFIG_DIR removed. Recorded on this node only, never shared with the project's "
+            + "other nodes")]
+        public string? ClaudeCodeAccount { get; init; }
 
         [CommandOption("--backlog <POLICY>")]
         [Description(
@@ -813,6 +828,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         DateTimeOffset changedAt = DateTimeOffset.UtcNow;
 
+        // Resolved against this node's own connections before anything is recorded, so a binding to a
+        // connection this node does not hold, or to one of another provider, is refused here.
+        Optional<Guid?> claudeCodeConnectionId = settings.ClaudeCodeAccount is { } claudeCodeAccount
+            ? Optional<Guid?>.Of(ClaudeCodeAccountOption.Resolve(
+                claudeCodeAccount,
+                await session.Query<ConnectionDetails>().ToListAsync(cancellationToken),
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)))
+            : Optional<Guid?>.None;
+
         // 'none' clears the binding, mapped here beside the option that documents it for the reason
         // --jira's is: LinearTeamKey.Parse would take the word for a (legal) team key.
         Optional<LinearTeamKey> linearTeam = settings.Linear is { } linearWord
@@ -1011,7 +1035,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             // No clearing word, the --require-challenge shape: a plain two-state switch where 'off' is already the way back from 'on'.
             takesFeedbackStep: settings.FeedbackStep is { } feedbackStep
                 ? Optional<bool>.Of(ChallengeRequirement.ParseOnOff(feedbackStep, "--feedback-step"))
-                : Optional<bool>.None);
+                : Optional<bool>.None,
+            claudeCodeConnectionId: claudeCodeConnectionId);
 
         ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);
 

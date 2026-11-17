@@ -236,6 +236,20 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             AnsiConsole.MarkupLineInterpolated($"[dim]launch hold: unavailable ({exception.Message})[/]");
         }
 
+        // One line per refused Claude Code account: its projects' tasks stay queued and their held runs read
+        // waiting, so this is where the refusal and its fix are said out loud.
+        try
+        {
+            foreach (ClaudeAccountRefusalStatus refusal in await ClaudeAccountRefusalStatus.ReadAsync(session, cancellationToken))
+            {
+                AnsiConsole.MarkupLine(refusal.NeedsYouLine);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]claude code accounts: unavailable ({exception.Message})[/]");
+        }
+
         await WriteReleaseNoticeAsync(session, daemonState, cancellationToken);
 
         // The unfiltered rows, because the review-request pane names a task covering a request only

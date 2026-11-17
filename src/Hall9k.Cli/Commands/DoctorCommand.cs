@@ -95,6 +95,7 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
 
         await JiraDoctor.RunAsync(cancellationToken);
         await LinearDoctor.RunAsync(cancellationToken);
+        await ClaudeCodeDoctor.RunAsync(cancellationToken);
         return ExitCodes.Ok;
     }
 }

@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Project.Queries;
 using Hall9k.Domain.Features.Tasks.Queries;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -35,11 +36,14 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
 
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
         ConnectionDetails? connection = await session.LoadAsync<ConnectionDetails>(project.ConnectionId, cancellationToken);
+        ConnectionDetails? claudeCodeConnection = project.ClaudeCodeConnectionId is { } claudeCodeConnectionId
+            ? await session.LoadAsync<ConnectionDetails>(claudeCodeConnectionId, cancellationToken)
+            : null;
         OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(project.OwnerId, cancellationToken);
         bool notJoined = ProjectJoinStatus.NotJoined(project, owner?.RootFingerprint);
         OperatingSettings operatingSettings = (await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken)).Settings;
 
-        AnsiConsole.Write(Registration(project, connection, owner, notJoined));
+        AnsiConsole.Write(Registration(project, connection, claudeCodeConnection, owner, notJoined));
         AnsiConsole.MarkupLine("\n[bold]Settings[/] [dim](change them with h9k project set "
             + $"{project.Name.EscapeMarkup()} …)[/]");
         ProjectSettingsHistory history = await ProjectSettingsHistory.ReadAsync(session, project.Id, cancellationToken);
@@ -109,7 +113,9 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         }
     }
 
-    private static Table Registration(ProjectDetails project, ConnectionDetails? connection, OwnerDetails? owner, bool notJoined)
+    private static Table Registration(
+        ProjectDetails project, ConnectionDetails? connection, ConnectionDetails? claudeCodeConnection, OwnerDetails? owner,
+        bool notJoined)
     {
         Table table = new Table().Border(TableBorder.None).HideHeaders();
         table.AddColumns("k", "v");
@@ -175,6 +181,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ? $"[dim]id {project.ConnectionId} (no connection document found)[/]"
             : $"{connection.Provider.Value.EscapeMarkup()} · {connection.ExternalAccountId.EscapeMarkup()} "
               + $"[dim]({connection.CredentialReference.EscapeMarkup()})[/]");
+        table.AddRow("Claude Code account", ClaudeCodeAccountRow(project, claudeCodeConnection));
         table.AddRow("Owner", owner is null
             ? $"[dim]id {project.OwnerId} (no owner document found)[/]"
             : owner.Name.EscapeMarkup());
@@ -187,6 +194,25 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Registered", $"[dim]{project.RegisteredAt.ToLocalTime():g}[/]");
         return table;
     }
+
+    /// <summary>
+    /// The Claude Code account this project's sessions run under on this node: the bound connection's directory
+    /// and observed email, or the default login. Said to be this node's alone because the binding never leaves
+    /// it, so another node of the same project may run it under a different account or the default.
+    /// </summary>
+    internal static string ClaudeCodeAccountRow(ProjectDetails project, ConnectionDetails? connection) =>
+        (project.ClaudeCodeConnectionId, connection) switch
+        {
+            (null, _) => "default login [dim](recorded on this node only; bind one: h9k project set "
+                + $"{project.Name.EscapeMarkup()} --claude-code-account <connection>)[/]",
+            ({ } id, null) => $"[red]connection {DomainId.Short(id)} is not recorded on this node[/] [dim](its sessions "
+                + $"are refused until it is bound again: h9k project set {project.Name.EscapeMarkup()} "
+                + "--claude-code-account <connection|default>)[/]",
+            (_, { } bound) => $"{(bound.ClaudeCodeEmail ?? "no account observed").EscapeMarkup()} "
+                + $"[dim]· {bound.ExternalAccountId.EscapeMarkup()} · connection {DomainId.Short(bound.Id)}"
+                + (bound.ClaudeCodeRefused ? $" · [/][red]refused: {(bound.ClaudeCodeRefusedReason ?? string.Empty).EscapeMarkup()}[/][dim]" : string.Empty)
+                + " (recorded on this node only)[/]",
+        };
 
     /// <summary>
     /// The Linear team bound to this project, which makes Linear its one tracker, or how to bind one.
