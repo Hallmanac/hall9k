@@ -52,8 +52,8 @@ public static class LaunchAnchorDocument
 
            The project is the one whose home this window was launched in (`h9k project list` names
            them; the home directory is the project's own). The session name is the `name` field of
-           `~/.claude/sessions/$CLAUDE_PID.json`, or the name you were launched under; `$CLAUDE_PID`
-           is set by Claude Code in every Bash tool it spawns. Registering the same session twice is
+           `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$CLAUDE_PID.json`, or the name you were
+           launched under; `$CLAUDE_PID` is set by Claude Code in every Bash tool it spawns. Registering the same session twice is
            a no-op, so a re-read of this anchor costs nothing. If it refuses because another
            orchestrator is already live for this project on this machine, do not pass `--replace` on
            your own judgment: tell the operator which window it named and let them decide. A node

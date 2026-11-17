@@ -41,7 +41,8 @@ public sealed class OrchestratorRegisterCommand : Hall9kAsyncCommand<Orchestrato
         [CommandOption("--session <NAME>")]
         [Description(
             "The window's own session name, the name the session mesh and h9k status address it by. "
-            + "In Claude Code it is the name field of ~/.claude/sessions/<pid>.json.")]
+            + "In Claude Code it is the name field of ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/<pid>.json, "
+            + "the sessions directory under the config directory the window runs under.")]
         public string Session { get; init; } = string.Empty;
 
         [CommandOption("--pid <PID>")]

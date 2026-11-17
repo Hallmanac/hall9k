@@ -39,6 +39,16 @@ public sealed class LaunchAnchorDocumentTests
     }
 
     [Fact]
+    public void The_session_name_is_read_from_the_registry_under_the_windows_own_config_directory()
+    {
+        string rendered = LaunchAnchorDocument.Render();
+
+        rendered.Should().Contain("`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$CLAUDE_PID.json`",
+            "a window on a bound account keeps its registry under that account's directory, not ~/.claude");
+        rendered.Should().NotContain("~/.claude/sessions");
+    }
+
+    [Fact]
     public void The_first_step_registers_the_window_with_the_platform()
     {
         string rendered = LaunchAnchorDocument.Render();
