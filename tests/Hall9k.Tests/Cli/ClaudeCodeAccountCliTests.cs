@@ -153,6 +153,36 @@ public sealed class ClaudeCodeAccountCliTests
         ClaudeCodeAccountOption.Resolve("default", [ClaudeCode()], Home).Should().BeNull();
 
     [Fact]
+    public void Binding_names_the_account_and_what_moves_with_it()
+    {
+        string line = ClaudeCodeAccountOption.BindingConsequence(ClaudeCodeAccount.For(ClaudeCode()));
+
+        line.Should().Contain("dev@example.com").And.Contain(Directory)
+            .And.Contain("Work dispatched from now on runs under that account")
+            .And.Contain("runs already dispatched keep the account they were dispatched under")
+            .And.Contain("keep their old login until you relaunch them from a freshly printed line")
+            .And.Contain("Regenerate the orchestrator recipe");
+    }
+
+    [Fact]
+    public void Binding_an_account_with_no_recorded_email_calls_it_unobserved()
+    {
+        ConnectionDetails unobserved = ClaudeCode();
+        unobserved.ClaudeCodeEmail = null;
+
+        ClaudeCodeAccountOption.BindingConsequence(ClaudeCodeAccount.For(unobserved))
+            .Should().Contain($"an unobserved account ({Directory})");
+    }
+
+    [Fact]
+    public void Clearing_says_the_project_is_back_on_the_default_login() =>
+        ClaudeCodeAccountOption.BindingConsequence(ClaudeCodeAccount.Default)
+            .Should().Contain("back on the default Claude Code login")
+            .And.Contain("runs already dispatched keep the account they were dispatched under")
+            .And.Contain("keep the bound login until you relaunch them from a freshly printed line")
+            .And.Contain("Regenerate the orchestrator recipe");
+
+    [Fact]
     public void A_connection_this_node_does_not_record_is_refused()
     {
         Action act = () => ClaudeCodeAccountOption.Resolve("~/.claude-missing", [ClaudeCode()], Home);

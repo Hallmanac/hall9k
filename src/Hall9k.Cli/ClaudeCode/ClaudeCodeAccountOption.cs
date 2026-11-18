@@ -53,6 +53,23 @@ public static class ClaudeCodeAccountOption
         };
     }
 
+    /// <summary>
+    /// The line <c>h9k project set --claude-code-account</c> prints after its confirmation: the account now bound,
+    /// what moves with it and what does not, and the recipe to regenerate because its spawn lines carry the account.
+    /// </summary>
+    public static string BindingConsequence(ClaudeCodeAccount account) =>
+        account.IsDefault
+            ? "The project is back on the default Claude Code login. Work dispatched from now on runs under the "
+                + "default login, while runs already dispatched keep the account they were dispatched under. Claude "
+                + "Code windows already open keep the bound login until you relaunch them from a freshly printed line. "
+                + "Regenerate the orchestrator recipe (the orchestrator-recipe-generator skill), because its spawn "
+                + "lines carry the account."
+            : $"The project is now bound to {account.Describe()}. Work dispatched from now on runs under that "
+                + "account, while runs already dispatched keep the account they were dispatched under. Claude Code "
+                + "windows already open keep their old login until you relaunch them from a freshly printed line. "
+                + "Regenerate the orchestrator recipe (the orchestrator-recipe-generator skill), because its spawn "
+                + "lines carry the account.";
+
     private static bool LooksLikePath(string value) =>
         value.StartsWith('~') || value.Contains('/') || value.Contains('\\') || Path.IsPathFullyQualified(value);
 }
