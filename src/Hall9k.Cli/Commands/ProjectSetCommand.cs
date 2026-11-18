@@ -830,10 +830,13 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         // Resolved against this node's own connections before anything is recorded, so a binding to a
         // connection this node does not hold, or to one of another provider, is refused here.
+        IReadOnlyList<ConnectionDetails> connections = settings.ClaudeCodeAccount is null
+            ? []
+            : await session.Query<ConnectionDetails>().ToListAsync(cancellationToken);
         Optional<Guid?> claudeCodeConnectionId = settings.ClaudeCodeAccount is { } claudeCodeAccount
             ? Optional<Guid?>.Of(ClaudeCodeAccountOption.Resolve(
                 claudeCodeAccount,
-                await session.Query<ConnectionDetails>().ToListAsync(cancellationToken),
+                connections,
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)))
             : Optional<Guid?>.None;
 
@@ -1125,6 +1128,13 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         await Doorbell.RingAsync($"project-changed:{details.Id}", cancellationToken);
 
         AnsiConsole.MarkupLine($"[green]Project '{details.Name.EscapeMarkup()}' settings updated.[/]");
+
+        if (claudeCodeConnectionId.HasValue)
+        {
+            ClaudeCodeAccount boundAccount = ClaudeCodeAccount.For(
+                connections.FirstOrDefault(connection => connection.Id == claudeCodeConnectionId.Value));
+            AnsiConsole.MarkupLine(ClaudeCodeAccountOption.BindingConsequence(boundAccount).EscapeMarkup());
+        }
 
         foreach (string line in LinearBindingNotes(
             details.Name, project.LinearTeam, boundTeam, confirmedTeam, setsLinearConvention,
