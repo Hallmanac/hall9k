@@ -2502,9 +2502,16 @@ or one of another provider, is refused, and `default` clears the binding. The bi
 never a team one: it is not replicated, so each node of a project chooses its own account, and `h9k project
 show` prints the bound directory and email and says so. An unbound project runs exactly as before, except
 that any `CLAUDE_CONFIG_DIR` inherited from the environment is removed, so it always means the default login.
+After its confirmation the command prints what the change means: the account now bound (its email and
+directory, or "an unobserved account" when no email is recorded) or that the project is back on the default
+login, that only work dispatched from now on moves while runs already dispatched keep their account, that
+Claude Code windows already open keep their old login until they are relaunched from a freshly printed line,
+and that the orchestrator recipe needs regenerating because its spawn lines carry the account.
 
 Every spawn under a bound account first checks the account: the directory still exists, and `claude auth
-status` still reports the recorded email and org id. A pass is reused for at most five minutes. A missing,
+status` still reports the recorded email and org id. On Windows that check finds an npm install's
+`claude.cmd` as well as `claude.exe`, by trying each PATH directory with each PATHEXT extension the way the
+shell does; a `.ps1` is never chosen, because it cannot be started without PowerShell. A pass is reused for at most five minutes. A missing,
 logged-out, or different login refuses the spawn and never falls back to the default login, and the
 refusal names the directory and the fix. A run keeps the account it was dispatched under (frozen at
 dispatch, at `h9k task start`, at `h9k task drive`, and at `h9k pr review`), so changing a binding moves only

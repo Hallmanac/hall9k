@@ -1056,8 +1056,7 @@ passes; `h9k status` and `h9k doctor` name the problem and its fix. The binding 
 recorded on one node and never replicated, so each node of a project picks its own account. Hall9k never
 logs in, never reads a login's Keychain item or credentials file, and never handles a token: the login is
 the human's to make. Not done: a run's phase line still reads like the node-wide launch hold while it waits
-on its account, and the launch line `h9k task drive` prints for a session you start yourself does not set
-the account yet.
+on its account.
 
 ### Outside-interaction logging
 
