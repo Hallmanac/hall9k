@@ -1,0 +1,28 @@
+hall9k-task-record: 1
+task-id: 01a1f09f-7763-70a3-84a8-b8367d346361
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#894
+objective: Make the Claude Code account probe work with an npm install on Windows, and have binding a project to an account say what it bound and what to do next
+criteria:
+  - On Windows, the account probe in src/Hall9k.Connectors/ClaudeCode/ClaudeAuthStatusProbe.cs starts an npm-installed claude.cmd as well as claude.exe, either by running through cmd.exe /c or by resolving the name against the PATHEXT extensions before starting it (the rule DaemonEnvironment.ResolvesAsGiven applies, with .COM;.EXE;.BAT;.CMD when PATHEXT is unset). A .ps1 script is never chosen, because it cannot be started this way. The resolution lives in Hall9k.Connectors or Hall9k.Domain, because the daemon runs the same probe and neither it nor the probe can reach Hall9k.Cli. A HALL9K_CLAUDE_PATH override is still honored, and off Windows the probe starts exactly what it starts today. With this, h9k connection add claude-code and later account checks no longer refuse with "'claude auth status' could not run" on an npm install.
+  - A unit test covers how the probe's command is resolved or wrapped on Windows, at least for a PATH holding only claude.cmd and for one holding claude.exe beside claude.cmd. It starts no real Claude Code process, and it runs on every operating system the suite runs on rather than only on Windows, because the resolution takes the operating system, PATH, PATHEXT, and file existence as inputs.
+  - h9k project set <project> --claude-code-account <connection> prints, after its existing confirmation, a consequence line that names the bound account the way ClaudeCodeAccount.Describe does (its recorded email and directory, or "an unobserved account" and the directory when no email is recorded). The line says that work dispatched from now on runs under that account while runs already dispatched keep the account they were dispatched under, that Claude Code windows already open keep their old login until they are relaunched from a freshly printed line, and that the orchestrator recipe should be regenerated because its spawn lines carry the account.
+  - h9k project set <project> --claude-code-account default prints, after its existing confirmation, a consequence line saying the project is back on the default Claude Code login. It says that work dispatched from now on runs under the default login while runs already dispatched keep the account they were dispatched under, that windows already open keep the bound login until they are relaunched from a freshly printed line, and that the orchestrator recipe should be regenerated.
+  - |-
+    docs/scope.md no longer says the h9k task drive launch line does not set the account (it does since #888).
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/7d346361-make-the-claude-code-account-p
+published: 2026-11-18 21:52:20Z
+context: |-
+  Follow-up patch to v0.20.0, from the pre-release review in notes/release-review-v0200/journal.md (section 2, findings 1, 2, and 5). Brian ruled on 2026-11-18: one small patch task for findings 1 and 2, finding 5's stale docs sentence rides along, and findings 3, 4, 6, 7, and 8 are parked. No login check at bind time is asked for. No design ruling from notes/account-split-2026-11-17/journal.md section 3 is reopened.
+
+  Finding 1: ClaudeAuthStatusProbe.cs:38 starts bare claude through ExternalProcess with UseShellExecute false, which on Windows finds claude.exe only. The gap is already documented and handled for drive lines near src/Hall9k.Cli/Commands/TaskDriveCommand.cs:2435 (DetectWindowsScriptShim). The finding comes from reading the code, not from a Windows run; the fix is wanted either way because teammates on Windows may have npm installs.
+
+  Finding 2: ProjectSetCommand.cs:1127 prints only "Project '<name>' settings updated." for the account binding, while other settings in the same command print a consequence line.
+
+  Finding 5: docs/scope.md:1059, the half sentence about the task drive line not carrying the account.
