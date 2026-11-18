@@ -51,10 +51,11 @@ public static class OrchestratorMeasureProbe
 
         // A bound account runs the same binary its check ran (HALL9K_CLAUDE_PATH, else claude on the PATH), so the
         // account the probe was checked under is the one it runs under. The default login was never checked, so
-        // it keeps the probe's own command line: claude on the PATH.
+        // it keeps the probe's own command line: claude on the PATH. Either is resolved the way a direct start
+        // needs on Windows, so an npm install's claude.cmd is found.
         string binary = account.IsDefault
-            ? "claude"
-            : ClaudeCodeBinary.Resolve();
+            ? ClaudeCodeBinary.ForDirectStart("claude")
+            : ClaudeCodeBinary.ResolveForDirectStart();
         ProcessStartInfo startInfo = new(binary)
         {
             WorkingDirectory = workingDirectory,

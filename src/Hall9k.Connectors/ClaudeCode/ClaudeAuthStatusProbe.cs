@@ -30,7 +30,7 @@ public sealed class ClaudeAuthStatusProbe(EnvironmentProcessRunner? runner = nul
 
     public async Task<ClaudeAuthStatusRead> ReadAsync(string configDirectory, CancellationToken cancellationToken)
     {
-        string binary = ClaudeCodeBinary.Resolve();
+        string binary = ClaudeCodeBinary.ResolveForDirectStart();
         ProcessResult result;
         try
         {
@@ -58,6 +58,58 @@ public static class ClaudeCodeBinary
 {
     public const string OverrideVariable = "HALL9K_CLAUDE_PATH";
 
+    // The extensions CreateProcess can start without a shell; .ps1 and the other PATHEXT script types cannot.
+    private static readonly string[] DirectlyStartable = [".COM", ".EXE", ".BAT", ".CMD"];
+
     public static string Resolve() =>
         Environment.GetEnvironmentVariable(OverrideVariable) ?? "claude";
+
+    /// <summary><see cref="Resolve"/>, made startable with <c>UseShellExecute</c> false on this machine.</summary>
+    public static string ResolveForDirectStart() => ForDirectStart(Resolve());
+
+    /// <summary><paramref name="binary"/>, made startable with <c>UseShellExecute</c> false on this machine.</summary>
+    public static string ForDirectStart(string binary) =>
+        ForDirectStart(
+            binary,
+            OperatingSystem.IsWindows(),
+            Environment.GetEnvironmentVariable("PATH"),
+            Environment.GetEnvironmentVariable("PATHEXT"),
+            File.Exists);
+
+    /// <summary>
+    /// The path to start for <paramref name="binary"/>. Off Windows it is <paramref name="binary"/> unchanged. On
+    /// Windows a bare name started directly finds only <c>.exe</c>, so an npm install's <c>claude.cmd</c> is never
+    /// found; this tries each PATH directory in order with each PATHEXT extension in order (.COM;.EXE;.BAT;.CMD when
+    /// PATHEXT is unset), the rule DaemonEnvironment.ResolvesAsGiven applies, keeping only the extensions
+    /// CreateProcess can start, so a <c>.ps1</c> is never chosen. A name that resolves to nothing is returned
+    /// as given, so the start fails with its own message.
+    /// </summary>
+    public static string ForDirectStart(
+        string binary, bool windows, string? path, string? pathExtensions, Func<string, bool> fileExists)
+    {
+        if (!windows)
+        {
+            return binary;
+        }
+
+        string[] extensions = [.. (pathExtensions ?? string.Join(';', DirectlyStartable))
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(extension => DirectlyStartable.Contains(extension, StringComparer.OrdinalIgnoreCase))];
+
+        // A name that already carries a startable extension is tried as written first, the way cmd.exe does.
+        bool startableAsWritten = DirectlyStartable.Contains(Path.GetExtension(binary), StringComparer.OrdinalIgnoreCase);
+        IEnumerable<string> Candidates(string stem) =>
+            startableAsWritten
+                ? [stem, .. extensions.Select(extension => stem + extension)]
+                : extensions.Select(extension => stem + extension);
+
+        bool hasDirectory = binary.IndexOfAny(['\\', '/', ':']) >= 0;
+        IEnumerable<string> candidates = hasDirectory
+            ? Candidates(binary)
+            : (path ?? string.Empty)
+                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .SelectMany(directory => Candidates(directory.TrimEnd('\\', '/') + '\\' + binary));
+
+        return candidates.FirstOrDefault(fileExists) ?? binary;
+    }
 }
